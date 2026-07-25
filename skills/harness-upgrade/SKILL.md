@@ -5,16 +5,16 @@ description: Use when checking or upgrading the wrapper harness version embedded
 
 # Harness Upgrade
 
-Use this stage to keep target Skill infrastructure aligned with `MetaInFLow/EvoZeus-wrapper`.
+Use this stage to keep target Skill infrastructure aligned with `MetaInFLow/EvoZeus-CoEvolve`.
 
 ## Commands
 
 ```bash
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.10.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.10.1 --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.10.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.10.1 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.0 --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.0 --approve --json
 ```
 
 ## Rules
@@ -25,8 +25,8 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.10.1 
 - Do not touch target Skill business rules.
 - Preserve Codex project-local hook registration at `.codex/hooks.json`; keep its adapter under `.evozeus-wrapper/hooks/` and label it `repo_maintenance_hook` with `canonical_repository` scope.
 - Prevalidate `.codex/hooks.json` as structured JSON, preserve unrelated hooks, and create or refresh exactly one wrapper SessionStart registration.
-- `SKILL.md` must start, after frontmatter, with `EvoZeus-wrapper 状态检查` before the target Skill's main chain.
-- Other `SKILL.md` changes are append-only: add the `EvoZeus-wrapper` section if missing, otherwise append a migration note.
+- `SKILL.md` must start, after frontmatter, with `EvoZeus-CoEvolve 状态检查` before the target Skill's main chain.
+- Other `SKILL.md` changes are append-only: add the `EvoZeus-CoEvolve` section if missing, otherwise append a migration note.
 - Record every wrapper migration under `.evozeus-wrapper/docs/migrations/` with from/to wrapper version, file moves, validation, and rollback.
 - Update `.evozeus-wrapper/wrapper.json` to `layout_version=2` only after all destination conflicts are cleared.
 - Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.

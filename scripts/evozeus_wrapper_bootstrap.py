@@ -29,12 +29,14 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
-STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
+STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
+LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
-WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
+WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
+LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
 INITIAL_VERSION = "v0.1.0"
-WRAPPER_VERSION = "v0.10.1"
+WRAPPER_VERSION = "v0.11.0"
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
@@ -189,7 +191,7 @@ def build_evolution_section(replacements: dict[str, str]) -> str:
     return f"""\
 {EVOLUTION_SECTION_HEADING}
 
-本 Skill 已由 EvoZeus-wrapper 接入自进化闭环。后续任何行为改动都必须先留下可追踪证据，再进入实现。
+本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。后续任何行为改动都必须先留下可追踪证据，再进入实现。
 
 源头发现顺序：
 
@@ -221,12 +223,12 @@ def build_wrapper_section(replacements: dict[str, str]) -> str:
     return f"""\
 {WRAPPER_SECTION_HEADING}
 
-本区由 EvoZeus-wrapper 追加，用来说明本 Skill 的 wrapper harness 路由、版本记录和迁移规则。它不覆盖原 Skill 的业务规则；涉及业务行为变化时，仍必须走 Issue、design doc、PR、CHANGELOG 和 release。
+本区由 EvoZeus-CoEvolve 追加，用来说明本 Skill 的 wrapper harness 路由、版本记录和迁移规则。它不覆盖原 Skill 的业务规则；涉及业务行为变化时，仍必须走 Issue、design doc、PR、CHANGELOG 和 release。
 
 调用 wrapper 的场景：
 
 1. 本 Skill 需要 repo 化、adopt/repair wrapper harness、或确认 canonical source。
-2. `{TARGET_WRAPPER_MANIFEST}` 中的 wrapper harness version 落后于 EvoZeus-wrapper 最新版本。
+2. `{TARGET_WRAPPER_MANIFEST}` 中的 wrapper harness version 落后于 EvoZeus-CoEvolve 最新版本。
 3. `~/.evozeus/.projects/{replacements["REPO_NAME"]}`、`.codex` 或 `.agents` runtime install 疑似不是同一个 source of truth。
 4. 使用反馈需要从 Skill Feedback Issue 进入 design doc、PR、CHANGELOG、release 的自进化闭环。
 5. 目标 GitHub repo、release tag、GitHub Pages 或 preflight check 需要创建、诊断或修复。
@@ -237,7 +239,7 @@ def build_wrapper_section(replacements: dict[str, str]) -> str:
 - 源头/安装问题：先运行 `python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`。
 - 结构问题：运行 `python3 {TARGET_PREFLIGHT_SCRIPT} structure`。
 - Skill release 问题：运行 `python3 {TARGET_PREFLIGHT_SCRIPT} version --repo {replacements["REPO_NAME"]}`。
-- wrapper harness 升级：回到 EvoZeus-wrapper repo，运行 `python3 scripts/evozeus_wrapper.py harness upgrade-check --target <this-skill-repo> --json`，再用检查结果中的最新版本运行 `harness upgrade --dry-run` 生成迁移方案。
+- wrapper harness 升级：回到 EvoZeus-CoEvolve repo，运行 `python3 scripts/evozeus_wrapper.py harness upgrade-check --target <this-skill-repo> --json`，再用检查结果中的最新版本运行 `harness upgrade --dry-run` 生成迁移方案。
 
 Append-only 迁移规则：
 
@@ -278,7 +280,7 @@ def content_insert_index(text: str) -> int:
 def prepend_status_section_if_missing(target: Path, section: str) -> str:
     skill_path = target / "SKILL.md"
     text = skill_path.read_text(encoding="utf-8")
-    if has_heading(text, STATUS_SECTION_HEADING):
+    if has_heading(text, STATUS_SECTION_HEADING) or has_heading(text, LEGACY_STATUS_SECTION_HEADING):
         return f"skip existing {STATUS_SECTION_HEADING} in {skill_path}"
 
     insert_at = content_insert_index(text)
@@ -295,7 +297,10 @@ def prepend_status_section_if_missing(target: Path, section: str) -> str:
 def append_section_if_missing(target: Path, heading: str, section: str) -> str:
     skill_path = target / "SKILL.md"
     text = skill_path.read_text(encoding="utf-8")
-    if has_heading(text, heading):
+    compatible_headings = {heading}
+    if heading == WRAPPER_SECTION_HEADING:
+        compatible_headings.add(LEGACY_WRAPPER_SECTION_HEADING)
+    if any(has_heading(text, candidate) for candidate in compatible_headings):
         return f"skip existing {heading} in {skill_path}"
 
     updated = text.rstrip() + "\n\n" + section.rstrip() + "\n"
@@ -312,7 +317,7 @@ def inject_evolution_method(target: Path, replacements: dict[str, str]) -> list[
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Bootstrap an EvoZeus-wrapper dashboard into a local Skill folder.")
+    parser = argparse.ArgumentParser(description="Bootstrap an EvoZeus-CoEvolve dashboard into a local Skill folder.")
     parser.add_argument("target", help="Path to the local Skill folder.")
     parser.add_argument("--skill-name", help="Display name for the Skill.")
     parser.add_argument("--repo", required=True, help="Target GitHub repo in OWNER/REPO format.")
@@ -386,7 +391,7 @@ def main() -> int:
             args.force,
         )
     )
-    print("EvoZeus-wrapper bootstrap complete.")
+    print("EvoZeus-CoEvolve bootstrap complete.")
     print(f"Target: {target}")
     print(f"Repo: {args.repo}")
     print(f"Visibility: {visibility}")

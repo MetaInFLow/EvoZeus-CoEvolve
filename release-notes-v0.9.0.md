@@ -1,10 +1,10 @@
-# EvoZeus-wrapper v0.9.0
+# EvoZeus-CoEvolve v0.9.0
 
 ## 概要
 
 本版本修复 wrapper harness 的版本自比较问题，并补齐 wrapped Skill 的安全重装、调用、初始化和子 Skill hook 接入契约。
 
-关联 Issues：[#8](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/8)、[#9](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/9)。
+关联 Issues：[#8](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/8)、[#9](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/9)。
 
 ## 主要变化
 

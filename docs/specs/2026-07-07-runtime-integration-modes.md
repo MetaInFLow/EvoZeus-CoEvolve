@@ -4,11 +4,11 @@
 
 ## Related Issue
 
-- MetaInFLow/EvoZeus-wrapper#4
+- MetaInFLow/EvoZeus-CoEvolve#4
 
 ## Problem
 
-EvoZeus-wrapper used the word `hook` for multiple mechanisms:
+EvoZeus-CoEvolve used the word `hook` for multiple mechanisms:
 
 - Codex project-local hooks or host-native lifecycle hooks that run automatically;
 - wrapper CLI commands such as `hook start-check`;

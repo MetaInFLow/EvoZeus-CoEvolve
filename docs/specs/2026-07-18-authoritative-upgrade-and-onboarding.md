@@ -11,7 +11,7 @@ Related issues: #8, #9
 
 ## 实现方向
 
-- `harness upgrade-check` 和 SessionStart hook 默认查询 `MetaInFLow/EvoZeus-wrapper` 的 GitHub latest release；失败时输出来源、时间和错误。
+- `harness upgrade-check` 和 SessionStart hook 默认查询 `MetaInFLow/EvoZeus-CoEvolve` 的 GitHub latest release；失败时输出来源、时间和错误。
 - manifest 增加 `onboarding`，覆盖 installation、invocation、initialization 和 generated child Skills。
 - 初始化命令由目标 Skill 通过 bootstrap 参数提供，wrapper 只保存和校验，不包含 company 专用业务逻辑。
 - `publish reinstall` 在任何写入前校验所有目标；真实目录移动到 EvoZeus archive 后再建立 symlink，绝不删除。

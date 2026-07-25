@@ -8,7 +8,7 @@
 
 ## Repo 职责
 
-EvoZeus-wrapper 是 EvoZeus 母体调度下的 component capability，负责把一个本地 Skill 文件夹包装成最小自进化驾驶舱：
+EvoZeus-CoEvolve 是 EvoZeus 母体调度下的 component capability，负责把一个本地 Skill 文件夹包装成最小自进化驾驶舱：
 
 - 为目标 Skill repo 生成 GitHub Pages dashboard。
 - 让用户明确选择 `public` 或 `private`。
@@ -31,7 +31,7 @@ EvoZeus-wrapper 是 EvoZeus 母体调度下的 component capability，负责把�
 4. 对目标 Skill 文件夹做增量注入，不覆盖用户已有文件，除非用户明确要求。
 5. 检查逻辑放在 `scripts/evozeus_wrapper_preflight.py`，模板放在 `templates/target/`。
 6. 不要把 wrapper 做成复杂 runtime；它只负责驾驶舱文件、release/version 检查和上传前检查。
-7. 如果涉及 Session Signal 方法或 official factor tools，把内容路由到 `evozeus-session-signal-skill`。
+7. 如果涉及 Session Signal 方法或 official factor tools，把内容路由到 `EvoZeus-session-signal-skill`。
 
 ## 验证标准
 

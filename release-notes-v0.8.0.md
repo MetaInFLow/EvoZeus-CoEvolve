@@ -1,4 +1,4 @@
-# EvoZeus-wrapper v0.8.0
+# EvoZeus-CoEvolve v0.8.0
 
 ## Summary
 
@@ -47,4 +47,4 @@ python3 scripts/evozeus_wrapper.py harness migrate-layout \
 
 ## Rollback
 
-Run migration in a clean target worktree and commit it separately. Revert that migration commit to restore the previous target layout. To roll back EvoZeus-wrapper itself, reinstall or check out `v0.7.0`.
+Run migration in a clean target worktree and commit it separately. Revert that migration commit to restore the previous target layout. To roll back EvoZeus-CoEvolve itself, reinstall or check out `v0.7.0`.

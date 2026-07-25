@@ -1,13 +1,13 @@
 ---
 name: using-evozeus-wrapper
-description: Use whenever EvoZeus-wrapper is invoked to diagnose, bootstrap, adopt, repair, verify, publish, reinstall, release, or migrate a wrapped Skill, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle. This is the operating Skill for the wrapper lifecycle; root SKILL.md only routes here.
+description: Use whenever EvoZeus-CoEvolve is invoked to diagnose, bootstrap, adopt, repair, verify, publish, reinstall, release, or migrate a wrapped Skill, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle. This is the operating Skill for the wrapper lifecycle; root SKILL.md only routes here.
 ---
 
 # Using EvoZeus Wrapper
 
-Use this Skill as the operating guide for EvoZeus-wrapper. The root `SKILL.md` only anchors discovery and routing.
+Use this Skill as the operating guide for EvoZeus-CoEvolve. The root `SKILL.md` only anchors discovery and routing.
 
-EvoZeus-wrapper is not the user entrypoint. EvoZeus decides when a promoted Skill, existing local Skill folder, runtime kit, or hook/plugin-controlled Skill bundle needs repoization, feedback capture, release governance, or wrapper migration.
+EvoZeus-CoEvolve is not the user entrypoint. EvoZeus decides when a promoted Skill, existing local Skill folder, runtime kit, or hook/plugin-controlled Skill bundle needs repoization, feedback capture, release governance, or wrapper migration.
 
 ## First Principles
 
@@ -230,12 +230,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.10.1 \
+  --latest-version v0.11.0 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.10.1 \
+  --latest-version v0.11.0 \
   --dry-run \
   --json
 ```

@@ -106,7 +106,7 @@ def create_complete_legacy_target(target: Path) -> str:
     legacy = target / ".evozeus_evoinfra"
     legacy.mkdir(parents=True)
     legacy_manifest = {
-        "wrapper_repo": "MetaInFLow/EvoZeus-wrapper",
+        "wrapper_repo": "MetaInFLow/EvoZeus-CoEvolve",
         "wrapper_version": "v0.6.0",
         "canonical_repo": "MetaInFLow/legacy-skill",
         "managed_files": [],
@@ -162,13 +162,13 @@ class LifecycleBasicsTest(unittest.TestCase):
     def test_replace_markdown_section_preserves_target_h1_and_suffix_bytes(self):
         frontmatter = (
             '---\nname: "example"\ndescription: |\n'
-            "  ## EvoZeus-wrapper 状态检查\n"
+            "  ## EvoZeus-CoEvolve 状态检查\n"
             "  Keep this frontmatter text.\n"
             "---\n\n"
         )
         original = (
             frontmatter
-            + "## EvoZeus-wrapper 状态检查\n\n"
+            + "## EvoZeus-CoEvolve 状态检查\n\n"
             "old wrapper-owned status\n\n"
             "```text\n"
             "# Not a structural boundary\n"
@@ -183,8 +183,8 @@ class LifecycleBasicsTest(unittest.TestCase):
 
         updated = _replace_markdown_section(
             original,
-            "## EvoZeus-wrapper 状态检查",
-            "## EvoZeus-wrapper 状态检查\n\nnew wrapper-owned status\n",
+            "## EvoZeus-CoEvolve 状态检查",
+            "## EvoZeus-CoEvolve 状态检查\n\nnew wrapper-owned status\n",
         )
 
         self.assertTrue(updated.endswith(suffix))
@@ -198,14 +198,14 @@ class LifecycleBasicsTest(unittest.TestCase):
             skill = target / "SKILL.md"
             original = (
                 b'---\r\nname: "example"\r\n---\r\n\r\n'
-                b"## EvoZeus-wrapper status\r\n\r\n"
+                b"## EvoZeus-CoEvolve status\r\n\r\n"
                 b"old wrapper-owned status\r\n\r\n"
                 b"# Target Skill Title\r\n\r\n"
                 b"Target-owned CRLF bytes.  \r\n"
             )
             original = original.replace(
-                b"## EvoZeus-wrapper status",
-                "## EvoZeus-wrapper 状态检查".encode("utf-8"),
+                b"## EvoZeus-CoEvolve status",
+                "## EvoZeus-CoEvolve 状态检查".encode("utf-8"),
             )
             target_owned = original[original.index(b"# Target Skill Title") :]
             skill.write_bytes(original)
@@ -224,6 +224,37 @@ class LifecycleBasicsTest(unittest.TestCase):
             )
 
             self.assertIn(target_owned, skill.read_bytes())
+
+    def test_refresh_instruction_surface_upgrades_legacy_brand_heading_without_duplication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            skill = target / "SKILL.md"
+            skill.write_text(
+                '---\nname: "example"\n---\n\n'
+                "## EvoZeus-wrapper 状态检查\n\n"
+                "legacy wrapper-owned status\n\n"
+                "# Target Skill Title\n\n"
+                "Target-owned content.\n",
+                encoding="utf-8",
+            )
+
+            _refresh_migration_instruction_surface(
+                target,
+                {
+                    "canonical_repo": "MetaInFLow/example",
+                    "instruction_surface": "SKILL.md",
+                },
+                "v0.10.1",
+                "v0.11.0",
+                from_layout="consolidated-v2",
+                to_layout="consolidated-v2",
+                layout_migration_required=False,
+            )
+
+            updated = skill.read_text(encoding="utf-8")
+            self.assertEqual(updated.count("## EvoZeus-CoEvolve 状态检查"), 1)
+            self.assertNotIn("## EvoZeus-wrapper 状态检查", updated)
+            self.assertIn("# Target Skill Title\n\nTarget-owned content.", updated)
 
     def test_crlf_instruction_surface_inserts_status_after_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -246,7 +277,7 @@ class LifecycleBasicsTest(unittest.TestCase):
                 layout_migration_required=False,
             )
             updated = skill.read_bytes()
-            status = "## EvoZeus-wrapper 状态检查".encode("utf-8")
+            status = "## EvoZeus-CoEvolve 状态检查".encode("utf-8")
 
             self.assertTrue(updated.startswith(frontmatter))
             self.assertIn(target_owned, updated)
@@ -259,7 +290,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             skill = target / "SKILL.md"
             skill.write_text(
                 '---\nname: "example"\n---\n\n'
-                "## EvoZeus-wrapper 状态检查\n\n"
+                "## EvoZeus-CoEvolve 状态检查\n\n"
                 "old wrapper-owned status\n\n"
                 "# Target Skill Title\n\n"
                 "Target-owned intro bytes.  \n"
@@ -287,7 +318,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(surface, "SKILL.md")
             self.assertIn(
-                "## EvoZeus-wrapper Version Refresh Note: v0.10.0 -> v0.10.1",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.10.1",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
@@ -298,7 +329,7 @@ class LifecycleBasicsTest(unittest.TestCase):
 
     def test_repo_from_remote_supports_https_and_ssh(self):
         self.assertEqual(repo_from_remote("https://github.com/MetaInFLow/EvoZeus.git"), "MetaInFLow/EvoZeus")
-        self.assertEqual(repo_from_remote("git@github.com:MetaInFLow/EvoZeus-wrapper.git"), "MetaInFLow/EvoZeus-wrapper")
+        self.assertEqual(repo_from_remote("git@github.com:MetaInFLow/EvoZeus-CoEvolve.git"), "MetaInFLow/EvoZeus-CoEvolve")
         self.assertIsNone(repo_from_remote("https://example.com/MetaInFLow/EvoZeus.git"))
 
     def test_stage_label_uses_five_stage_contract(self):
@@ -359,7 +390,7 @@ class LifecycleBasicsTest(unittest.TestCase):
         skill = Path("skills/using-evozeus-wrapper/SKILL.md")
         text = skill.read_text(encoding="utf-8")
         self.assertIn("name: using-evozeus-wrapper", text)
-        self.assertIn("Use this Skill as the operating guide for EvoZeus-wrapper.", text)
+        self.assertIn("Use this Skill as the operating guide for EvoZeus-CoEvolve.", text)
         self.assertIn("Do not treat script-produced `evolution_surface.candidates` as final placement.", text)
         self.assertNotIn("TODO", text)
 
@@ -465,7 +496,7 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             skill_text = (target / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn("## EvoZeus-wrapper 状态检查", skill_text)
+            self.assertIn("## EvoZeus-CoEvolve 状态检查", skill_text)
             self.assertIn("## 自进化方法", skill_text)
             self.assertIn(TARGET_WRAPPER_MANIFEST, skill_text)
 
@@ -823,7 +854,7 @@ class LifecycleBasicsTest(unittest.TestCase):
                 refreshed_skill,
             )
             self.assertIn(
-                "## EvoZeus-wrapper Version Refresh Note: v0.9.0 -> v0.9.1",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.9.0 -> v0.9.1",
                 refreshed_skill,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", refreshed_skill)
@@ -899,9 +930,9 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertTrue(report["should_capture"])
             self.assertEqual(report["route"], "wrapper")
-            self.assertEqual(report["issue_repo"], "MetaInFLow/EvoZeus-wrapper")
+            self.assertEqual(report["issue_repo"], "MetaInFLow/EvoZeus-CoEvolve")
             self.assertEqual(report["policy_path"], TARGET_FEEDBACK_POLICY)
-            self.assertIn("gh issue create --repo MetaInFLow/EvoZeus-wrapper", report["issue_create_command"])
+            self.assertIn("gh issue create --repo MetaInFLow/EvoZeus-CoEvolve", report["issue_create_command"])
 
     def test_preflight_rejects_native_hook_mode_without_hook_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -969,7 +1000,7 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "skill_entry_preflight"
             ]
             skill.write_text(
-                "## EvoZeus-wrapper 状态检查\n\n检查。\n\n# Business only\n",
+                "## EvoZeus-CoEvolve 状态检查\n\n检查。\n\n# Business only\n",
                 encoding="utf-8",
             )
             after = detect_target_architecture(target)["integration"]["capabilities"][
@@ -989,7 +1020,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             (target / "AGENTS.md").write_text("# Runtime\n", encoding="utf-8")
             control.write_text(
                 "---\nname: control\n---\n\n"
-                "## EvoZeus-wrapper 状态检查\n\n检查。\n\n# Control\n",
+                "## EvoZeus-CoEvolve 状态检查\n\n检查。\n\n# Control\n",
                 encoding="utf-8",
             )
             manifest = target / ".evozeus-wrapper/wrapper.json"
@@ -1014,7 +1045,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             (target / "AGENTS.md").write_text("# Runtime\n", encoding="utf-8")
             outside = root / "outside.md"
             outside.write_text(
-                "## EvoZeus-wrapper 状态检查\n\nExternal.\n",
+                "## EvoZeus-CoEvolve 状态检查\n\nExternal.\n",
                 encoding="utf-8",
             )
             manifest = target / ".evozeus-wrapper/wrapper.json"
@@ -1467,7 +1498,7 @@ class WrapperManifestTest(unittest.TestCase):
             loaded = load_wrapper_manifest(target)
 
             self.assertIn("write", action)
-            self.assertEqual(loaded["wrapper_repo"], "MetaInFLow/EvoZeus-wrapper")
+            self.assertEqual(loaded["wrapper_repo"], "MetaInFLow/EvoZeus-CoEvolve")
             self.assertEqual(loaded["wrapper_version"], "v0.2.0")
             self.assertEqual(loaded["canonical_repo"], "MetaInFLow/resume-screening")
             self.assertEqual(loaded["managed_files"], ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py"])
@@ -2337,8 +2368,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
         return {"version": "v0.10.0", "source": "test", "error": None}
 
     @staticmethod
-    def latest_v011():
-        return {"version": "v0.10.1", "source": "test", "error": None}
+    def latest_v0110():
+        return {"version": "v0.11.0", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -2564,9 +2595,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.10.1",
+                    "v0.11.0",
                     approve=True,
-                    latest_resolver=self.latest_v011,
+                    latest_resolver=self.latest_v0110,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -2634,16 +2665,16 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.10.1",
+                "v0.11.0",
                 approve=True,
-                latest_resolver=self.latest_v011,
+                latest_resolver=self.latest_v0110,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-wrapper Version Refresh Note: v0.10.0 -> v0.10.1",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.11.0",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
@@ -3162,8 +3193,8 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
             self.assertEqual(plan["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(plan["integration"]["native_host_hook_installed"])
-            self.assertIn("SKILL.md EvoZeus-wrapper status check section (front matter prelude)", plan["planned_files"])
-            self.assertIn("SKILL.md EvoZeus-wrapper section or migration note (append only)", plan["planned_files"])
+            self.assertIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
+            self.assertIn("SKILL.md EvoZeus-CoEvolve section or migration note (append only)", plan["planned_files"])
             self.assertIn(TARGET_MIGRATIONS_README, plan["planned_files"])
             self.assertIn(TARGET_WRAPPER_MANIFEST, plan["planned_files"])
             self.assertIn(".codex/hooks.json", plan["planned_files"])
@@ -3206,11 +3237,11 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "AGENTS.md EvoZeus-wrapper status check section (instruction surface prelude)",
+                "AGENTS.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
                 plan["planned_files"],
             )
             self.assertIn("AGENTS.md", plan["evolution_surface_policy"])
-            self.assertNotIn("SKILL.md EvoZeus-wrapper status check section (front matter prelude)", plan["planned_files"])
+            self.assertNotIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
 
     def test_plan_harness_upgrade_uses_hook_loaded_control_skill_for_plugin_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3241,7 +3272,7 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "skills/session-bootstrap/SKILL.md EvoZeus-wrapper status check section (instruction surface prelude)",
+                "skills/session-bootstrap/SKILL.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
                 plan["planned_files"],
             )
             self.assertIn("skills/session-bootstrap/SKILL.md", plan["evolution_surface_policy"])

@@ -1,6 +1,6 @@
 ---
 name: evozeus-wrapper-evolution-surface-diagnosis
-description: Use after target repo diagnosis when deciding where EvoZeus-wrapper self-evolution instructions should be placed. Applies to root SKILL.md repos, AGENTS.md runtime kits, multi-Skill bundles, and hook/plugin-controlled Skill systems. Use this Skill to inspect the whole repo, interpret script-produced facts, choose the controlling instruction surface, and explain the evidence before transform or preflight.
+description: Use after target repo diagnosis when deciding where EvoZeus-CoEvolve self-evolution instructions should be placed. Applies to root SKILL.md repos, AGENTS.md runtime kits, multi-Skill bundles, and hook/plugin-controlled Skill systems. Use this Skill to inspect the whole repo, interpret script-produced facts, choose the controlling instruction surface, and explain the evidence before transform or preflight.
 ---
 
 # Evolution Surface Diagnosis
@@ -57,7 +57,7 @@ Do not scan every business Skill body when controller files already prove the co
    - If hooks/plugin manifests load a control Skill and that Skill governs session behavior, choose that `skills/<name>/SKILL.md`.
    - If multiple surfaces control different runtimes, choose the common upstream surface. If there is no common upstream surface, stop and ask the owner to choose the runtime boundary.
    - If no surface is proven, stop and ask the owner to identify the controlling instruction surface.
-4. Check whether the chosen surface already contains `EvoZeus-wrapper 状态检查`.
+4. Check whether the chosen surface already contains `EvoZeus-CoEvolve 状态检查`.
 5. State component impact: which missing concept should be added to the chosen surface.
 
 ## Evidence Rules
@@ -87,7 +87,7 @@ Use concise Chinese, with concrete file paths.
 - <candidate path>: <why it is not the controlling surface>
 
 缺失项更新：
-- <chosen path> EvoZeus-wrapper status check
+- <chosen path> EvoZeus-CoEvolve status check
 - <other relevant wrapper gaps>
 
 下一步命令：

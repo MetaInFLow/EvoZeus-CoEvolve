@@ -22,7 +22,7 @@ Wrapper harness migrations are recorded under `.evozeus-wrapper/docs/migrations/
 
 ### Skill changes
 
-- Initialized the EvoZeus-wrapper self-evolving dashboard.
+- Initialized the EvoZeus-CoEvolve self-evolving dashboard.
 
 ### Feedback / Issues
 

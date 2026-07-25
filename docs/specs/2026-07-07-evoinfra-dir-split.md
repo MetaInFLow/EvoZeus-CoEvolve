@@ -4,7 +4,7 @@
 
 ## Related Issue
 
-- Related issue: https://github.com/MetaInFLow/EvoZeus-wrapper/issues/6
+- Related issue: https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/6
 
 ## Problem
 

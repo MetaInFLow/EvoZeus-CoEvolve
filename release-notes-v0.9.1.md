@@ -1,15 +1,15 @@
-# EvoZeus-wrapper v0.9.1
+# EvoZeus-CoEvolve v0.9.1
 
 ## 概要
 
 本版本修复 v0.9.0 layout migration 的残缺成功状态，并让 GitHub Pages 从必需 workflow 变为显式 opt-in 的可选部署能力。
 
-关联 Issues：[#10](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/10)、[#11](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/11)。
+关联 Issues：[#10](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/10)、[#11](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/11)。
 
 ## Migration 修复
 
 - 在写入前解析并校验 `.codex/hooks.json`；非法 JSON 或不兼容结构会阻断迁移。
-- 保留 target 的其他 hooks，创建或刷新唯一的 EvoZeus-wrapper `SessionStart` registration。
+- 保留 target 的其他 hooks，创建或刷新唯一的 EvoZeus-CoEvolve `SessionStart` registration。
 - 同步刷新 hook adapter、status prelude、无自比较参数的升级命令，以及 manifest integration/hook facts。
 - 在 instruction surface 追加 migration note，同时保持 target 业务段不变。
 - 修正 dashboard contact link，并补全 onboarding 与 dashboard manifest contract。

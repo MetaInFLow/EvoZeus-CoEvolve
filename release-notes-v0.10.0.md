@@ -1,6 +1,6 @@
-# EvoZeus-wrapper v0.10.0
+# EvoZeus-CoEvolve v0.10.0
 
-本版本修复 [Issue #12](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/12)：target repo 内的 Codex project hook 不再被描述成“任意 workspace 中调用 Skill 时都会触发”的 native hook。
+本版本修复 [Issue #12](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/12)：target repo 内的 Codex project hook 不再被描述成“任意 workspace 中调用 Skill 时都会触发”的 native hook。
 
 ## 能力边界
 

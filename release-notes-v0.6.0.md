@@ -1,4 +1,4 @@
-# EvoZeus-wrapper v0.6.0
+# EvoZeus-CoEvolve v0.6.0
 
 ## Summary
 
@@ -12,7 +12,7 @@ Global state remains under `~/.evozeus`. Wrapped target repos now use `.evozeus_
 - Added legacy `.evozeus/wrapper.json` fallback and conflict detection.
 - Implemented `harness upgrade` writes for legacy directory migration.
 - Added `loop audit` for feedback capture decisions and Issue draft generation.
-- Routed wrapper feedback audit issues to `MetaInFLow/EvoZeus-wrapper`.
+- Routed wrapper feedback audit issues to `MetaInFLow/EvoZeus-CoEvolve`.
 - Hardened release gating: local changelog versions ahead of GitHub latest release now fail unless `--no-release-needed` is explicit.
 - Updated templates, docs, preflight, bootstrap, and tests.
 

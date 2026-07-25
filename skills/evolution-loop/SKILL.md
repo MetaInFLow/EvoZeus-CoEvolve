@@ -1,6 +1,6 @@
 ---
 name: evozeus-wrapper-evolution-loop
-description: Use for lesson intake and Issue-to-PR flow after a Skill has an EvoZeus-wrapper harness.
+description: Use for lesson intake and Issue-to-PR flow after a Skill has an EvoZeus-CoEvolve harness.
 ---
 
 # Evolution Loop

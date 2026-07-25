@@ -1,8 +1,10 @@
-# EvoZeus-wrapper
+# EvoZeus-CoEvolve
 
-EvoZeus-wrapper 是 EvoZeus 母体调度下的静态 Skill 演进 harness，用来给本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 构建最小自进化驾驶舱。
+EvoZeus-CoEvolve 是 EvoZeus 母体调度下的静态 Skill 演进 harness，用来给本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 构建最小自进化驾驶舱。
 
-用户入口是 EvoZeus，不是 EvoZeus-wrapper。只有当 EvoZeus 判断一个 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时，才路由到本 repo。
+Repository 与产品名已统一为 `EvoZeus-CoEvolve`。为保持已接入 Skill 的运行兼容，`.evozeus-wrapper/`、`evozeus_wrapper.py`、`EVOZEUS_WRAPPER_*` 与现有 Skill slug 继续作为稳定技术标识。
+
+用户入口是 EvoZeus，不是 EvoZeus-CoEvolve。只有当 EvoZeus 判断一个 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时，才路由到本 repo。
 
 本 repo 的 root `SKILL.md` 只做薄入口，不承载完整操作流程。实际使用协议放在 `skills/using-evozeus-wrapper/SKILL.md`，再由它按阶段调用 environment diagnosis、target diagnosis、evolution surface diagnosis、status assessment、transform、publish/reinstall、loop 和 harness upgrade Skills。
 
@@ -14,7 +16,7 @@ EvoZeus-wrapper 是 EvoZeus 母体调度下的静态 Skill 演进 harness，用�
 - 用户在创建时明确选择 `public` 或 `private`。
 - 创建前检查目标 GitHub repo 是否已经存在，避免重复 harness。
 - 本地只保留一个 physical canonical repo，`~/.evozeus/.projects/OWNER/REPO` 和 runtime 安装路径都指向它。
-- wrapper 先做 evolution surface assessment，再把 wrapper-owned 状态检查区放进真正控制 agent 行为的说明面：单 Skill 通常是 `SKILL.md`，runtime kit 通常是 `AGENTS.md`，hook/plugin 控制的系统可能是被 session hook 加载的控制 Skill，例如 `skills/<control-skill>/SKILL.md`。新增内容只说明状态检查、自进化方法和 `EvoZeus-wrapper` 路由，不改写业务规则。
+- wrapper 先做 evolution surface assessment，再把 wrapper-owned 状态检查区放进真正控制 agent 行为的说明面：单 Skill 通常是 `SKILL.md`，runtime kit 通常是 `AGENTS.md`，hook/plugin 控制的系统可能是被 session hook 加载的控制 Skill，例如 `skills/<control-skill>/SKILL.md`。新增内容只说明状态检查、自进化方法和 `EvoZeus-CoEvolve` 路由，不改写业务规则。
 - wrapper 产物统一归入 `.evozeus-wrapper/`，manifest 位于 `.evozeus-wrapper/wrapper.json`。
 - `.evozeus-wrapper/docs/onboarding.md` 和 manifest 的 `onboarding` 字段记录安装、调用、目标 Skill 初始化及子 Skill hook 接入契约。
 - `.evozeus-wrapper/CHANGELOG.md` 记录每次 Skill 迭代。
@@ -26,7 +28,7 @@ EvoZeus-wrapper 是 EvoZeus 母体调度下的静态 Skill 演进 harness，用�
 
 静态 Skill 不是一次写完的文档。真正有价值的 Skill 应该能在真实使用中持续吸收反馈，但每次进化都必须可追踪、可审查、可回滚。
 
-EvoZeus-wrapper 的最小闭环是：
+EvoZeus-CoEvolve 的最小闭环是：
 
 ```text
 environment diagnosis
@@ -63,8 +65,8 @@ python3 scripts/evozeus_wrapper.py hook global plan --json
 python3 scripts/evozeus_wrapper.py hook global install --approve --json
 python3 scripts/evozeus_wrapper.py hook global status --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/my-skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.10.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.10.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.11.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.0 --dry-run --json
 ```
 
 如果 `env diagnose` 返回 `next_action: install_evozeus`，先安装 / 初始化 EvoZeus，不进入目标 repo transform。如果没有给 `Visibility`，Agent 必须先问用户选择 `public` 还是 `private`。如果本地发现多个 repo clone 或多个 real-directory 安装副本，必须先让用户选择 canonical repo 或归档策略。

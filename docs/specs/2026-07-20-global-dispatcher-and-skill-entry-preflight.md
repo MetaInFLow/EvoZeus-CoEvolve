@@ -2,7 +2,7 @@
 
 ## Related Issue
 
-- [EvoZeus-wrapper #12](https://github.com/MetaInFLow/EvoZeus-wrapper/issues/12)
+- [EvoZeus-CoEvolve #12](https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/12)
 - 当前缺陷：target repo 内的 `.codex/hooks.json` 只在 canonical repo 作为活动项目时生效，却被 manifest 描述成已覆盖任意 consumer workspace 的 Skill 调用。
 - 目标：准确表达每种检查能力的作用域，并提供当前 Codex 能支持的最强组合方案。
 
@@ -108,7 +108,7 @@ dispatcher 以 `~/.evozeus/.projects/OWNER/REPO` 为 wrapped target 注册事实
 1. 只读取有效 project pointer。
 2. 只接纳含 `.evozeus-wrapper/wrapper.json` 的 canonical repo。
 3. 校验 manifest 的 `canonical_repo` 与 pointer owner/repo 一致。
-4. 聚合比较所有 target 的 `wrapper_version` 与 authoritative EvoZeus-wrapper latest release。
+4. 聚合比较所有 target 的 `wrapper_version` 与 authoritative EvoZeus-CoEvolve latest release。
 5. 不在 hook 输出中暴露 Skill 名称、本地路径、客户数据或 manifest 业务内容。
 
 ### 严格阻断

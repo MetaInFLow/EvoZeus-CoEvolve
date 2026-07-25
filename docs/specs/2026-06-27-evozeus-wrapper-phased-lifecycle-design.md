@@ -1,12 +1,12 @@
-# 对内-未审核-EvoZeus-wrapper 分阶段生命周期设计
+# 对内-未审核-EvoZeus-CoEvolve 分阶段生命周期设计
 
 ## 背景
 
-EvoZeus-wrapper 当前已经具备最小 wrapper harness 能力：为一个本地 Skill folder 注入 dashboard、Issue template、design doc template、CHANGELOG、preflight checker，并建立 release/version 检查。
+EvoZeus-CoEvolve 当前已经具备最小 wrapper harness 能力：为一个本地 Skill folder 注入 dashboard、Issue template、design doc template、CHANGELOG、preflight checker，并建立 release/version 检查。
 
 现有机制的不足不是单个检查缺失，而是运行过程没有把完整生命周期显式拆开。真实场景中，用户给出的目标 Skill 可能已经安装过、已经有 GitHub repo、已经部分接入 harness，甚至本地有多个 clone 和多个 runtime 安装副本。如果继续把这些判断塞进 bootstrap，会导致 source of truth 混乱。
 
-本设计把 EvoZeus-wrapper 收敛为五阶段生命周期：
+本设计把 EvoZeus-CoEvolve 收敛为五阶段生命周期：
 
 ```text
 环境诊断
@@ -258,7 +258,7 @@ skills/
 
 ```json
 {
-  "wrapper_repo": "MetaInFLow/EvoZeus-wrapper",
+  "wrapper_repo": "MetaInFLow/EvoZeus-CoEvolve",
   "wrapper_version": "v0.2.0",
   "applied_at": "2026-06-27",
   "canonical_repo": "MetaInFLow/resume-screening",
@@ -372,11 +372,11 @@ CHANGELOG.md latest local tag matches GitHub latest release
 | 版本 | 含义 | 发布方 |
 | --- | --- | --- |
 | Skill release | 目标 Skill 的行为版本 | 目标 Skill repo |
-| Wrapper harness version | 注入的 harness 模板、脚本和治理逻辑版本 | `MetaInFLow/EvoZeus-wrapper` |
+| Wrapper harness version | 注入的 harness 模板、脚本和治理逻辑版本 | `MetaInFLow/EvoZeus-CoEvolve` |
 
 检查时机：
 
-- 环境诊断时检查本地 EvoZeus-wrapper 是否有更新。
+- 环境诊断时检查本地 EvoZeus-CoEvolve 是否有更新。
 - 目标 Skill 诊断时读取 `.evozeus_evoinfra/wrapper.json`。
 - 运行 `version` 时同时提示 wrapper harness 是否落后。
 - Issue-to-PR 前，如果旧 wrapper 会影响检查逻辑，先走 harness upgrade。
@@ -396,7 +396,7 @@ CHANGELOG.md latest local tag matches GitHub latest release
 - 不触碰目标 Skill 业务规则。
 - 更新 `.evozeus_evoinfra/wrapper.json`。
 - 在 `CHANGELOG.md` 中记录 Harness changes。
-- PR 标题使用 `Upgrade EvoZeus-wrapper harness to vX.Y.Z`。
+- PR 标题使用 `Upgrade EvoZeus-CoEvolve harness to vX.Y.Z`。
 
 ## 交互策略
 

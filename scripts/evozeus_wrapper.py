@@ -41,7 +41,7 @@ def print_report(report: dict, as_json: bool, stage: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run staged EvoZeus-wrapper lifecycle commands.")
+    parser = argparse.ArgumentParser(description="Run staged EvoZeus-CoEvolve lifecycle commands.")
     sub = parser.add_subparsers(dest="group", required=True)
 
     env = sub.add_parser("env", help="Environment lifecycle commands.")
@@ -130,7 +130,7 @@ def main() -> int:
     harness_sub = harness.add_subparsers(dest="command", required=True)
     upgrade_check = harness_sub.add_parser("upgrade-check", help="Check target wrapper harness version.")
     upgrade_check.add_argument("--target", required=True)
-    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.10.1.")
+    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.11.0.")
     upgrade_check.add_argument("--managed-dirty", action="store_true")
     upgrade_check.add_argument("--json", action="store_true")
     upgrade = harness_sub.add_parser("upgrade", help="Plan wrapper harness upgrade.")
@@ -155,7 +155,7 @@ def main() -> int:
     upgrade_all.add_argument(
         "--wrapper-root",
         default=str(Path(__file__).resolve().parents[1]),
-        help="Canonical EvoZeus-wrapper source path.",
+        help="Canonical EvoZeus-CoEvolve source path.",
     )
     upgrade_all.add_argument("--dry-run", action="store_true")
     upgrade_all.add_argument("--approve", action="store_true")
@@ -209,9 +209,9 @@ def main() -> int:
         surface_planned_files = []
         if instruction_surface:
             surface_planned_files = [
-                f"{instruction_surface} EvoZeus-wrapper status check section",
+                f"{instruction_surface} EvoZeus-CoEvolve status check section",
                 f"{instruction_surface} self-evolution section",
-                f"{instruction_surface} EvoZeus-wrapper section",
+                f"{instruction_surface} EvoZeus-CoEvolve section",
             ]
         planned_files = REQUIRED_WRAPPER_FILES + surface_planned_files
         report = {

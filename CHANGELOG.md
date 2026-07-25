@@ -1,10 +1,25 @@
 # Changelog
 
-All notable changes to EvoZeus-wrapper are recorded here.
+All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
 - None yet.
+
+## [v0.11.0] - 2026-07-25
+
+### Changed
+
+- Renamed the product and canonical repository from `EvoZeus-wrapper` to `EvoZeus-CoEvolve`.
+- Updated user-facing status sections, generated documentation, release endpoints, and repository references to the new product name.
+- Preserved `.evozeus-wrapper/`, `evozeus_wrapper.py`, `EVOZEUS_WRAPPER_*`, and existing Skill slugs as stable compatibility identifiers for installed harnesses.
+- Added migration handling that upgrades legacy status headings without duplicating the status section or changing target-owned Skill content.
+- Bumped newly generated wrapper harnesses to `v0.11.0`.
+
+### Verification
+
+- `python3 -m pytest -q` (124 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py templates/global/evozeus_wrapper_dispatcher.py templates/target/.codex/hooks/evozeus_wrapper_start_check.py`
 
 ## [v0.10.1] - 2026-07-20
 
@@ -148,7 +163,7 @@ All notable changes to EvoZeus-wrapper are recorded here.
 - Kept global EvoZeus installation and project pointers under `~/.evozeus`.
 - Added legacy manifest fallback, conflict detection, migration execution, and JSON output fields for `target_infra_dir`, `legacy_infra_dir`, `manifest_path`, `legacy_manifest_detected`, and `migration_required`.
 - Added `loop audit` to produce feedback capture decisions and Skill Feedback Issue drafts.
-- Routed wrapper feedback audit issues to `MetaInFLow/EvoZeus-wrapper` instead of the target Skill repo.
+- Routed wrapper feedback audit issues to `MetaInFLow/EvoZeus-CoEvolve` instead of the target Skill repo.
 - Hardened `version` preflight so local changelog versions ahead of GitHub latest release fail unless `--no-release-needed` is explicit.
 - Added target templates for feedback policy and audit rule files.
 

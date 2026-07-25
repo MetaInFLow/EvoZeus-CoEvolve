@@ -6,7 +6,7 @@
 
 **Architecture:** `integration.mode` 只描述 Skill invocation enforcement；project hook、global dispatcher、Skill entry preflight 和未来 SkillInvoke 分别记录为 capabilities。全局配置生命周期放进独立模块，稳定 dispatcher 作为可复制的标准库 Python 脚本运行；批量升级先全量计划，再备份 wrapper-managed surface 后应用和回滚。
 
-**Tech Stack:** Python 3 标准库、`unittest`/`pytest`、Codex JSON hooks、现有 EvoZeus-wrapper lifecycle/preflight。
+**Tech Stack:** Python 3 标准库、`unittest`/`pytest`、Codex JSON hooks、现有 EvoZeus-CoEvolve lifecycle/preflight。
 
 ---
 
