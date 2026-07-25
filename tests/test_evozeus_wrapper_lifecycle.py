@@ -48,6 +48,7 @@ from scripts.evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_transform_action,
     repo_from_remote,
+    runtime_pointer_scope,
     skill_name_from_skill_md,
     stage_label,
     write_wrapper_manifest,
@@ -69,6 +70,7 @@ from scripts.evozeus_wrapper_preflight import (
     load_wrapper_manifest as load_preflight_manifest,
     referenced_runtime_files,
     root_entry_path as preflight_root_entry_path,
+    runtime_pointer_scope as preflight_runtime_pointer_scope,
 )
 
 
@@ -696,6 +698,23 @@ class LifecycleBasicsTest(unittest.TestCase):
                 (target / ".github/workflows/evozeus-wrapper-preflight.yml").read_text(encoding="utf-8"),
             )
             self.assertFalse(wrapper_manifest_status(target)["migration_required"])
+
+    def test_migrate_target_layout_seeds_policies_when_oldest_layout_lacks_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            legacy = target / ".evozeus_evoinfra"
+            (legacy / "feedback-policy.json").unlink()
+            (legacy / "audit-rule.md").unlink()
+            legacy.rename(target / ".evozeus")
+
+            report = migrate_target_layout(target, latest_version="v0.11.2")
+
+            self.assertTrue(report["writes"])
+            self.assertEqual(report["validation"]["structure"], "passed")
+            self.assertTrue((target / TARGET_FEEDBACK_POLICY).is_file())
+            self.assertTrue((target / ".evozeus-wrapper/policies/audit-rule.md").is_file())
 
     def test_migrate_layout_produces_complete_scoped_hook_harness(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1663,6 +1682,72 @@ class SourceContractTest(unittest.TestCase):
             self.assertEqual(report["projects_pointer"]["resolved_path"], str(target.resolve()))
             self.assertEqual(report["runtime_installs"][0]["source_contract"], "runtime_pointer_ok")
 
+    def test_source_contract_accepts_manifested_plugin_subskill_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = Path(tmp) / "canonical"
+            subskill = target / "skills" / "engineering-everything"
+            subskill.mkdir(parents=True)
+            (subskill / "SKILL.md").write_text(
+                '---\nname: "engineering-everything"\n---\n', encoding="utf-8"
+            )
+            install = home / ".codex" / "skills" / "engineering-everything"
+            install.parent.mkdir(parents=True)
+            install.symlink_to(subskill)
+            write_wrapper_manifest(
+                target,
+                build_wrapper_manifest(
+                    "MetaInFLow/engineering-everything",
+                    "v0.11.2",
+                    [".evozeus-wrapper/WRAPPER.md"],
+                    [str(install)],
+                    instruction_surface="skills/engineering-everything/SKILL.md",
+                ),
+            )
+            pointer = home / ".evozeus" / ".projects" / "MetaInFLow" / "engineering-everything"
+            pointer.parent.mkdir(parents=True)
+            pointer.symlink_to(target)
+
+            def runner(args, cwd=None):
+                if len(args) >= 4 and args[0] == "git" and args[3] == "rev-parse":
+                    return {"returncode": 0, "stdout": str(target) + "\n", "stderr": ""}
+                if len(args) >= 4 and args[0] == "git" and args[3] == "remote":
+                    return {
+                        "returncode": 0,
+                        "stdout": "https://github.com/MetaInFLow/engineering-everything.git\n",
+                        "stderr": "",
+                    }
+                return {"returncode": 1, "stdout": "", "stderr": ""}
+
+            report = diagnose_source_contract(
+                target=target,
+                requested_repo=None,
+                skill_name="engineering-everything",
+                home=home,
+                installs=[
+                    {
+                        "path": str(install),
+                        "kind": "symlink",
+                        "resolved_path": str(subskill.resolve()),
+                    }
+                ],
+                runner=runner,
+            )
+
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(
+                report["runtime_installs"][0]["source_contract"],
+                "runtime_subskill_pointer_ok",
+            )
+            self.assertEqual(
+                runtime_pointer_scope(target, str(subskill.resolve())),
+                "canonical_subskill",
+            )
+            self.assertEqual(
+                preflight_runtime_pointer_scope(target, str(subskill.resolve())),
+                "canonical_subskill",
+            )
+
     def test_source_contract_errors_when_project_pointer_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -2368,8 +2453,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
         return {"version": "v0.10.0", "source": "test", "error": None}
 
     @staticmethod
-    def latest_v0111():
-        return {"version": "v0.11.1", "source": "test", "error": None}
+    def latest_v0112():
+        return {"version": "v0.11.2", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -2595,9 +2680,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.11.1",
+                    "v0.11.2",
                     approve=True,
-                    latest_resolver=self.latest_v0111,
+                    latest_resolver=self.latest_v0112,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -2665,16 +2750,16 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.11.1",
+                "v0.11.2",
                 approve=True,
-                latest_resolver=self.latest_v0111,
+                latest_resolver=self.latest_v0112,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.11.1",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.11.2",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)

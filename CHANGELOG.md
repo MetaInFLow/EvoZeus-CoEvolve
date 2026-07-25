@@ -6,6 +6,20 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - None yet.
 
+## [v0.11.2] - 2026-07-25
+
+### Fixed
+
+- Accepted manifest-managed runtime symlinks that point to direct `skills/<name>/SKILL.md` entries inside a canonical plugin-first Skillware repository.
+- Used manifest `install_links` during diagnosis and doctor checks instead of assuming every Skillware package installs at the repository root.
+- Seeded missing feedback and audit policies during legacy layout migration so post-validation can complete without weakening the structure gate.
+
+### Verification
+
+- `python3 -m pytest -q` (126 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py`
+- Engineering Everything plugin-first feasibility target: structure gate passed after v1-to-v2 harness migration and policy recovery.
+
 ## [v0.11.1] - 2026-07-25
 
 ### Added
