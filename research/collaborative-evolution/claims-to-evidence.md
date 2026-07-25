@@ -12,11 +12,13 @@ Repository code and tests establish implementation and engineering behavior. The
 | C4 | Use evidence can be extracted with privacy-aware references. | Implemented in component | pinned `EvoZeus-session-signal-skill` revision | Method component description |
 | C5 | Frontier code and research sources produce falsifiable transfer hypotheses. | Planned | no public end-to-end adapter and hypothesis ledger yet | Architecture and future evaluation only |
 | C6 | Multi-source Collaborative Evolution improves held-out users or tasks. | Data gated | no completed baseline comparison or source ablation | Excluded from current Results |
-| C7 | A governed release and recovery case works end to end for a representative target. | Feasibility case pending | release/recovery substrate exists; public paper ledger pending | Required before empirical Results |
+| C7 | A governed release and recovery case works end to end for a representative target. | Completed feasibility case | `examples/engineering-everything/`: pinned manifest, event ledger, reproduction script, target release, and rollback evidence | Feasibility Evaluation; one-target scope only |
 
 ## Current code verification
 
-The frozen pre-paper baseline passed 123 CoEvolve lifecycle tests. The paper release must rerun the suite at the exact artifact revision and record the command, environment, exit code, and immutable commit.
+EvoZeus-CoEvolve `v0.11.3` passed 128 repository tests. The public case additionally reruns the pinned target's native gates, source-preservation comparison, fresh-client installation, idempotency check, and prior-release recovery rehearsal. Release metadata records the immutable GitHub revision and command outcomes.
+
+The completed C7 evidence establishes attachment and governed-lifecycle feasibility for one target. C5 and C6 remain planned or data gated; this case cannot be cited as evidence of collaborative improvement quality or superiority over self-evolution.
 
 ## Legacy identifiers
 

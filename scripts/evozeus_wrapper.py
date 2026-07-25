@@ -130,7 +130,7 @@ def main() -> int:
     harness_sub = harness.add_subparsers(dest="command", required=True)
     upgrade_check = harness_sub.add_parser("upgrade-check", help="Check target wrapper harness version.")
     upgrade_check.add_argument("--target", required=True)
-    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.11.2.")
+    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.11.3.")
     upgrade_check.add_argument("--managed-dirty", action="store_true")
     upgrade_check.add_argument("--json", action="store_true")
     upgrade = harness_sub.add_parser("upgrade", help="Plan wrapper harness upgrade.")

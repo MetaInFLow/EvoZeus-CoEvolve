@@ -1,0 +1,66 @@
+schema_version: 1
+case_id: engineering-everything-v0.13.0
+evaluated_at: 2026-07-25
+claim_scope: attachment_and_governed_lifecycle_feasibility
+target:
+  name: Engineering Everything
+  repository: https://github.com/HaodiFan/engineering-everything
+  visibility: public
+  license: UNLICENSED
+  project_specific: false
+  skillware: true
+  classification_reason: >-
+    A versioned plugin-first package of reusable natural-language behavioral
+    Skills with an independent repository, installation identity, runtime
+    entrypoints, routing contracts, scenarios, and validation gates.
+  architecture: plugin_first_skill_bundle
+  runtime_skill_count: 12
+  instruction_surface: skills/using-engineering-everything/SKILL.md
+revisions:
+  behavior_baseline_commit: abcd3bb26bb2c05236ac041d6cebf3af86a81357
+  rollback_release: v0.12.0
+  rollback_commit: ba7468a61f701cf8b8643503b8e7082885af5d22
+  evaluated_release: v0.13.0
+  evaluated_commit: 6997b61d100708603bf80711a3d7c1604dc097fe
+  attachment_harness_release: v0.11.2
+  evidence_artifact_release: v0.11.3
+attachment:
+  previous_harness_release: v0.3.0
+  layout_migration: scattered_v1_to_consolidated_v2
+  wrapper_directory: .evozeus-wrapper
+  target_business_rules_owned_by: target
+  native_per_skill_invocation_hook: false
+  recommended_entry_preflight: prompt_enforced
+observations:
+  baseline_native_tests: 9
+  post_attachment_native_tests: 10
+  normalized_skill_files_equal: 12
+  normalized_skill_files_total: 12
+  fresh_client_hosts:
+    - codex
+    - agents
+  fresh_client_symlinks: 24
+  fresh_client_copied_skill_entries: 0
+  existing_client_reinstall_idempotent: true
+  rollback_native_tests: 9
+governance:
+  issue: https://github.com/HaodiFan/engineering-everything/issues/17
+  migration_pr: https://github.com/HaodiFan/engineering-everything/pull/18
+  release_pr: https://github.com/HaodiFan/engineering-everything/pull/19
+  release: https://github.com/HaodiFan/engineering-everything/releases/tag/v0.13.0
+evidence_boundary:
+  included:
+    - public repository revisions and release URLs
+    - aggregate gate and test outcomes
+    - normalized file-preservation counts
+    - synthetic client installation counts
+  excluded:
+    - raw sessions
+    - real local home paths
+    - secrets and credentials
+    - customer or private feedback data
+limitations:
+  - one_target_feasibility_case
+  - no_collaborative_effectiveness_measurement
+  - no_frontier_code_or_research_adapter_evaluation
+  - no_native_per_skill_invocation_event

@@ -1,5 +1,5 @@
 schema_version: 1
-artifact_version: 0.1.0
+artifact_version: 0.2.0
 frozen_at: 2026-07-25
 paper:
   title: "EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware"
@@ -19,7 +19,7 @@ components:
     license: MIT
   - name: EvoZeus-CoEvolve
     repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
-    release: v0.11.2
+    release: v0.11.3
     role: paper artifact entry and attachment/lifecycle substrate
     visibility: public
     license: MIT
@@ -35,11 +35,21 @@ components:
     role: privacy-aware use-signal extraction and evidence references
     visibility: public
     license: pending
+cases:
+  - name: Engineering Everything
+    repository: https://github.com/HaodiFan/engineering-everything
+    release: v0.13.0
+    commit: 6997b61d100708603bf80711a3d7c1604dc097fe
+    behavior_baseline_commit: abcd3bb26bb2c05236ac041d6cebf3af86a81357
+    rollback_release: v0.12.0
+    role: first non-project-specific Skillware attachment and governed-lifecycle feasibility case
+    evidence: examples/engineering-everything/
 excluded_components:
   - name: EvoZeus-factor-lab
     reason: private at artifact freeze; it is not required for public reproduction
 evidence_state:
   attachment_lifecycle: implemented
+  first_target_feasibility: completed
   use_signal_extraction: implemented_in_component
   frontier_code_adapter: planned
   frontier_research_adapter: planned

@@ -19,6 +19,7 @@ The current release supports a system/protocol paper and a feasibility evaluatio
 
 - [`artifact-manifest.yaml`](artifact-manifest.yaml): immutable public component revisions and roles.
 - [`claims-to-evidence.md`](claims-to-evidence.md): implemented, partial, planned, and data-gated claim boundaries.
+- [`examples/engineering-everything/`](examples/engineering-everything/): first public attachment, preservation, release, and recovery feasibility case.
 - [`../../CITATION.cff`](../../CITATION.cff): single-author software and paper citation metadata.
 
 ## Current reproduction entry
@@ -27,6 +28,9 @@ At the pinned CoEvolve revision:
 
 ```bash
 python3 -m pytest -q
+bash research/collaborative-evolution/examples/engineering-everything/reproduce.sh
 ```
 
-This command verifies the current attachment/lifecycle implementation. It does not measure Collaborative Evolution effectiveness. A paper feasibility ledger and one-target end-to-end evolution case will be added before an empirical Results section is released.
+The test suite verifies the attachment/lifecycle implementation and the public evidence package. The case script clones pinned Engineering Everything revisions, reruns target-native and CoEvolve gates, compares all 12 normalized Skill instruction files, checks a 24-symlink fresh-client install and idempotent reinstall, and rehearses the prior release in an isolated worktree.
+
+The authenticated GitHub doctor, version, and release gates can also be rerun with `RUN_GITHUB_GATES=1`. These commands establish one-target feasibility. They do not measure Collaborative Evolution effectiveness or the value of user, frontier-code, or frontier-research signals.
