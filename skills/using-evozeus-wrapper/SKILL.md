@@ -230,12 +230,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.11.0 \
+  --latest-version v0.11.1 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.11.0 \
+  --latest-version v0.11.1 \
   --dry-run \
   --json
 ```
