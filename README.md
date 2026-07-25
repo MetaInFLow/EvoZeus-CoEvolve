@@ -1,10 +1,26 @@
 # EvoZeus-CoEvolve
 
-EvoZeus-CoEvolve 是 EvoZeus 母体调度下的静态 Skill 演进 harness，用来给本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 构建最小自进化驾驶舱。
+**An Add-On Harness for Collaborative Evolution of Existing Skillware**
+
+EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公开论文 artifact 入口。它为本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 加装可审查、可发布、可恢复的演进 harness，同时保留目标 Skillware 的核心任务逻辑和原开发方式。
+
+当前 `v0.11.0` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复等 lifecycle substrate。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文不会把这些待实现能力写成现有结果。
+
+## Research paper
+
+- **Title**: *EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware*
+- **Author**: Haodi Fan, MetaInFlow
+- **Email**: [anthonyfan@metainflow.cn](mailto:anthonyfan@metainflow.cn)
+- **Author GitHub**: [HaodiFan](https://github.com/HaodiFan)
+- **Artifact**: [MetaInFLow/EvoZeus-CoEvolve](https://github.com/MetaInFLow/EvoZeus-CoEvolve)
+- **Skillware foundation**: [arXiv:2607.18970](https://arxiv.org/abs/2607.18970)
+- **Artifact manifest and claim boundary**: [`research/collaborative-evolution/`](research/collaborative-evolution/)
+
+Collaborative Evolution 在本文中指：一个具有共享身份的 Skillware Unit，从其用户群体和指定外部来源获得演进信号，将信号转换为可独立验证的候选变更，并把通过治理的版本重新分发给兼容用户。贡献证据的用户与受益用户可以分离。
 
 Repository 与产品名已统一为 `EvoZeus-CoEvolve`。为保持已接入 Skill 的运行兼容，`.evozeus-wrapper/`、`evozeus_wrapper.py`、`EVOZEUS_WRAPPER_*` 与现有 Skill slug 继续作为稳定技术标识。
 
-用户入口是 EvoZeus，不是 EvoZeus-CoEvolve。只有当 EvoZeus 判断一个 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时，才路由到本 repo。
+用户入口由 EvoZeus 提供。当 EvoZeus 判断一个 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时，会路由到 EvoZeus-CoEvolve。
 
 本 repo 的 root `SKILL.md` 只做薄入口，不承载完整操作流程。实际使用协议放在 `skills/using-evozeus-wrapper/SKILL.md`，再由它按阶段调用 environment diagnosis、target diagnosis、evolution surface diagnosis、status assessment、transform、publish/reinstall、loop 和 harness upgrade Skills。
 
@@ -26,7 +42,7 @@ Repository 与产品名已统一为 `EvoZeus-CoEvolve`。为保持已接入 Skil
 
 ## 第一性原理
 
-静态 Skill 不是一次写完的文档。真正有价值的 Skill 应该能在真实使用中持续吸收反馈，但每次进化都必须可追踪、可审查、可回滚。
+静态 Skill 会在真实使用中持续暴露新需求、环境差异和可迁移改进。EvoZeus-CoEvolve 为这些演进信号提供可追踪、可审查、可回滚的治理路径，并使通过验证的共享版本能够服务后续兼容用户。
 
 EvoZeus-CoEvolve 的最小闭环是：
 

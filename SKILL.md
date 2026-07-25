@@ -1,17 +1,17 @@
 ---
 name: evozeus-wrapper
-description: Use when EvoZeus routes a promoted or existing local SKILL.md folder, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle into a GitHub-backed self-evolving dashboard with Pages, feedback Issues, design docs, changelog, and preflight checks.
+description: Use when EvoZeus routes an existing SKILL.md folder, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle into the EvoZeus-CoEvolve attachment and lifecycle harness.
 ---
 
-# EvoZeus Wrapper
+# EvoZeus-CoEvolve
 
-This root Skill is only the wrapper entrypoint. It must stay thin.
+This root Skill is only the wrapper entrypoint. It keeps the stable `evozeus-wrapper` compatibility slug and serves as the thin EvoZeus-CoEvolve attachment entrypoint.
 
 When this Skill applies, immediately use `skills/using-evozeus-wrapper/SKILL.md` for the operating workflow. Do not duplicate lifecycle details here.
 
 ## Role
 
-EvoZeus-CoEvolve is a component capability under EvoZeus, not a parallel user entrypoint. It wraps an existing local Skill folder, `AGENTS.md` runtime kit, or hook/plugin-controlled Skill bundle into a GitHub-backed self-evolution harness.
+EvoZeus-CoEvolve is the paper-system and artifact entry under EvoZeus. This repository directly wraps an existing local Skill folder, `AGENTS.md` runtime kit, or hook/plugin-controlled Skill bundle with the attachment and governed lifecycle substrate used by the larger Collaborative Evolution design.
 
 The wrapper exists to add:
 
@@ -23,7 +23,7 @@ The wrapper exists to add:
 - preflight checks
 - wrapper harness migration records
 
-It must not rewrite target business rules or become a runtime, scanner, or prompt management platform.
+It must not rewrite target business rules or absorb the evolution runtime, scanner, or prompt management platform.
 
 ## Required Flow
 

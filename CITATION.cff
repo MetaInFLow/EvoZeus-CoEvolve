@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: If you use EvoZeus-CoEvolve, please cite this software and the associated paper.
+title: "EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware"
+type: software
+authors:
+  - family-names: Fan
+    given-names: Haodi
+    email: anthonyfan@metainflow.cn
+    affiliation: MetaInFlow
+version: 0.11.0
+date-released: 2026-07-25
+repository-code: https://github.com/MetaInFLow/EvoZeus-CoEvolve
+url: https://github.com/MetaInFLow/EvoZeus-CoEvolve
+license: MIT
+keywords:
+  - Skillware
+  - Collaborative Evolution
+  - Evolution Harness
+  - AI Agents
+preferred-citation:
+  type: article
+  title: "EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware"
+  authors:
+    - family-names: Fan
+      given-names: Haodi
+      email: anthonyfan@metainflow.cn
+      affiliation: MetaInFlow
+  year: 2026
+  url: https://github.com/MetaInFLow/EvoZeus-CoEvolve

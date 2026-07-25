@@ -1,0 +1,49 @@
+schema_version: 1
+artifact_version: 0.1.0
+frozen_at: 2026-07-25
+paper:
+  title: "EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware"
+  author:
+    name: Haodi Fan
+    affiliation: MetaInFlow
+    email: anthonyfan@metainflow.cn
+    github: https://github.com/HaodiFan
+  artifact_repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
+  foundational_skillware_paper: https://arxiv.org/abs/2607.18970
+components:
+  - name: EvoZeus
+    repository: https://github.com/MetaInFLow/EvoZeus
+    commit: a88913ac8d83e00f9153427d4a0e783dce919d58
+    role: top-level judgment, routing, protocol, and governance
+    visibility: public
+    license: MIT
+  - name: EvoZeus-CoEvolve
+    repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
+    commit: 0c00aab1ccfcf505759d982812a8301e3a99aca1
+    release: v0.11.0
+    role: paper artifact entry and attachment/lifecycle substrate
+    visibility: public
+    license: MIT
+  - name: EvoZeus-infra
+    repository: https://github.com/MetaInFLow/EvoZeus-infra
+    commit: 655d3cc758466ef2b0c3a3659b22326ef9cbb39a
+    role: local execution, reports, and evolution runtime surfaces
+    visibility: public
+    license: pending
+  - name: EvoZeus-session-signal-skill
+    repository: https://github.com/MetaInFLow/EvoZeus-session-signal-skill
+    commit: 7a79eb016d4509174c9ffd99ae32a48bc5c17158
+    role: privacy-aware use-signal extraction and evidence references
+    visibility: public
+    license: pending
+excluded_components:
+  - name: EvoZeus-factor-lab
+    reason: private at artifact freeze; it is not required for public reproduction
+evidence_state:
+  attachment_lifecycle: implemented
+  use_signal_extraction: implemented_in_component
+  frontier_code_adapter: planned
+  frontier_research_adapter: planned
+  transfer_hypothesis_engine: planned
+  independent_behavioral_gates: planned
+  multi_source_effectiveness_results: data_gated
