@@ -6,6 +6,27 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - None yet.
 
+## [v0.11.1] - 2026-07-25
+
+### Added
+
+- Added `CITATION.cff` with the paper title and single-author metadata for Haodi Fan.
+- Added `research/collaborative-evolution/` as the canonical public paper artifact entry.
+- Added immutable public component revisions and an explicit claims-to-evidence map.
+
+### Changed
+
+- Positioned EvoZeus-CoEvolve as the modular paper-system entry while keeping the implemented attachment/lifecycle boundary explicit.
+- Linked the Skillware foundation paper, author GitHub profile, and public artifact from the README.
+- Preserved all existing `.evozeus-wrapper/`, Python module, environment variable, and installed Skill compatibility identifiers.
+
+### Verification
+
+- `python3 -m pytest -q` (124 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py`
+- Parsed `CITATION.cff` and `research/collaborative-evolution/artifact-manifest.yaml` successfully as YAML.
+- Verified every pinned public component commit through the GitHub API.
+
 ## [v0.11.0] - 2026-07-25
 
 ### Changed

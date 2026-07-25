@@ -11,10 +11,10 @@ Use this stage to keep target Skill infrastructure aligned with `MetaInFLow/EvoZ
 
 ```bash
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.0 --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.11.1 --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.1 --approve --json
 ```
 
 ## Rules

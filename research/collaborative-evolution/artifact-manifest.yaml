@@ -19,8 +19,7 @@ components:
     license: MIT
   - name: EvoZeus-CoEvolve
     repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
-    commit: fc7c8226d2599f3ce27a1d0b4892c207e61c5df2
-    base_release: v0.11.0
+    release: v0.11.1
     role: paper artifact entry and attachment/lifecycle substrate
     visibility: public
     license: MIT
