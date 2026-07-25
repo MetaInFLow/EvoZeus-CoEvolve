@@ -74,11 +74,11 @@ DESIGN_TERMS = [
 ]
 
 SKILL_EVOLUTION_TERMS = [
-    ["EvoZeus-wrapper 状态检查"],
+    ["EvoZeus-CoEvolve 状态检查", "EvoZeus-wrapper 状态检查"],
     ["当前记录版本", "当前 Skill 版本", "Skill release"],
     ["解决顺序", "处理顺序", "解决方法"],
     ["自进化"],
-    ["EvoZeus-wrapper"],
+    ["EvoZeus-CoEvolve", "EvoZeus-wrapper"],
     [TARGET_WRAPPER_MANIFEST],
     ["runtime-only install"],
     ["source discovery", "源头发现", "source of truth", "事实源"],
@@ -117,10 +117,16 @@ PLUGIN_MANIFEST_CANDIDATES = [
     "package.json",
 ]
 WRAPPER_RUNTIME_SECTION_HEADINGS = {
+    "## EvoZeus-CoEvolve 状态检查",
     "## EvoZeus-wrapper 状态检查",
     "## 自进化方法",
+    "## EvoZeus-CoEvolve",
     "## EvoZeus-wrapper",
 }
+STATUS_PRELUDE_HEADINGS = (
+    "## EvoZeus-CoEvolve 状态检查",
+    "## EvoZeus-wrapper 状态检查",
+)
 BLOCKING_STATUS_PHRASES = [
     "Continue to the target Skill's main flow only after all three are OK.",
     "全部 OK 后",
@@ -306,15 +312,13 @@ def check_integration_contract(target: Path, manifest: dict | None) -> None:
             fail("skill_entry_preflight instruction_surface is missing")
         content = content_after_frontmatter(surface.read_text(encoding="utf-8")).lstrip()
         lines = content.splitlines()
-        if content.startswith("## EvoZeus-wrapper 状态检查"):
+        if content.startswith(STATUS_PRELUDE_HEADINGS):
             has_status_prelude = True
         else:
             has_status_prelude = bool(
                 lines
                 and lines[0].startswith("# ")
-                and "\n".join(lines[1:]).lstrip().startswith(
-                    "## EvoZeus-wrapper 状态检查"
-                )
+                and "\n".join(lines[1:]).lstrip().startswith(STATUS_PRELUDE_HEADINGS)
             )
         if not has_status_prelude:
             fail("skill_entry_preflight installation requires the status prelude")
@@ -526,8 +530,8 @@ def content_after_frontmatter(text: str) -> str:
 
 def check_status_prelude(skill_text: str, label: str = "SKILL.md") -> None:
     content = content_after_frontmatter(skill_text).lstrip()
-    if not content.startswith("## EvoZeus-wrapper 状态检查"):
-        fail(f"{label} must start with the EvoZeus-wrapper status check after frontmatter")
+    if not content.startswith(STATUS_PRELUDE_HEADINGS):
+        fail(f"{label} must start with the EvoZeus-CoEvolve status check after frontmatter")
     check_runtime_safe_status_prelude(skill_text, label)
 
 
@@ -568,16 +572,16 @@ def root_entry_path(target: Path) -> Path:
 
 def check_agents_status_prelude(agents_text: str) -> None:
     content = content_after_frontmatter(agents_text).lstrip()
-    if content.startswith("## EvoZeus-wrapper 状态检查"):
+    if content.startswith(STATUS_PRELUDE_HEADINGS):
         check_runtime_safe_status_prelude(agents_text, "AGENTS.md")
         return
     lines = content.splitlines()
     if lines and lines[0].startswith("# "):
         rest = "\n".join(lines[1:]).lstrip()
-        if rest.startswith("## EvoZeus-wrapper 状态检查"):
+        if rest.startswith(STATUS_PRELUDE_HEADINGS):
             check_runtime_safe_status_prelude(agents_text, "AGENTS.md")
             return
-    fail("AGENTS.md must put the EvoZeus-wrapper status check before the main runtime instructions")
+    fail("AGENTS.md must put the EvoZeus-CoEvolve status check before the main runtime instructions")
 
 
 def normalize_relative_path(raw: str) -> str:
@@ -672,7 +676,7 @@ def discover_runtime_bundle(target: Path) -> dict:
 
 
 def check_runtime_safe_status_prelude(text: str, label: str) -> None:
-    if "EvoZeus-wrapper 状态检查" not in text:
+    if not any(heading.removeprefix("## ") in text for heading in STATUS_PRELUDE_HEADINGS):
         return
     if "runtime-only install" not in text:
         fail(f"{label} wrapper status prelude must include runtime-only install fallback language")
@@ -989,7 +993,7 @@ def check_version(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Preflight checks for an EvoZeus-wrapper Skill repo.")
+    parser = argparse.ArgumentParser(description="Preflight checks for an EvoZeus-CoEvolve Skill repo.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     doctor = sub.add_parser("doctor", help="Check local git/gh dependencies and source repo access.")

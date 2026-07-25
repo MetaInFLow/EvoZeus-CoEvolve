@@ -1,8 +1,8 @@
-# EvoZeus-wrapper Phased Lifecycle Implementation Plan
+# EvoZeus-CoEvolve Phased Lifecycle Implementation Plan
 
 > **For agentic workers:** Use the repo's development execution Skill or plan-execution process to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the phased EvoZeus-wrapper lifecycle from diagnosis through transform, reinstall, evolution loop scaffolding, and harness upgrade checks.
+**Goal:** Implement the phased EvoZeus-CoEvolve lifecycle from diagnosis through transform, reinstall, evolution loop scaffolding, and harness upgrade checks.
 
 **Architecture:** Add a small lifecycle library for deterministic, testable filesystem/GitHub diagnostics, then expose it through a staged `scripts/evozeus_wrapper.py` CLI. Keep the existing `evozeus_wrapper_preflight.py` and `evozeus_wrapper_bootstrap.py` as compatibility surfaces while the new CLI coordinates phases and emits JSON reports.
 
@@ -47,7 +47,7 @@ from scripts.evozeus_wrapper_lifecycle import (
 class LifecycleBasicsTest(unittest.TestCase):
     def test_repo_from_remote_supports_https_and_ssh(self):
         self.assertEqual(repo_from_remote("https://github.com/MetaInFLow/EvoZeus.git"), "MetaInFLow/EvoZeus")
-        self.assertEqual(repo_from_remote("git@github.com:MetaInFLow/EvoZeus-wrapper.git"), "MetaInFLow/EvoZeus-wrapper")
+        self.assertEqual(repo_from_remote("git@github.com:MetaInFLow/EvoZeus-CoEvolve.git"), "MetaInFLow/EvoZeus-CoEvolve")
         self.assertIsNone(repo_from_remote("https://example.com/MetaInFLow/EvoZeus.git"))
 
     def test_stage_label_uses_five_stage_contract(self):
@@ -246,7 +246,7 @@ def print_report(report: dict, as_json: bool) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run staged EvoZeus-wrapper lifecycle commands.")
+    parser = argparse.ArgumentParser(description="Run staged EvoZeus-CoEvolve lifecycle commands.")
     sub = parser.add_subparsers(dest="group", required=True)
     env = sub.add_parser("env")
     env_sub = env.add_subparsers(dest="command", required=True)
@@ -392,7 +392,7 @@ def load_wrapper_manifest(target: Path) -> dict | None:
 
 def build_wrapper_manifest(repo: str, wrapper_version: str, managed_files: list[str], install_links: list[str]) -> dict:
     return {
-        "wrapper_repo": "MetaInFLow/EvoZeus-wrapper",
+        "wrapper_repo": "MetaInFLow/EvoZeus-CoEvolve",
         "wrapper_version": wrapper_version,
         "applied_at": date.today().isoformat(),
         "canonical_repo": repo,
@@ -672,7 +672,7 @@ Expected: every command exits 0 and emits JSON or clear dry-run output.
 - [ ] **Step 3: Run existing preflight checks**
 
 ```bash
-python3 scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/EvoZeus-wrapper
+python3 scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/EvoZeus-CoEvolve
 python3 scripts/evozeus_wrapper_preflight.py release --target /tmp/nonexistent --tag v0.1.0 --skip-gh || true
 ```
 

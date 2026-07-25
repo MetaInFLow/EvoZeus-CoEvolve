@@ -11,7 +11,7 @@ When this Skill applies, immediately use `skills/using-evozeus-wrapper/SKILL.md`
 
 ## Role
 
-EvoZeus-wrapper is a component capability under EvoZeus, not a parallel user entrypoint. It wraps an existing local Skill folder, `AGENTS.md` runtime kit, or hook/plugin-controlled Skill bundle into a GitHub-backed self-evolution harness.
+EvoZeus-CoEvolve is a component capability under EvoZeus, not a parallel user entrypoint. It wraps an existing local Skill folder, `AGENTS.md` runtime kit, or hook/plugin-controlled Skill bundle into a GitHub-backed self-evolution harness.
 
 The wrapper exists to add:
 

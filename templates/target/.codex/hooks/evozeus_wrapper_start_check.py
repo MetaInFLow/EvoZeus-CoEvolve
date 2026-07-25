@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 MANIFEST_PATH = ".evozeus-wrapper/wrapper.json"
 LATEST_VERSION_ENV = "EVOZEUS_WRAPPER_LATEST_VERSION"
 ENFORCEMENT_ENV = "EVOZEUS_WRAPPER_HOOK_ENFORCEMENT"
-LATEST_RELEASE_URL = "https://api.github.com/repos/MetaInFLow/EvoZeus-wrapper/releases/latest"
+LATEST_RELEASE_URL = "https://api.github.com/repos/MetaInFLow/EvoZeus-CoEvolve/releases/latest"
 GLOBAL_CACHE_PATH = ".evozeus/cache/evozeus-wrapper-latest.json"
 GLOBAL_CACHE_TTL_SECONDS = 3600
 
@@ -65,7 +65,7 @@ def fetch_latest_release() -> dict[str, str | None]:
         LATEST_RELEASE_URL,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "EvoZeus-wrapper-hook",
+            "User-Agent": "EvoZeus-CoEvolve-hook",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
@@ -150,7 +150,7 @@ def block(reason: str, next_action: str) -> int:
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": (
-                    "EvoZeus-wrapper capability=repo_maintenance_hook; "
+                    "EvoZeus-CoEvolve capability=repo_maintenance_hook; "
                     f"scope=canonical_repository; blocked start; next_action={next_action}"
                 ),
             },
@@ -166,7 +166,7 @@ def allow(level: str, message: str, next_action: str) -> int:
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": (
-                    "EvoZeus-wrapper capability=repo_maintenance_hook; "
+                    "EvoZeus-CoEvolve capability=repo_maintenance_hook; "
                     f"scope=canonical_repository; hook_start_check level={level}; "
                     f"next_action={next_action}; {message}"
                 ),

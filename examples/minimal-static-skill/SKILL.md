@@ -1,11 +1,11 @@
 ---
 name: minimal-static-skill
-description: Minimal example Skill used to demonstrate the EvoZeus-wrapper case/run/proposal loop.
+description: Minimal example Skill used to demonstrate the EvoZeus-CoEvolve case/run/proposal loop.
 ---
 
 # Minimal Static Skill
 
-Use this example when demonstrating how EvoZeus-wrapper records a static Skill run.
+Use this example when demonstrating how EvoZeus-CoEvolve records a static Skill run.
 
 ## Behavior
 

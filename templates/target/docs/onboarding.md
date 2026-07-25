@@ -4,14 +4,14 @@
 
 ## 安装
 
-1. 在 EvoZeus-wrapper repo 中运行 `onboarding.installation.command`，把 runtime install 建成指向 canonical repo 的 symlink。
+1. 在 EvoZeus-CoEvolve repo 中运行 `onboarding.installation.command`，把 runtime install 建成指向 canonical repo 的 symlink。
 2. 真实目录不会被删除。先用 `--dry-run` 查看计划；确认归档后显式增加 `--approve-archive`。原目录归档到 `~/.evozeus/archives/runtime-installs/`。
 3. 运行 `onboarding.installation.verification`，确认 runtime pointer 和 canonical repo 一致。
 4. runtime Skill 安装与全局 hook 安装是两个状态；软链接成功不代表 `global_session_dispatcher` 已安装或已信任。
 
 ## 全局 Dispatcher
 
-- 在 EvoZeus-wrapper repo 先运行 `python3 scripts/evozeus_wrapper.py hook global plan --json`。
+- 在 EvoZeus-CoEvolve repo 先运行 `python3 scripts/evozeus_wrapper.py hook global plan --json`。
 - 用户明确确认后运行 `hook global install --approve --json`，结构化合并 `~/.codex/hooks.json`。
 - 安装后通过 `/hooks` 审核，再用 `hook global trust --status trusted --approve --json` 记录审核结果。
 - global dispatcher 在 `SessionStart` 聚合检查全部 registered wrapped Skills，不精确绑定随后被选中的某个 Skill。
@@ -32,7 +32,7 @@
 ## 生成的子 Skill
 
 - 子 Skill 不继承父级 `.codex/hooks.json`，契约固定为 `hooks_inherited: false`。
-- 每个子 Skill 必须单独运行 EvoZeus-wrapper lifecycle，生成自己的 manifest、hook 配置和验证材料。
+- 每个子 Skill 必须单独运行 EvoZeus-CoEvolve lifecycle，生成自己的 manifest、hook 配置和验证材料。
 - 在 Codex 中通过 `/hooks` 审核并信任新建或变更的 hook。
 - 完成条件包括子 Skill structure preflight 和 consumer-project smoke test；只有文件生成成功不算完成。
 

@@ -113,14 +113,16 @@ LEGACY_LAYOUT_TREE_MAP = (
     ("docs/wrapper-migrations", f"{TARGET_EVOINFRA_DIR}/docs/migrations"),
 )
 
-WRAPPER_REPO = "MetaInFLow/EvoZeus-wrapper"
+WRAPPER_REPO = "MetaInFLow/EvoZeus-CoEvolve"
 INITIAL_SKILL_VERSION = "v0.1.0"
 VERSION_HEADER_RE = re.compile(r"^##\s+\[?(v\d+\.\d+\.\d+)\]?\b", re.MULTILINE)
-SKILL_STATUS_SECTION = "SKILL.md EvoZeus-wrapper status check section (front matter prelude)"
-SKILL_WRAPPER_SECTION = "SKILL.md EvoZeus-wrapper section or migration note (append only)"
-STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
+SKILL_STATUS_SECTION = "SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)"
+SKILL_WRAPPER_SECTION = "SKILL.md EvoZeus-CoEvolve section or migration note (append only)"
+STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
+LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
-WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
+WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
+LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 WRAPPER_MIGRATION_README = TARGET_MIGRATIONS_README
 CONTROL_SKILL_NAME_TOKENS = (
     "bootstrap",
@@ -875,11 +877,13 @@ def surface_has_status_check(path: Path) -> bool:
         if end != -1:
             text = text[end + len("\n---\n") :]
     stripped = text.lstrip()
-    if stripped.startswith("## EvoZeus-wrapper 状态检查"):
+    if stripped.startswith((STATUS_SECTION_HEADING, LEGACY_STATUS_SECTION_HEADING)):
         return True
     lines = stripped.splitlines()
     if lines and lines[0].startswith("# "):
-        return "\n".join(lines[1:]).lstrip().startswith("## EvoZeus-wrapper 状态检查")
+        return "\n".join(lines[1:]).lstrip().startswith(
+            (STATUS_SECTION_HEADING, LEGACY_STATUS_SECTION_HEADING)
+        )
     return False
 
 
@@ -966,7 +970,7 @@ def assess_component_gaps(target: Path, evolution_surface: dict[str, Any]) -> di
     if not selected:
         missing_concepts.append("evolution surface diagnosis result")
     elif not selected.get("has_wrapper_status_check"):
-        missing_concepts.append(f"{selected['path']} EvoZeus-wrapper status check")
+        missing_concepts.append(f"{selected['path']} EvoZeus-CoEvolve status check")
     if not (target / TARGET_CHANGELOG).exists():
         missing_concepts.append("Skill or kit release changelog")
     if not wrapper_manifest_path(target).exists():
@@ -1280,7 +1284,7 @@ def diagnose_source_contract(
     manifest_state = wrapper_manifest_status(target)
     if manifest_state["migration_required"]:
         errors.append(
-            "legacy wrapper layout detected; run EvoZeus-wrapper harness upgrade before managed execution"
+            "legacy wrapper layout detected; run EvoZeus-CoEvolve harness upgrade before managed execution"
         )
     manifest_repo = manifest.get("canonical_repo")
     if not manifest_repo:
@@ -1444,7 +1448,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 2. Wrapper harness 状态
    - 当前 wrapper 版本：`{replacements["WRAPPER_VERSION"]}`
    - 事实源：`{TARGET_WRAPPER_MANIFEST}`
-   - 检查命令：在 EvoZeus-wrapper repo 运行 `python3 scripts/evozeus_wrapper.py harness upgrade-check --target <this-skill-repo> --json`
+   - 检查命令：在 EvoZeus-CoEvolve repo 运行 `python3 scripts/evozeus_wrapper.py harness upgrade-check --target <this-skill-repo> --json`
    - 如果 wrapper 落后：先运行 `harness upgrade --dry-run` 生成迁移方案，再按状态检查前置、其他 wrapper 内容 append-only 的规则迁移。
 3. Source contract 状态
    - 检查命令：`python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`
@@ -1999,8 +2003,19 @@ def _refresh_migration_instruction_surface(
             "WRAPPER_VERSION": latest_wrapper_version,
         }
     )
-    updated = _replace_markdown_section(original, STATUS_SECTION_HEADING, status)
-    for owned_heading in (EVOLUTION_SECTION_HEADING, WRAPPER_SECTION_HEADING):
+    status_heading = (
+        STATUS_SECTION_HEADING
+        if _markdown_section_span(original, STATUS_SECTION_HEADING)
+        else LEGACY_STATUS_SECTION_HEADING
+        if _markdown_section_span(original, LEGACY_STATUS_SECTION_HEADING)
+        else STATUS_SECTION_HEADING
+    )
+    updated = _replace_markdown_section(original, status_heading, status)
+    for owned_heading in (
+        EVOLUTION_SECTION_HEADING,
+        WRAPPER_SECTION_HEADING,
+        LEGACY_WRAPPER_SECTION_HEADING,
+    ):
         updated = _refresh_owned_markdown_section(
             updated,
             owned_heading,
@@ -2008,7 +2023,7 @@ def _refresh_migration_instruction_surface(
         )
     note_kind = "Migration" if layout_migration_required else "Version Refresh"
     migration_heading = (
-        f"## EvoZeus-wrapper {note_kind} Note: "
+        f"## EvoZeus-CoEvolve {note_kind} Note: "
         f"{current_wrapper_version or 'unknown'} -> {latest_wrapper_version}"
     )
     if not _markdown_section_span(updated, migration_heading):
@@ -2452,9 +2467,9 @@ def migrate_target_layout(
         "\n".join(
             [
                 (
-                    "# EvoZeus-wrapper 布局迁移：v1 -> v2"
+                    "# EvoZeus-CoEvolve 布局迁移：v1 -> v2"
                     if plan["layout_migration_required"]
-                    else f"# EvoZeus-wrapper Harness Refresh：{plan['current_version']} -> {plan['latest_version']}"
+                    else f"# EvoZeus-CoEvolve Harness Refresh：{plan['current_version']} -> {plan['latest_version']}"
                 ),
                 "",
                 f"- 日期：{(today or date.today()).isoformat()}",
@@ -2809,8 +2824,8 @@ def plan_harness_upgrade(
         root_status_section = SKILL_STATUS_SECTION
         root_wrapper_section = SKILL_WRAPPER_SECTION
     else:
-        root_status_section = f"{instruction_surface} EvoZeus-wrapper status check section (instruction surface prelude)"
-        root_wrapper_section = f"{instruction_surface} EvoZeus-wrapper section or migration note (append only)"
+        root_status_section = f"{instruction_surface} EvoZeus-CoEvolve status check section (instruction surface prelude)"
+        root_wrapper_section = f"{instruction_surface} EvoZeus-CoEvolve section or migration note (append only)"
     current = manifest.get("wrapper_version") if manifest else None
     latest_resolution = resolve_latest_wrapper_release(latest_version)
     latest = latest_resolution["version"]
@@ -2902,7 +2917,7 @@ def plan_harness_upgrade(
         "append_only": True,
         "evolution_surface_policy": (
             f"add or refresh the wrapper-owned status prelude in {instruction_surface} before the main chain, then append "
-            "the EvoZeus-wrapper section or a migration note; never rewrite target business rules"
+            "the EvoZeus-CoEvolve section or a migration note; never rewrite target business rules"
         ),
         "integration": integration,
         "integration_policy": (
@@ -2927,8 +2942,8 @@ def plan_harness_upgrade(
             f"If {LEGACY_TARGET_WRAPPER_MANIFEST} or {OLDEST_TARGET_WRAPPER_MANIFEST} exists, run the one-time layout migration.",
             "Diff wrapper-managed files; if they contain local edits, stop for merge review.",
             "Copy or merge wrapper-managed files only.",
-            f"Add the EvoZeus-wrapper status check in {instruction_surface} before the target main chain if missing.",
-            f"Append the EvoZeus-wrapper section in {instruction_surface} if missing; otherwise append a migration note instead of editing old text.",
+            f"Add the EvoZeus-CoEvolve status check in {instruction_surface} before the target main chain if missing.",
+            f"Append the EvoZeus-CoEvolve section in {instruction_surface} if missing; otherwise append a migration note instead of editing old text.",
             f"Write a migration record under {TARGET_EVOINFRA_DIR}/docs/migrations/ with from/to wrapper versions, validation, and rollback.",
             f"Update {TARGET_WRAPPER_MANIFEST} wrapper_version after validation passes.",
         ],

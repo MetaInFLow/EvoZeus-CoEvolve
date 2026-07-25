@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 
 LATEST_VERSION_ENV = "EVOZEUS_WRAPPER_LATEST_VERSION"
-LATEST_RELEASE_URL = "https://api.github.com/repos/MetaInFLow/EvoZeus-wrapper/releases/latest"
+LATEST_RELEASE_URL = "https://api.github.com/repos/MetaInFLow/EvoZeus-CoEvolve/releases/latest"
 PROJECTS_DIR = Path(".evozeus/.projects")
 CACHE_PATH = Path(".evozeus/cache/evozeus-wrapper-latest.json")
 CACHE_TTL_SECONDS = 3600
@@ -47,7 +47,7 @@ def fetch_latest_release() -> dict[str, str | None]:
         LATEST_RELEASE_URL,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "EvoZeus-wrapper-global-dispatcher",
+            "User-Agent": "EvoZeus-CoEvolve-global-dispatcher",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )

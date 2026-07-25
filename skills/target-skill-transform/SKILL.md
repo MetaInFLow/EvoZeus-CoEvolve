@@ -34,11 +34,11 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 ## Rules
 
 - Do not change target Skill business rules.
-- Single Skill targets use root `SKILL.md`; `SKILL.md` must put `EvoZeus-wrapper 状态检查` immediately after frontmatter so version/source checks run before the main chain.
-- Runtime kit targets often use root `AGENTS.md`; `AGENTS.md` must put `EvoZeus-wrapper 状态检查` before the main runtime instructions.
+- Single Skill targets use root `SKILL.md`; `SKILL.md` must put `EvoZeus-CoEvolve 状态检查` immediately after frontmatter so version/source checks run before the main chain.
+- Runtime kit targets often use root `AGENTS.md`; `AGENTS.md` must put `EvoZeus-CoEvolve 状态检查` before the main runtime instructions.
 - Hook/plugin-controlled Skill bundles use the instruction surface selected by `skills/evolution-surface-diagnosis/SKILL.md`, for example `skills/<control-skill>/SKILL.md`.
 - Do not create a fake root `SKILL.md`.
-- Other instruction-surface changes are append-only: add the self-evolution method and `EvoZeus-wrapper` section if missing.
+- Other instruction-surface changes are append-only: add the self-evolution method and `EvoZeus-CoEvolve` section if missing.
 - Add `.evozeus-wrapper/docs/migrations/README.md` so future wrapper harness upgrades have a migration ledger.
 - Do not overwrite existing files without explicit user confirmation.
 - Keep `.evozeus-wrapper/wrapper.json` as the only operational harness manifest.

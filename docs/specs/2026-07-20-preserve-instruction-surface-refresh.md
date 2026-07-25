@@ -12,7 +12,7 @@ v0.10.0 在刷新 `SKILL.md` 的 wrapper 状态区时，仅用下一个 `##` 作
 
 ## 设计
 
-1. 状态区的结束边界改为下一个同级或更高级 Markdown 标题。对于 `## EvoZeus-wrapper 状态检查`，边界是后续第一个 `#` 或 `##` 标题；支持最多 3 个前导空格的 ATX 标题，并跳过 YAML frontmatter 与 fenced code block 内的伪标题。
+1. 状态区的结束边界改为下一个同级或更高级 Markdown 标题。对于 `## EvoZeus-CoEvolve 状态检查`，边界是后续第一个 `#` 或 `##` 标题；支持最多 3 个前导空格的 ATX 标题，并跳过 YAML frontmatter 与 fenced code block 内的伪标题。
 2. 替换时不对边界外文本执行 `strip`，并禁用文本读写的通用换行转换，保证目标 Skill 的 frontmatter、一级标题、业务正文、CRLF 和空白字节不被改写；缺少状态区时同时支持 LF/CRLF frontmatter 并在其后插入。
 3. instruction surface 刷新显式接收 `from_layout`、`to_layout` 和 `layout_migration_required`。
 4. 布局迁移使用 `Migration Note`；consolidated-v2 的纯版本升级使用 `Version Refresh Note`，并记录真实 layout transition。

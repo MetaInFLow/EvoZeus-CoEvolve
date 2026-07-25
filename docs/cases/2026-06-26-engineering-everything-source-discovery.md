@@ -48,7 +48,7 @@ request to evolve Skill
 4. lesson candidate 先进入 GitHub Issue，不直接写入 `lessons.md`。
 5. 本地安装副本只是部署目标；GitHub repo clone 才能作为 canonical source。
 
-## 对 EvoZeus-wrapper 的改动
+## 对 EvoZeus-CoEvolve 的改动
 
 - `scripts/evozeus_wrapper_preflight.py doctor`
 - `scripts/evozeus_wrapper_bootstrap.py` 在 bootstrap 前检查 `gh auth`
@@ -58,7 +58,7 @@ request to evolve Skill
 ## 验证
 
 ```bash
-python3 scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/EvoZeus-wrapper
+python3 scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/EvoZeus-CoEvolve
 python3 scripts/evozeus_wrapper_preflight.py structure --target /tmp/evozeus-wrapper-target
 python3 scripts/evozeus_wrapper_preflight.py issue --file /tmp/evozeus-wrapper-issue.md
 python3 scripts/evozeus_wrapper_preflight.py pr --target /tmp/evozeus-wrapper-target --design-doc /tmp/evozeus-wrapper-target/docs/designs/2026-06-26-wrapper-doctor.md

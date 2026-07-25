@@ -37,7 +37,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 ## 进化规则
 
-`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-wrapper 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
 
 `.evozeus-wrapper/wrapper.json` 分开记录 Skill invocation mode 与 capability：
 
@@ -70,7 +70,7 @@ python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py version --repo {{R
 
 每次 Skill 更新必须先写 design doc，再开 PR。根目录 `SKILL.md` 是 repo 化后的可运行入口；`~/.evozeus/.projects/{{REPO_NAME}}` 和 runtime 安装路径应指向同一个 canonical repo，不保留 copied install 作为第二事实源，也不要直接修改 `.codex/skills/...` 或 `.agents/skills/...`。
 
-EvoZeus-wrapper harness 升级时，不能重写目标 Skill 业务段落。先在 EvoZeus-wrapper repo 里生成迁移方案：
+EvoZeus-CoEvolve harness 升级时，不能重写目标 Skill 业务段落。先在 EvoZeus-CoEvolve repo 里生成迁移方案：
 
 ```bash
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/this-skill --json
