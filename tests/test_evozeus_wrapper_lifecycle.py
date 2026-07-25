@@ -709,7 +709,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             (legacy / "audit-rule.md").unlink()
             legacy.rename(target / ".evozeus")
 
-            report = migrate_target_layout(target, latest_version="v0.11.2")
+            report = migrate_target_layout(target, latest_version="v0.11.3")
 
             self.assertTrue(report["writes"])
             self.assertEqual(report["validation"]["structure"], "passed")
@@ -1698,7 +1698,7 @@ class SourceContractTest(unittest.TestCase):
                 target,
                 build_wrapper_manifest(
                     "MetaInFLow/engineering-everything",
-                    "v0.11.2",
+                    "v0.11.3",
                     [".evozeus-wrapper/WRAPPER.md"],
                     [str(install)],
                     instruction_surface="skills/engineering-everything/SKILL.md",
@@ -2453,8 +2453,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
         return {"version": "v0.10.0", "source": "test", "error": None}
 
     @staticmethod
-    def latest_v0112():
-        return {"version": "v0.11.2", "source": "test", "error": None}
+    def latest_v0113():
+        return {"version": "v0.11.3", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -2680,9 +2680,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.11.2",
+                    "v0.11.3",
                     approve=True,
-                    latest_resolver=self.latest_v0112,
+                    latest_resolver=self.latest_v0113,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -2750,16 +2750,16 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.11.2",
+                "v0.11.3",
                 approve=True,
-                latest_resolver=self.latest_v0112,
+                latest_resolver=self.latest_v0113,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.11.2",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.11.3",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)

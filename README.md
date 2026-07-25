@@ -4,7 +4,7 @@
 
 EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公开论文 artifact 入口。它为本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 加装可审查、可发布、可恢复的演进 harness，同时保留目标 Skillware 的核心任务逻辑和原开发方式。
 
-当前 `v0.11.2` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复等 lifecycle substrate，并支持 plugin-first Skillware 的 canonical 子 Skill 安装指针。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文不会把这些待实现能力写成现有结果。
+当前 `v0.11.3` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复等 lifecycle substrate，并发布首个 plugin-first Skillware 可行性案例。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文不会把这些待实现能力写成现有结果。
 
 ## Research paper
 
@@ -15,8 +15,11 @@ EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公�
 - **Artifact**: [MetaInFLow/EvoZeus-CoEvolve](https://github.com/MetaInFLow/EvoZeus-CoEvolve)
 - **Skillware foundation**: [arXiv:2607.18970](https://arxiv.org/abs/2607.18970)
 - **Artifact manifest and claim boundary**: [`research/collaborative-evolution/`](research/collaborative-evolution/)
+- **First public feasibility case**: [Engineering Everything](research/collaborative-evolution/examples/engineering-everything/)
 
 Collaborative Evolution 在本文中指：一个具有共享身份的 Skillware Unit，从其用户群体和指定外部来源获得演进信号，将信号转换为可独立验证的候选变更，并把通过治理的版本重新分发给兼容用户。贡献证据的用户与受益用户可以分离。
+
+首个公开案例把 harness 加装到非具体开发项目的 [Engineering Everything](https://github.com/HaodiFan/engineering-everything) Skillware：12 个 runtime Skills 的目标业务内容在排除版本元数据和 harness-owned 段落后保持 `12/12` 一致；原生门禁、发布门禁、24 个 fresh-client canonical symlinks 和 `v0.12.0` 回退演练均通过。该证据只支持 attachment 与 governed lifecycle 的可行性，不支持协同进化效果优于其他方法的结论。
 
 Repository 与产品名已统一为 `EvoZeus-CoEvolve`。为保持已接入 Skill 的运行兼容，`.evozeus-wrapper/`、`evozeus_wrapper.py`、`EVOZEUS_WRAPPER_*` 与现有 Skill slug 继续作为稳定技术标识。
 
@@ -81,8 +84,8 @@ python3 scripts/evozeus_wrapper.py hook global plan --json
 python3 scripts/evozeus_wrapper.py hook global install --approve --json
 python3 scripts/evozeus_wrapper.py hook global status --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/my-skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.11.2 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.2 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.11.3 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.11.3 --dry-run --json
 ```
 
 如果 `env diagnose` 返回 `next_action: install_evozeus`，先安装 / 初始化 EvoZeus，不进入目标 repo transform。如果没有给 `Visibility`，Agent 必须先问用户选择 `public` 还是 `private`。如果本地发现多个 repo clone 或多个 real-directory 安装副本，必须先让用户选择 canonical repo 或归档策略。

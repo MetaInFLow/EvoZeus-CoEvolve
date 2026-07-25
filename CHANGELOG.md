@@ -6,6 +6,27 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - None yet.
 
+## [v0.11.3] - 2026-07-25
+
+### Added
+
+- Published Engineering Everything as the first public non-project-specific Skillware feasibility case.
+- Added a pinned case manifest, public event ledger, and one-command reproduction script.
+- Added artifact tests that validate the ledger schema, privacy boundary, public revision pins, and one-target claim boundary.
+
+### Changed
+
+- Promoted claim C7 from pending to completed one-target feasibility evidence.
+- Bumped the paper artifact, generated harness version, citation metadata, and current examples to `v0.11.3`.
+- Kept multi-source effectiveness, frontier code/research transfer, and superiority claims data gated.
+
+### Verification
+
+- `python3 -m pytest -q` (128 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py`
+- `bash research/collaborative-evolution/examples/engineering-everything/reproduce.sh`
+- `RUN_GITHUB_GATES=1 bash research/collaborative-evolution/examples/engineering-everything/reproduce.sh`
+
 ## [v0.11.2] - 2026-07-25
 
 ### Fixed
