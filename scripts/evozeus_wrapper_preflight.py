@@ -206,6 +206,18 @@ def resolve_path(path: Path) -> str | None:
         return None
 
 
+def runtime_pointer_scope(canonical_path: Path, resolved_path: str | None) -> str | None:
+    if not resolved_path:
+        return None
+    canonical = canonical_path.expanduser().resolve()
+    resolved = Path(resolved_path).expanduser().resolve()
+    if resolved == canonical:
+        return "canonical_repo"
+    if resolved.parent == canonical / "skills" and (resolved / "SKILL.md").is_file():
+        return "canonical_subskill"
+    return None
+
+
 def wrapper_manifest_path(target: Path) -> Path:
     return target / TARGET_EVOINFRA_DIR / "wrapper.json"
 
@@ -817,10 +829,16 @@ def check_wrapper_managed_doctor(
         ok(f"GitHub repo accessible: {manifest_repo}")
 
     skill_name = skill_name_from_skill_md(target / "SKILL.md") or target.name
-    install_paths = [
+    manifest_install_paths = [
+        Path(item).expanduser()
+        for item in manifest.get("install_links", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    install_paths = manifest_install_paths or [
         Path.home() / ".codex" / "skills" / skill_name,
         Path.home() / ".agents" / "skills" / skill_name,
     ]
+    install_paths = list(dict.fromkeys(install_paths))
     found_install = False
     for install_path in install_paths:
         if not install_path.exists() and not install_path.is_symlink():
@@ -828,10 +846,16 @@ def check_wrapper_managed_doctor(
         found_install = True
         kind = path_kind(install_path)
         resolved = resolve_path(install_path)
-        if kind == "symlink" and resolved == canonical_path:
+        pointer_scope = runtime_pointer_scope(Path(canonical_path), resolved)
+        if kind == "symlink" and pointer_scope == "canonical_repo":
             ok(f"runtime install points to canonical repo: {install_path} -> {resolved}")
+        elif kind == "symlink" and pointer_scope == "canonical_subskill":
+            ok(f"runtime install points to canonical sub-Skill: {install_path} -> {resolved}")
         elif kind == "symlink":
-            fail(f"runtime install symlink mismatch: {install_path} -> {resolved}; expected {canonical_path}")
+            fail(
+                f"runtime install symlink mismatch: {install_path} -> {resolved}; "
+                f"expected {canonical_path} or a direct canonical skills/<name> entry"
+            )
         elif kind == "directory":
             warn(f"runtime install is a real directory copy, not a source of truth: {install_path}")
         else:

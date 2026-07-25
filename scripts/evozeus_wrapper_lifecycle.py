@@ -493,6 +493,18 @@ def resolve_path(path: Path) -> str | None:
         return None
 
 
+def runtime_pointer_scope(canonical_path: Path, resolved_path: str | None) -> str | None:
+    if not resolved_path:
+        return None
+    canonical = canonical_path.expanduser().resolve()
+    resolved = Path(resolved_path).expanduser().resolve()
+    if resolved == canonical:
+        return "canonical_repo"
+    if resolved.parent == canonical / "skills" and (resolved / "SKILL.md").is_file():
+        return "canonical_subskill"
+    return None
+
+
 def target_canonical_path(target: Path, runner=run_command) -> str:
     git_root_result = runner(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
     if git_root_result["returncode"] == 0 and git_root_result.get("stdout"):
@@ -1119,18 +1131,23 @@ def diagnose_skill(
         }
     )
     inferred_name = skill_name or skill_name_from_skill_md(skill_md) or target.name
-
-    install_paths = [
+    manifest = load_wrapper_manifest(target, allow_legacy=True)
+    manifest_install_paths = [
+        Path(item).expanduser()
+        for item in (manifest or {}).get("install_links", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    install_paths = manifest_install_paths or [
         home / ".codex" / "skills" / inferred_name,
         home / ".agents" / "skills" / inferred_name,
     ]
+    install_paths = list(dict.fromkeys(install_paths))
     installs = [
         describe_install_path(path, target)
         for path in install_paths
         if path.exists() or path.is_symlink()
     ]
 
-    manifest = load_wrapper_manifest(target, allow_legacy=True)
     manifest_repo = manifest.get("canonical_repo") if manifest else None
     effective_repo = repo or manifest_repo
     repo_state = diagnose_repo_state(target, effective_repo, home, workspace_roots or [], runner)
@@ -1320,10 +1337,16 @@ def diagnose_source_contract(
         warnings.append("canonical repo has no GitHub origin yet; this is only acceptable before first publish")
 
     runtime_reports = []
+    canonical_root = Path(canonical_path)
     for install in installs:
         report = dict(install)
-        if install["kind"] == "symlink" and install.get("resolved_path") == canonical_path:
+        pointer_scope = runtime_pointer_scope(canonical_root, install.get("resolved_path"))
+        if install["kind"] == "symlink" and pointer_scope == "canonical_repo":
             report["source_contract"] = "runtime_pointer_ok"
+            report["pointer_scope"] = pointer_scope
+        elif install["kind"] == "symlink" and pointer_scope == "canonical_subskill":
+            report["source_contract"] = "runtime_subskill_pointer_ok"
+            report["pointer_scope"] = pointer_scope
         elif install["kind"] == "directory":
             report["source_contract"] = "runtime_real_directory_warning"
             warnings.append(
@@ -1333,7 +1356,8 @@ def diagnose_source_contract(
             report["source_contract"] = "runtime_pointer_mismatch"
             errors.append(
                 f"runtime symlink does not resolve to canonical repo: "
-                f"{install['path']} -> {install.get('resolved_path')} expected {canonical_path}"
+                f"{install['path']} -> {install.get('resolved_path')} expected {canonical_path} "
+                "or a direct canonical skills/<name> entry"
             )
         else:
             report["source_contract"] = "runtime_install_unusable"
@@ -2202,6 +2226,8 @@ def plan_target_layout_migration(
         TARGET_PREFLIGHT_SCRIPT,
         CODEX_START_HOOK_SCRIPT,
         TARGET_ONBOARDING_GUIDE,
+        TARGET_FEEDBACK_POLICY,
+        TARGET_AUDIT_RULE,
         ".github/ISSUE_TEMPLATE/config.yml",
         ".github/workflows/evozeus-wrapper-preflight.yml",
     ]
@@ -2340,6 +2366,14 @@ def _refresh_migrated_managed_files(
         (
             wrapper_root / "templates" / "target" / "docs" / "onboarding.md",
             target / TARGET_ONBOARDING_GUIDE,
+        ),
+        (
+            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "feedback-policy.json",
+            target / TARGET_FEEDBACK_POLICY,
+        ),
+        (
+            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "audit-rule.md",
+            target / TARGET_AUDIT_RULE,
         ),
     ]
     refreshed: list[str] = []
