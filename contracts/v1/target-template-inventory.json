@@ -1,0 +1,34 @@
+{
+  "schema_version": "evozeus.coevolve.target-template-inventory.v1",
+  "inventory_version": "v1.0.0",
+  "modes": {
+    "external-sidecar": {
+      "target_writes": false,
+      "files": []
+    },
+    "governed-sidecar": {
+      "target_writes": true,
+      "availability": "compatibility-only",
+      "source_root": "templates/target",
+      "source_tree_sha256": "sha256:4b4a9bc1fa713e0a82848080ed4772afcca9884d5e3aa602b3f185165fd9f413",
+      "files": [
+        ".codex/hooks.json",
+        ".codex/hooks/evozeus_wrapper_start_check.py",
+        ".evozeus_evoinfra/audit-rule.md",
+        ".evozeus_evoinfra/feedback-policy.json",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/skill-feedback.yml",
+        ".github/pull_request_template.md",
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+        "CHANGELOG.md",
+        "WRAPPER.md",
+        "docs/_config.yml",
+        "docs/design-doc-template.md",
+        "docs/designs/README.md",
+        "docs/index.md",
+        "docs/onboarding.md",
+        "docs/wrapper-migrations/README.md"
+      ]
+    }
+  }
+}
