@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evozeus.org/contracts/coevolve/v1/attachment-v1.schema.json",
+  "title": "EvoZeus-CoEvolve Attachment Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attachment_id",
+    "mode",
+    "target",
+    "contract_bundle",
+    "target_tree_sha256",
+    "attached_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.attachment.v1"
+    },
+    "attachment_id": {
+      "type": "string",
+      "pattern": "^att_[a-f0-9]{24}$"
+    },
+    "mode": {
+      "const": "external-sidecar"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_repo", "canonical_path", "target_kind", "skill_name"],
+      "properties": {
+        "canonical_repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "maxLength": 200
+        },
+        "canonical_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "target_kind": {
+          "enum": ["skillware", "software"]
+        },
+        "skill_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        }
+      }
+    },
+    "contract_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "bundle_version", "manifest_sha256"],
+      "properties": {
+        "bundle_id": {
+          "const": "evozeus-coevolve"
+        },
+        "bundle_version": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "target_tree_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "attached_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": "evozeus.coevolve.contract-manifest.v1",
+  "bundle_id": "evozeus-coevolve",
+  "bundle_version": "v1.0.0",
+  "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
+  "source_revision": "v0.12.0",
+  "runtime_compatibility": {
+    "min_inclusive": "0.1.0",
+    "max_exclusive": "0.3.0"
+  },
+  "files": [
+    {
+      "path": "schemas/attachment-v1.schema.json",
+      "sha256": "0369beb736b828ebadeb8a0d5c5e67163ff845e0b5ffab257859646d7fe293ff",
+      "role": "json-schema"
+    },
+    {
+      "path": "target-template-inventory.json",
+      "sha256": "b5cecc58629fa61df77cbdd1e747040e874b9d2b50fcce3032653f88928e4392",
+      "role": "target-template-inventory"
+    }
+  ]
+}
