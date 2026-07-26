@@ -4,7 +4,14 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
-- None yet.
+### Added
+
+- Added the first versioned Collaborative Evolution contract bundle with a hash-bound `external-sidecar` attachment schema and target-template inventory.
+- Added contract tests that require `external-sidecar` to have zero target writes and bind the existing governed templates to a deterministic tree hash.
+
+### Verification
+
+- `python3 -m pytest -q` (132 passed)
 
 ## [v0.11.3] - 2026-07-25
 

@@ -6,6 +6,8 @@ EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公�
 
 当前 `v0.11.3` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复等 lifecycle substrate，并发布首个 plugin-first Skillware 可行性案例。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文不会把这些待实现能力写成现有结果。
 
+开发中的 Slice-01 已在 `contracts/v1/` 建立首个 hash-bound Collaborative Evolution contract bundle。它只定义 attachment 和 target template inventory；执行、安装和本地状态由 `EvoZeus-infra` 的 EvoZeus Runtime 实现。`external-sidecar` contract 固定为目标 Skillware 零写入，尚未发布为 `v0.11.3` 的现有能力。
+
 ## Research paper
 
 - **Title**: *EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware*
