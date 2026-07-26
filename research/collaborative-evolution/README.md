@@ -3,9 +3,9 @@
 ## Paper metadata
 
 - Title: **EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware**
-- Author: **Haodi Fan**
+- Authors: **Haodi Fan and Zucong Lan**
 - Affiliation: **MetaInFlow**
-- Email: **anthonyfan@metainflow.cn**
+- Emails: **anthonyfan@metainflow.cn; neillan@metainflow.cn**
 - GitHub: <https://github.com/MetaInFLow/EvoZeus-CoEvolve>
 - Foundational Skillware paper: <https://arxiv.org/abs/2607.18970>
 
@@ -20,7 +20,7 @@ The current release supports a system/protocol paper and a feasibility evaluatio
 - [`artifact-manifest.yaml`](artifact-manifest.yaml): immutable public component revisions and roles.
 - [`claims-to-evidence.md`](claims-to-evidence.md): implemented, partial, planned, and data-gated claim boundaries.
 - [`examples/engineering-everything/`](examples/engineering-everything/): first public attachment, preservation, release, and recovery feasibility case.
-- [`../../CITATION.cff`](../../CITATION.cff): single-author software and paper citation metadata.
+- [`../../CITATION.cff`](../../CITATION.cff): locked two-author software and paper citation metadata.
 
 ## Current reproduction entry
 

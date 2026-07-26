@@ -44,6 +44,26 @@ class PaperArtifactCaseTest(unittest.TestCase):
         self.assertIn("does not establish cross-user effectiveness", readme)
         self.assertTrue((CASE_DIR / "reproduce.sh").exists())
 
+    def test_public_metadata_locks_both_authors_and_emails(self) -> None:
+        public_metadata = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "AGENTS.md",
+                ROOT / "CITATION.cff",
+                ROOT / "README.md",
+                ROOT / "research" / "collaborative-evolution" / "README.md",
+                ROOT / "research" / "collaborative-evolution" / "artifact-manifest.yaml",
+            )
+        )
+        for expected in (
+            "Haodi Fan",
+            "anthonyfan@metainflow.cn",
+            "Zucong Lan",
+            "neillan@metainflow.cn",
+        ):
+            self.assertIn(expected, public_metadata)
+        self.assertIn("release: v0.11.4", public_metadata)
+
 
 if __name__ == "__main__":
     unittest.main()

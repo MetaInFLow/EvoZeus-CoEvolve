@@ -10,7 +10,7 @@ Author: Haodi Fan, MetaInFlow, `anthonyfan@metainflow.cn`.
 
 ## Added
 
-- `CITATION.cff` with single-author software and preferred paper citation metadata.
+- `CITATION.cff` with initial software and preferred paper citation metadata.
 - A canonical `research/collaborative-evolution/` artifact entry.
 - A manifest that fixes the public EvoZeus component revisions used by the paper system.
 - A claims-to-evidence map that distinguishes implemented, partial, planned, and data-gated claims.
