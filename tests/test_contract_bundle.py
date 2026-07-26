@@ -30,8 +30,9 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
     assert manifest["bundle_id"] == "evozeus-coevolve"
     assert manifest["runtime_compatibility"] == {
         "min_inclusive": "0.1.0",
-        "max_exclusive": "0.2.0",
+        "max_exclusive": "0.3.0",
     }
+    assert manifest["source_revision"] == "v0.12.0"
     declared_paths = {entry["path"] for entry in manifest["files"]}
     actual_paths = {
         path.relative_to(BUNDLE).as_posix()

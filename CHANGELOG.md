@@ -4,14 +4,22 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-07-26
+
 ### Added
 
 - Added the first versioned Collaborative Evolution contract bundle with a hash-bound `external-sidecar` attachment schema and target-template inventory.
 - Added contract tests that require `external-sidecar` to have zero target writes and bind the existing governed templates to a deterministic tree hash.
 
+### Changed
+
+- Declared compatibility with EvoZeus Runtime `0.2.x` and pinned the contract source to this release.
+- Made this release the CoEvolve component for the Stable/single-UAT product channel model.
+
 ### Verification
 
-- `python3 -m pytest -q` (132 passed)
+- `python3 -m pytest -q` (133 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py`
 
 ## [v0.11.4] - 2026-07-26
 
