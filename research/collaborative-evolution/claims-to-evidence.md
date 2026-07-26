@@ -16,7 +16,7 @@ Repository code and tests establish implementation and engineering behavior. The
 
 ## Current code verification
 
-EvoZeus-CoEvolve `v0.11.3` passed 128 repository tests. The public case additionally reruns the pinned target's native gates, source-preservation comparison, fresh-client installation, idempotency check, and prior-release recovery rehearsal. Release metadata records the immutable GitHub revision and command outcomes.
+EvoZeus-CoEvolve `v0.11.4` passed 129 repository tests. The public case additionally reruns the pinned target's native gates, source-preservation comparison, fresh-client installation, idempotency check, and prior-release recovery rehearsal. Release metadata records the immutable GitHub revision and command outcomes.
 
 The completed C7 evidence establishes attachment and governed-lifecycle feasibility for one target. C5 and C6 remain planned or data gated; this case cannot be cited as evidence of collaborative improvement quality or superiority over self-evolution.
 

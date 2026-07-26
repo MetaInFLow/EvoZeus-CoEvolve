@@ -25,6 +25,8 @@ EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 论文系统�
 
 论文标题固定为 `EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware`。任何公开文档必须区分 Implemented、Partial 和 Planned，不能把跨用户聚合、frontier code/research adapters、candidate generation 或效果实验写成现有能力。
 
+论文作者元数据固定为两位作者，顺序与 Skillware 论文一致：Haodi Fan（`anthonyfan@metainflow.cn`）、Zucong Lan（`neillan@metainflow.cn`），两位作者 affiliation 均为 MetaInFlow。任何 title page、manifest、CITATION、README、release 或 arXiv source bundle 都不得省略任一作者或邮箱，也不得简化为 single-author / sole-author 记录。
+
 ## 编辑原则
 
 1. 先明确目标 Skill 文件夹、GitHub repo 名称和 visibility。

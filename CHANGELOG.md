@@ -6,6 +6,25 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - None yet.
 
+## [v0.11.4] - 2026-07-26
+
+### Fixed
+
+- Corrected the paper and software metadata to the same two-author order used by the Skillware paper: Haodi Fan and Zucong Lan.
+- Added both author emails to `CITATION.cff`, the artifact manifest, README files, and repository-level author metadata rules.
+- Added a regression test that fails when either author or email disappears from public metadata.
+
+### Changed
+
+- Bumped the paper artifact and current harness release examples to `v0.11.4`.
+- Kept the Engineering Everything feasibility observations and all implementation/effectiveness claim boundaries unchanged.
+
+### Verification
+
+- `python3 -m pytest -q` (129 passed)
+- Parsed `CITATION.cff` and both artifact manifests as YAML.
+- Verified both authors and emails across repository publication surfaces.
+
 ## [v0.11.3] - 2026-07-25
 
 ### Added
@@ -45,7 +64,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Added
 
-- Added `CITATION.cff` with the paper title and single-author metadata for Haodi Fan.
+- Added `CITATION.cff` with the paper title and initial author metadata.
 - Added `research/collaborative-evolution/` as the canonical public paper artifact entry.
 - Added immutable public component revisions and an explicit claims-to-evidence map.
 

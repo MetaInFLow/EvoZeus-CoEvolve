@@ -1,13 +1,16 @@
 schema_version: 1
-artifact_version: 0.2.0
-frozen_at: 2026-07-25
+artifact_version: 0.2.1
+frozen_at: 2026-07-26
 paper:
   title: "EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware"
-  author:
-    name: Haodi Fan
-    affiliation: MetaInFlow
-    email: anthonyfan@metainflow.cn
-    github: https://github.com/HaodiFan
+  authors:
+    - name: Haodi Fan
+      affiliation: MetaInFlow
+      email: anthonyfan@metainflow.cn
+      github: https://github.com/HaodiFan
+    - name: Zucong Lan
+      affiliation: MetaInFlow
+      email: neillan@metainflow.cn
   artifact_repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
   foundational_skillware_paper: https://arxiv.org/abs/2607.18970
 components:
@@ -19,7 +22,7 @@ components:
     license: MIT
   - name: EvoZeus-CoEvolve
     repository: https://github.com/MetaInFLow/EvoZeus-CoEvolve
-    release: v0.11.3
+    release: v0.11.4
     role: paper artifact entry and attachment/lifecycle substrate
     visibility: public
     license: MIT
