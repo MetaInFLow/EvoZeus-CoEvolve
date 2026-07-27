@@ -29,6 +29,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
+NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
 STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
 LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
@@ -36,15 +37,17 @@ WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
 INITIAL_VERSION = "v0.1.0"
-WRAPPER_VERSION = "v0.12.1"
+WRAPPER_VERSION = "v0.13.0"
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
 TARGET_FEEDBACK_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/feedback-policy.json"
 TARGET_AUDIT_RULE = f"{TARGET_EVOINFRA_DIR}/policies/audit-rule.md"
+TARGET_NOTICE_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/notice-policy.json"
 TARGET_DESIGNS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/designs"
 TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
+TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 
 
 def fail(message: str) -> None:
@@ -153,6 +156,14 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
         script_dst.chmod(0o755)
         actions.append(f"write {script_dst}")
+    notice_dst = target / TARGET_NOTICE_SCRIPT
+    if notice_dst.exists() and not force:
+        actions.append(f"skip existing {notice_dst}")
+    else:
+        notice_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(NOTICE_SCRIPT, notice_dst)
+        notice_dst.chmod(0o755)
+        actions.append(f"write {notice_dst}")
     return actions
 
 
@@ -203,7 +214,7 @@ def build_evolution_section(replacements: dict[str, str]) -> str:
 
 进化流程：
 
-1. 使用中出现不满意结果时，先运行 feedback audit，显示 `🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]`，继续原业务并等待用户确认是否提交反馈；只有明确确认后才创建 Skill Feedback Issue。
+1. 使用中出现不满意、纠错、漏检或可复用机制缺陷时，先完成当前业务纠正，再运行 feedback audit，并通过 `--context` 提供一句脱敏 Lesson 摘要；原样显示返回的 `user_notice.display_text`，询问是否只记录到 Skill Feedback Issue。只有明确确认后才创建 Issue，修复继续要求单独授权。
 2. 每次运行本 Skill 前，先执行 `python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`，确认 wrapper source contract 成立。
 3. 再执行 `python3 {TARGET_PREFLIGHT_SCRIPT} version --repo {replacements["REPO_NAME"]}`，确认 GitHub latest release 没有新版本。
 4. 开始修改前，在 `{TARGET_DESIGNS_DIR}/` 新建设计文档，明确 Related issue、优化目标、实现计划、验证计划和 release plan。
@@ -252,6 +263,8 @@ Wrapper harness version: `{replacements["WRAPPER_VERSION"]}`
 Wrapper manifest: `{TARGET_WRAPPER_MANIFEST}`
 Feedback audit policy: `{TARGET_FEEDBACK_POLICY}`
 Feedback audit rule: `{TARGET_AUDIT_RULE}`
+Notice policy: `{TARGET_NOTICE_POLICY}`
+Notice CLI: `{TARGET_NOTICE_SCRIPT}`
 Wrapper migration log: `{TARGET_MIGRATIONS_DIR}/`
 
 Runtime integration modes:
@@ -348,6 +361,8 @@ def main() -> int:
         fail(f"template folder missing: {TARGET_TEMPLATE_DIR}")
     if not PREFLIGHT_SCRIPT.exists():
         fail(f"preflight script missing: {PREFLIGHT_SCRIPT}")
+    if not NOTICE_SCRIPT.exists():
+        fail(f"notice script missing: {NOTICE_SCRIPT}")
     require_github_cli()
     repo_check = check_github_repo_available(args.repo)
 

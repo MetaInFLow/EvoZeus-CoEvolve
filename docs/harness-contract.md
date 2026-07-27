@@ -57,13 +57,22 @@ Preflight 必须阻止能力夸大：project hook 的 scope 不是 `canonical_re
 每次调用受管 Skill 时，目标 instruction surface 在入口 preflight 后读取 `runtime_identity.display_line`，并把它原样放在第一条用户可见输出的第一行。本次 invocation 的后续 commentary 与 final 不重复；下一次 invocation 再展示。
 
 ```text
-🧙🏻‍♂️ [EvoZeus 自进化维护] [OWNER/REPO](https://github.com/OWNER/REPO) · Skill vX.Y.Z · Harness vA.B.C · 开发版/UAT/正式版
+🧙🏻‍♂️ `EvoZeus · 受管 Skill` [OWNER/REPO](https://github.com/OWNER/REPO) · Skill vX.Y.Z · Harness vA.B.C · `渠道：开发版/UAT/正式版`
 ```
 
 - 身份头使用 Unicode `🧙🏻‍♂️`，禁止 HTML、图片路径和自定义 shortcode。
 - `canonical_repo` 与 Harness version 来自 wrapper manifest；Skill release 来自目标 release/CHANGELOG；渠道来自 Git branch/HEAD/status 与 GitHub latest release 的交叉验证。
 - clean 受控 `uat/*` 来源显示 `UAT`；clean HEAD 与 latest release commit 完全一致时显示 `正式版`；其他情况 fail closed 为 `开发版`。
 - 当前平台没有原生 `SkillInvoke` 事件，展示由 `prompt_runtime_check` instruction surface 约束，不能声明 native enforcement。
+
+### Target Skill Notice Contract
+
+每个受管目标 Skill 必须包含：
+
+- `.evozeus-wrapper/policies/notice-policy.json`：目标本地、可配置、升级时受冲突保护的视觉合同。
+- `.evozeus-wrapper/scripts/evozeus_notice.py`：只读 Notice CLI，输出文本或 JSON，始终返回 `writes=false`。
+
+统一语法：语义 Emoji + `EvoZeus · <event>` Tag + 状态。普通业务进度不加 EvoZeus Tag。Lesson 在业务纠正完成后显示，并只询问是否记录 Feedback Issue；记录、修复、UAT 和发布沿用各自授权门。默认 event 为 `skill`、`lesson`、`evolution`、`maintenance`、`advisory`、`blocked`、`uat` 和 `release`。
 
 ## Single Source Contract
 
@@ -150,12 +159,12 @@ python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.12.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 --approve --json
 ```
 
-`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、`🧙🏻‍♂️` 本地待确认标志、`route`、`severity` 和脱敏 Issue body。默认下一步是继续业务并等待用户确认，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
+`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
 
 ## Harness Version Contract
 
@@ -175,6 +184,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 
 - layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新状态段和 manifest integration，追加 migration note，并通过 post-migration structure validation 后才返回成功。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
 - 目标 `SKILL.md` 的 frontmatter 后必须先出现 `EvoZeus-CoEvolve 状态检查`，列出当前 Skill release、wrapper harness version、source contract 检查和对应解决方法；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+- 目标 Harness 必须安装并校验 Notice policy 与 CLI；目标 Skill 状态段必须声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - 目标 `SKILL.md` 中的 `EvoZeus-CoEvolve` 区域只能追加或补缺；如果已经存在，升级时追加 migration note，不改写旧业务段落。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 

@@ -1,6 +1,6 @@
 # EvoZeus 调用身份头与反馈捕获标志设计
 
-状态：对内-未审核（交互方案已确认，待书面规格复核）
+状态：已被 [目标 Skill Notice 系统](2026-07-27-target-skill-notice-system.md) 扩展；本文件保留 v0.12.1 历史决策
 
 受众：EvoZeus-CoEvolve 维护者、受管 Skill owner、Harness 验收人
 

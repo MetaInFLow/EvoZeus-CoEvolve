@@ -66,6 +66,7 @@ from scripts.evozeus_wrapper_global_hook import (
 )
 from scripts.evozeus_wrapper_preflight import (
     build_runtime_identity,
+    check_notice_policy,
     check_onboarding_contract,
     check_integration_contract,
     classify_runtime_channel,
@@ -569,7 +570,63 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("同一次 invocation 的后续 commentary 和 final 不重复", text)
         self.assertIn("下一次 invocation 再展示一次", text)
         self.assertIn("🧙🏻‍♂️", text)
+        self.assertIn("evozeus_notice.py render", text)
+        self.assertIn("EvoZeus · Lesson", text)
+        self.assertIn("先完成当前业务纠正", text)
         self.assertNotIn("<img", text)
+
+    def test_copy_templates_installs_notice_policy_and_cli_in_target_skill(self):
+        replacements = {
+            "DATE": "2026-07-27",
+            "INITIAL_VERSION": "v0.1.0",
+            "CURRENT_VERSION": "v0.1.0",
+            "REPO_NAME": "MetaInFLow/skill",
+            "REPO_URL": "https://github.com/MetaInFLow/skill",
+            "SKILL_NAME": "skill",
+            "VISIBILITY": "private",
+            "WRAPPER_VERSION": "v0.12.1",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+
+            copy_templates(target, replacements, force=False)
+
+            policy = target / ".evozeus-wrapper/policies/notice-policy.json"
+            cli = target / ".evozeus-wrapper/scripts/evozeus_notice.py"
+            self.assertTrue(policy.is_file())
+            self.assertTrue(cli.is_file())
+            self.assertTrue(os.access(cli, os.X_OK))
+            self.assertIn("EvoZeus · Lesson", policy.read_text(encoding="utf-8"))
+
+    def test_preflight_validates_notice_policy_semantics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            policy_path = target / ".evozeus-wrapper/policies/notice-policy.json"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(
+                '{"schema_version":"v2","tag_style":"markdown_code","show_signal_id":false,"events":{}}',
+                encoding="utf-8",
+            )
+
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                check_notice_policy(target)
+
+            valid_policy = json.loads(
+                Path("templates/target/.evozeus_evoinfra/notice-policy.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            invalid_visual_policy = json.loads(json.dumps(valid_policy, ensure_ascii=False))
+            invalid_visual_policy["events"]["skill"]["show_state_label"] = "false"
+            policy_path.write_text(
+                json.dumps(invalid_visual_policy, ensure_ascii=False), encoding="utf-8"
+            )
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                check_notice_policy(target)
+
+            policy_path.write_text(json.dumps(valid_policy, ensure_ascii=False), encoding="utf-8")
+            check_notice_policy(target)
 
     def test_feedback_surfaces_require_local_pending_state_and_separate_fix_authorization(self):
         checked_files = [
@@ -582,8 +639,8 @@ class LifecycleBasicsTest(unittest.TestCase):
         for path in checked_files:
             text = path.read_text(encoding="utf-8")
             with self.subTest(path=path):
-                self.assertIn("🧙🏻‍♂️", text)
-                self.assertIn("本地待确认", text)
+                self.assertIn("EvoZeus · Lesson", text)
+                self.assertIn("待记录", text)
                 self.assertIn("Issue", text)
                 self.assertTrue("授权" in text or "authorization" in text.lower())
 
@@ -751,7 +808,7 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertEqual(identity["display_once_scope"], "skill_invocation")
             self.assertEqual(
                 identity["display_line"],
-                "🧙🏻‍♂️ [EvoZeus 自进化维护] [MetaInFLow/skill](https://github.com/MetaInFLow/skill) · Skill v1.2.3 · Harness v0.12.1 · 正式版",
+                "🧙🏻‍♂️ `EvoZeus · 受管 Skill` [MetaInFLow/skill](https://github.com/MetaInFLow/skill) · Skill v1.2.3 · Harness v0.12.1 · `渠道：正式版`",
             )
             self.assertNotIn("<img", identity["display_line"])
 
@@ -797,6 +854,49 @@ class LifecycleBasicsTest(unittest.TestCase):
                 ("development", "开发版"),
             )
             self.assertEqual(development["channel_reason"], "release_unverified")
+
+    def test_runtime_identity_uses_target_notice_policy_visuals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            manifest = target / TARGET_WRAPPER_MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "canonical_repo": "MetaInFLow/skill",
+                        "wrapper_version": "v0.13.0",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (target / TARGET_CHANGELOG).write_text(
+                "# Changelog\n\n## [v1.2.3] - 2026-07-27\n\n- Stable.\n",
+                encoding="utf-8",
+            )
+            policy_path = target / ".evozeus-wrapper/policies/notice-policy.json"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy = json.loads(
+                Path("templates/target/.evozeus_evoinfra/notice-policy.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            policy["events"]["skill"]["tag"] = "EvoZeus · Custom Skill"
+            policy["events"]["skill"]["states"]["active"]["icon"] = "🧠"
+            policy_path.write_text(json.dumps(policy, ensure_ascii=False), encoding="utf-8")
+
+            identity = build_runtime_identity(
+                target,
+                latest_release={"available": True, "tag": "v1.2.3", "error": None},
+                git_facts={
+                    "branch": "main",
+                    "clean": True,
+                    "head": "abc123",
+                    "release_commit": "abc123",
+                    "origin_repo": "MetaInFLow/skill",
+                },
+            )
+
+            self.assertTrue(identity["display_line"].startswith("🧠 `EvoZeus · Custom Skill`"))
 
     def test_runtime_reference_parser_excludes_command_arguments(self):
         text = "Run `scripts/research_search.py --plan path/to/plan.json --out output.jsonl`."
@@ -1169,8 +1269,14 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertRegex(report["signal_id"], r"^sig_[0-9A-F]{8}$")
             self.assertEqual(
                 report["capture_marker"],
-                f"🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜{report['signal_id']}]",
+                "💡 `EvoZeus · Lesson` 待记录",
             )
+            self.assertEqual(report["user_notice"]["kind"], "lesson")
+            self.assertEqual(report["user_notice"]["state"], "pending")
+            self.assertFalse(report["user_notice"]["writes"])
+            self.assertNotIn(report["signal_id"], report["user_notice"]["display_text"])
+            self.assertIn("是否记录", report["user_notice"]["action"])
+            self.assertIn("不启动修复", report["user_notice"]["action"])
             self.assertFalse(report["writes"])
             self.assertFalse(report["capture_persisted"])
             self.assertIsNone(report["issue_create_command"])
@@ -1180,6 +1286,26 @@ class LifecycleBasicsTest(unittest.TestCase):
             )
             self.assertEqual(report["authorization"]["issue_submission"], "explicit_confirmation_required")
             self.assertEqual(report["authorization"]["fix_execution"], "separate_confirmation_required")
+
+    def test_feedback_audit_uses_redacted_context_as_visible_lesson_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            write_wrapper_manifest(
+                target,
+                build_wrapper_manifest("MetaInFLow/skill", "v0.13.0", [], []),
+            )
+
+            report = plan_feedback_audit(
+                target=target,
+                user_input="我不满意，这个结果漏了关键检查",
+                context="项目巡检必须校验未关闭任务负责人和实时在职状态",
+            )
+
+            self.assertEqual(
+                report["user_notice"]["message"],
+                "捕捉到一条可复用 Lesson：项目巡检必须校验未关闭任务负责人和实时在职状态。",
+            )
 
     def test_preflight_rejects_native_hook_mode_without_hook_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

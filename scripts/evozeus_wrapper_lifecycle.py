@@ -14,8 +14,10 @@ from typing import Any
 
 try:
     from .evozeus_wrapper_global_hook import read_global_hook_status
+    from .evozeus_notice import load_notice_policy, render_notice
 except ImportError:
     from evozeus_wrapper_global_hook import read_global_hook_status
+    from evozeus_notice import load_notice_policy, render_notice
 
 
 STAGE_LABELS = {
@@ -38,6 +40,7 @@ TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
 TARGET_WRAPPER_GUIDE = f"{TARGET_EVOINFRA_DIR}/WRAPPER.md"
 TARGET_FEEDBACK_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/feedback-policy.json"
 TARGET_AUDIT_RULE = f"{TARGET_EVOINFRA_DIR}/policies/audit-rule.md"
+TARGET_NOTICE_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/notice-policy.json"
 LEGACY_TARGET_FEEDBACK_POLICY = f"{LEGACY_TARGET_EVOINFRA_DIR}/feedback-policy.json"
 LEGACY_TARGET_AUDIT_RULE = f"{LEGACY_TARGET_EVOINFRA_DIR}/audit-rule.md"
 OLDEST_TARGET_FEEDBACK_POLICY = f"{OLDEST_TARGET_EVOINFRA_DIR}/feedback-policy.json"
@@ -53,6 +56,7 @@ TARGET_DESIGNS_README = f"{TARGET_EVOINFRA_DIR}/docs/designs/README.md"
 TARGET_MIGRATIONS_README = f"{TARGET_EVOINFRA_DIR}/docs/migrations/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
+TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 
 REQUIRED_WRAPPER_FILES = [
     TARGET_CHANGELOG,
@@ -60,6 +64,7 @@ REQUIRED_WRAPPER_FILES = [
     TARGET_WRAPPER_MANIFEST,
     TARGET_FEEDBACK_POLICY,
     TARGET_AUDIT_RULE,
+    TARGET_NOTICE_POLICY,
     CODEX_HOOKS_CONFIG,
     CODEX_START_HOOK_SCRIPT,
     TARGET_DASHBOARD_INDEX,
@@ -73,6 +78,7 @@ REQUIRED_WRAPPER_FILES = [
     ".github/pull_request_template.md",
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
+    TARGET_NOTICE_SCRIPT,
 ]
 
 WRAPPER_MANAGED_FILES = [
@@ -80,6 +86,7 @@ WRAPPER_MANAGED_FILES = [
     TARGET_WRAPPER_GUIDE,
     TARGET_FEEDBACK_POLICY,
     TARGET_AUDIT_RULE,
+    TARGET_NOTICE_POLICY,
     CODEX_HOOKS_CONFIG,
     CODEX_START_HOOK_SCRIPT,
     TARGET_DASHBOARD_INDEX,
@@ -93,6 +100,7 @@ WRAPPER_MANAGED_FILES = [
     ".github/pull_request_template.md",
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
+    TARGET_NOTICE_SCRIPT,
 ]
 
 LEGACY_LAYOUT_FILE_MAP = (
@@ -1483,6 +1491,12 @@ def build_status_section(replacements: dict[str, str]) -> str:
    - 读取 `runtime_identity.display_line`，并将其原样放在本次 Skill invocation 第一条用户可见输出的第一行。
    - 身份头固定以 `🧙🏻‍♂️` 开始；禁止使用 HTML、自定义图片或 shortcode 替代。
    - 同一次 invocation 的后续 commentary 和 final 不重复；下一次 invocation 再展示一次。
+5. EvoZeus Notice
+   - 渲染入口：`python3 {TARGET_NOTICE_SCRIPT} render --kind <kind> --state <state> --message <message> [--action <action>] [--json]`。
+   - 配置事实源：`{TARGET_NOTICE_POLICY}`。普通业务进度不展示 EvoZeus Tag。
+   - 用户纠错、不满意或复盘发现可复用机制缺陷时，先完成当前业务纠正，再运行 feedback audit，并通过 `--context` 传入一句脱敏、可复用、可行动的 Lesson 摘要；在同一响应末尾原样显示 `user_notice.display_text`。
+   - Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。
+   - Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。
 
 解决顺序：Source contract 损坏、manifest 无效、迁移冲突或已确认不兼容时停止业务流程并说明原因；其他情况完成只读检查后直接进入主链路。
 """
@@ -1797,11 +1811,20 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
     )
     signal_id = f"sig_{hashlib.sha256(signal_seed.encode('utf-8')).hexdigest()[:8].upper()}"
     capture_state = "LOCAL_PENDING_CONFIRMATION" if should_capture else None
-    capture_marker = (
-        f"🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜{signal_id}]"
-        if should_capture
-        else None
-    )
+    user_notice = None
+    if should_capture:
+        notice_policy_path = target / TARGET_NOTICE_POLICY
+        notice_policy = load_notice_policy(notice_policy_path if notice_policy_path.is_file() else None)
+        lesson_summary = (context or reason).strip().rstrip("。.!！?")
+        user_notice = render_notice(
+            kind="lesson",
+            state="pending",
+            message=f"捕捉到一条可复用 Lesson：{lesson_summary}。",
+            action="是否记录到 Skill Feedback Issue？本次授权仅用于记录，不启动修复。",
+            signal_id=signal_id,
+            policy=notice_policy,
+        )
+    capture_marker = user_notice["display_text"].splitlines()[0] if user_notice else None
 
     return {
         "stage": "continuous_evolution_loop",
@@ -1820,6 +1843,7 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
         "signal_id": signal_id if should_capture else None,
         "capture_state": capture_state,
         "capture_marker": capture_marker,
+        "user_notice": user_notice,
         "capture_persisted": False,
         "reason": reason,
         "route": route,
@@ -2237,6 +2261,7 @@ def plan_target_layout_migration(
         for pattern in (
             ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
             "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
+            f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
         )
         for path in target.glob(pattern)
         if path.is_file()
@@ -2244,10 +2269,12 @@ def plan_target_layout_migration(
     managed_file_refreshes = [
         CODEX_HOOKS_CONFIG,
         TARGET_PREFLIGHT_SCRIPT,
+        TARGET_NOTICE_SCRIPT,
         CODEX_START_HOOK_SCRIPT,
         TARGET_ONBOARDING_GUIDE,
         TARGET_FEEDBACK_POLICY,
         TARGET_AUDIT_RULE,
+        TARGET_NOTICE_POLICY,
         ".github/ISSUE_TEMPLATE/config.yml",
         ".github/workflows/evozeus-wrapper-preflight.yml",
     ]
@@ -2350,6 +2377,7 @@ def _remove_legacy_wrapper_caches(target: Path) -> list[str]:
     patterns = [
         ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
         "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
+        f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
     ]
     removed: list[str] = []
     for pattern in patterns:
@@ -2376,6 +2404,10 @@ def _refresh_migrated_managed_files(
             target / TARGET_PREFLIGHT_SCRIPT,
         ),
         (
+            wrapper_root / "scripts" / "evozeus_notice.py",
+            target / TARGET_NOTICE_SCRIPT,
+        ),
+        (
             wrapper_root / "templates" / "target" / ".codex" / "hooks" / "evozeus_wrapper_start_check.py",
             target / CODEX_START_HOOK_SCRIPT,
         ),
@@ -2394,6 +2426,10 @@ def _refresh_migrated_managed_files(
         (
             wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "audit-rule.md",
             target / TARGET_AUDIT_RULE,
+        ),
+        (
+            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "notice-policy.json",
+            target / TARGET_NOTICE_POLICY,
         ),
     ]
     refreshed: list[str] = []

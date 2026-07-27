@@ -22,6 +22,9 @@
 - 按 `onboarding.invocation.instruction` 在新的消费项目会话中调用 Skill。
 - 运行 `onboarding.invocation.verification`，确认宿主加载的是 canonical repo，并通过 consumer-project smoke test。
 - Skill 被选中后，instruction surface 的 `skill_entry_preflight` 在业务主链路前检查当前 Skill；该步骤不是 native hook。
+- 启动身份与后续 EvoZeus 生命周期事件由 `.evozeus-wrapper/scripts/evozeus_notice.py` 按 `.evozeus-wrapper/policies/notice-policy.json` 渲染。
+- 用 `python3 .evozeus-wrapper/scripts/evozeus_notice.py render --kind lesson --state pending --message "smoke" --json` 验证本地 Notice 能力；结果必须包含 `writes=false`。
+- 普通业务输出不使用 EvoZeus Tag；可复用 Lesson 在业务纠正完成后独立展示。
 
 ## 初始化
 

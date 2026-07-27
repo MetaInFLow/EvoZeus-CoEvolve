@@ -9,6 +9,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
+try:
+    from .evozeus_notice import load_notice_policy, render_notice
+except ImportError:
+    from evozeus_notice import load_notice_policy, render_notice
+
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
 GLOBAL_EVOZEUS_PROJECTS_DIR = ".projects"
@@ -22,6 +29,7 @@ TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
 TARGET_WRAPPER_GUIDE = f"{TARGET_EVOINFRA_DIR}/WRAPPER.md"
 TARGET_FEEDBACK_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/feedback-policy.json"
 TARGET_AUDIT_RULE = f"{TARGET_EVOINFRA_DIR}/policies/audit-rule.md"
+TARGET_NOTICE_POLICY = f"{TARGET_EVOINFRA_DIR}/policies/notice-policy.json"
 CODEX_HOOKS_CONFIG = ".codex/hooks.json"
 CODEX_START_HOOK_SCRIPT = f"{TARGET_EVOINFRA_DIR}/hooks/evozeus_wrapper_start_check.py"
 TARGET_DASHBOARD_INDEX = f"{TARGET_EVOINFRA_DIR}/docs/index.md"
@@ -33,6 +41,7 @@ TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_MIGRATIONS_README = f"{TARGET_MIGRATIONS_DIR}/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
+TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 
 REQUIRED_FILES = [
     TARGET_CHANGELOG,
@@ -40,6 +49,7 @@ REQUIRED_FILES = [
     TARGET_WRAPPER_MANIFEST,
     TARGET_FEEDBACK_POLICY,
     TARGET_AUDIT_RULE,
+    TARGET_NOTICE_POLICY,
     CODEX_HOOKS_CONFIG,
     CODEX_START_HOOK_SCRIPT,
     TARGET_DASHBOARD_INDEX,
@@ -53,6 +63,7 @@ REQUIRED_FILES = [
     ".github/pull_request_template.md",
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
+    TARGET_NOTICE_SCRIPT,
 ]
 MAINTAINER_REQUIRED_FILES = REQUIRED_FILES
 
@@ -85,6 +96,9 @@ SKILL_EVOLUTION_TERMS = [
     ["~/.evozeus/.projects"],
     ["version --repo"],
     ["identity --json", "runtime_identity.display_line"],
+    [TARGET_NOTICE_POLICY],
+    [TARGET_NOTICE_SCRIPT, "EvoZeus Notice"],
+    ["EvoZeus · Lesson"],
     ["Skill Feedback Issue", "feedback issue"],
     [TARGET_DESIGNS_DIR, "design doc"],
     [TARGET_MIGRATIONS_DIR, "wrapper migration"],
@@ -102,6 +116,17 @@ PLACEHOLDER_PATTERNS = [
     r"\bTBD\b",
     r"待填写",
 ]
+
+NOTICE_REQUIRED_STATES = {
+    "skill": {"active"},
+    "lesson": {"pending", "recorded"},
+    "evolution": {"authorized", "running", "verified"},
+    "maintenance": {"pending", "running", "completed"},
+    "advisory": {"continue"},
+    "blocked": {"blocked"},
+    "uat": {"replaced", "passed", "failed"},
+    "release": {"published"},
+}
 
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -713,12 +738,50 @@ def check_runtime(args: argparse.Namespace) -> None:
     ok("runtime bundle is complete")
 
 
+def check_notice_policy(target: Path) -> None:
+    path = target / TARGET_NOTICE_POLICY
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"invalid notice policy {TARGET_NOTICE_POLICY}: {exc}")
+    if not isinstance(policy, dict) or policy.get("schema_version") != "v1":
+        fail(f"{TARGET_NOTICE_POLICY} schema_version must be v1")
+    if policy.get("tag_style") != "markdown_code":
+        fail(f"{TARGET_NOTICE_POLICY} tag_style must be markdown_code")
+    if not isinstance(policy.get("show_signal_id"), bool):
+        fail(f"{TARGET_NOTICE_POLICY} show_signal_id must be boolean")
+    events = policy.get("events")
+    if not isinstance(events, dict):
+        fail(f"{TARGET_NOTICE_POLICY} events must be an object")
+    for kind, required_states in NOTICE_REQUIRED_STATES.items():
+        event = events.get(kind)
+        if not isinstance(event, dict) or not isinstance(event.get("tag"), str):
+            fail(f"{TARGET_NOTICE_POLICY} missing notice event: {kind}")
+        if "show_state_label" in event and not isinstance(event["show_state_label"], bool):
+            fail(f"{TARGET_NOTICE_POLICY} {kind} show_state_label must be boolean")
+        if "details_separator" in event and not isinstance(event["details_separator"], str):
+            fail(f"{TARGET_NOTICE_POLICY} {kind} details_separator must be a string")
+        states = event.get("states")
+        if not isinstance(states, dict) or not required_states.issubset(states):
+            missing = sorted(required_states - set(states or {}))
+            fail(f"{TARGET_NOTICE_POLICY} {kind} missing states: {', '.join(missing)}")
+        for state in required_states:
+            visual = states[state]
+            if not isinstance(visual, dict) or not all(
+                isinstance(visual.get(field), str) and visual[field].strip()
+                for field in ("icon", "label")
+            ):
+                fail(f"{TARGET_NOTICE_POLICY} {kind}/{state} must define icon and label")
+    ok("notice policy satisfies the target-Skill visual contract")
+
+
 def check_maintainer(args: argparse.Namespace) -> None:
     target = Path(args.target).resolve()
     missing = [path for path in MAINTAINER_REQUIRED_FILES if not (target / path).exists()]
     if missing:
         fail("missing required maintainer wrapper files:\n" + "\n".join(f"- {path}" for path in missing))
     manifest = load_wrapper_manifest(target)
+    check_notice_policy(target)
     check_onboarding_contract(manifest)
     check_dashboard_contract(manifest)
     check_integration_contract(target, manifest)
@@ -1087,10 +1150,18 @@ def build_runtime_identity(
     channel_label = CHANNEL_LABELS[channel]
     skill_display = skill_release or "未发布"
     canonical_url = f"https://github.com/{canonical_repo}"
-    display_line = (
-        f"🧙🏻‍♂️ [EvoZeus 自进化维护] [{canonical_repo}]({canonical_url}) · "
-        f"Skill {skill_display} · Harness {harness_version} · {channel_label}"
+    notice_policy_path = target / TARGET_NOTICE_POLICY
+    notice_policy = load_notice_policy(notice_policy_path if notice_policy_path.is_file() else None)
+    identity_notice = render_notice(
+        kind="skill",
+        state="active",
+        details=(
+            f"[{canonical_repo}]({canonical_url}) · Skill {skill_display} · "
+            f"Harness {harness_version} · `渠道：{channel_label}`"
+        ),
+        policy=notice_policy,
     )
+    display_line = identity_notice["display_text"]
     return {
         "schema_version": "v1",
         "managed_by": "EvoZeus-CoEvolve",
@@ -1112,6 +1183,7 @@ def build_runtime_identity(
         ),
         "display_once_scope": "skill_invocation",
         "display_line": display_line,
+        "notice": identity_notice,
     }
 
 
