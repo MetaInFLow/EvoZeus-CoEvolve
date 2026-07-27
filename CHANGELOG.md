@@ -6,7 +6,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Fixed
 
-- Changed stale-but-compatible Harness detection from a global business gate to an advisory warning that continues normal Skill execution.
+- Changed stale-but-compatible Harness detection from a global business gate to an advisory warning that continues normal Skill execution and tells the selected Skill to surface its current-to-latest Harness version.
 - Required explicit user intent before any Harness upgrade, migration, branch, worktree, or other maintenance write; normal Skill invocation remains read-only for Harness state.
 - Refreshed generated Skill-entry guidance so source-contract errors and confirmed incompatibility remain blocking while compatible Harness drift does not block business work.
 

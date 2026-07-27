@@ -2285,8 +2285,18 @@ class GlobalDispatcherTest(unittest.TestCase):
             self.assertIn("正常业务继续", payload["systemMessage"])
             self.assertIn("用户明确请求", payload["systemMessage"])
             self.assertIn("创建分支或 worktree", payload["systemMessage"])
+            self.assertIn("若本任务选中了落后 Skill", payload["systemMessage"])
+            self.assertIn("当前 Harness 版本", payload["systemMessage"])
             self.assertIn(
                 "next_action=continue_business_without_harness_writes",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertIn(
+                "selected_skill_notice=current_to_latest_advisory",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertIn(
+                "latest_harness_version=v0.10.0",
                 payload["hookSpecificOutput"]["additionalContext"],
             )
             self.assertNotIn("private-skill", serialized)

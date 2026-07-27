@@ -177,13 +177,16 @@ def discover_wrapped_targets(home: Path) -> tuple[list[dict[str, Any]], list[str
     return targets, errors
 
 
-def _allow(message: str, next_action: str) -> dict[str, Any]:
+def _allow(message: str, next_action: str, additional_context: str | None = None) -> dict[str, Any]:
+    context = f"evozeus_global_gate=allow; next_action={next_action}"
+    if additional_context:
+        context = f"{context}; {additional_context}"
     return {
         "continue": True,
         "systemMessage": message,
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": f"evozeus_global_gate=allow; next_action={next_action}",
+            "additionalContext": context,
         },
     }
 
@@ -237,8 +240,13 @@ def evaluate_session_start(
         return _allow(
             f"检测到 {outdated_count} 个 EvoZeus harness 落后，最新版本为 {latest}。"
             "正常业务继续；普通 Skill 调用不授权 Harness 升级、迁移、创建分支或 worktree。"
-            "只有用户明确请求 Harness 维护或升级后，才生成 dry-run 方案并单独确认写入。",
+            "只有用户明确请求 Harness 维护或升级后，才生成 dry-run 方案并单独确认写入。"
+            "若本任务选中了落后 Skill，向用户展示一行‘当前 Harness 版本 → latest’，说明兼容并继续运行。",
             "continue_business_without_harness_writes",
+            (
+                "selected_skill_notice=current_to_latest_advisory; "
+                f"latest_harness_version={latest}"
+            ),
         )
     return _allow("EvoZeus wrapper harnesses are current.", "none")
 
