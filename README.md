@@ -4,7 +4,7 @@
 
 EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公开论文 artifact 入口。它为本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 加装可审查、可发布、可恢复的演进 harness，同时保留目标 Skillware 的核心任务逻辑和原开发方式。
 
-当前开发候选 `v0.13.0` 在 Stable `v0.12.1` 的身份头、渠道判断和分阶段授权基础上，增加目标 Skill 本地可配置的 EvoZeus Notice policy 与只读 CLI，统一 Lesson、Evolution、Maintenance、UAT、Release、Advisory 和 Blocked 的用户可见合同。它继续提供由 EvoZeus Stable/UAT 渠道清单固定版本的 `external-sidecar` 合同包。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文只陈述已有验证结果。
+当前正式版本 `v0.13.0` 在 `v0.12.1` 的身份头、渠道判断和分阶段授权基础上，增加目标 Skill 本地可配置的 EvoZeus Notice policy 与只读 CLI，统一 Lesson、Evolution、Maintenance、UAT、Release、Advisory 和 Blocked 的用户可见合同。它继续提供由 EvoZeus Stable/UAT 渠道清单固定版本的 `external-sidecar` 合同包。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文只陈述已有验证结果。
 
 开发中的 Slice-01 已在 `contracts/v1/` 建立首个 hash-bound Collaborative Evolution contract bundle。它只定义 attachment 和 target template inventory；执行、安装和本地状态由 `EvoZeus-infra` 的 EvoZeus Runtime 实现。`external-sidecar` contract 固定为目标 Skillware 零写入，尚未发布为 `v0.11.3` 的现有能力。
 

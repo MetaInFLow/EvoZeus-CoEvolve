@@ -4,6 +4,10 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+- None yet.
+
+## [v0.13.0] - 2026-07-27
+
 ### Added
 
 - Added a target-local, configurable EvoZeus Notice policy and read-only rendering CLI for managed Skills.
