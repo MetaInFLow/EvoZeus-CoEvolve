@@ -33,7 +33,7 @@ Issue #12 拆成两层目标。
 1. 把 project hook 明确标记为 `repo_maintenance_hook`，不得再作为 Skill invocation coverage 的证据。
 2. 安装一个 user-level `SessionStart` dispatcher，在任意 workspace 启动任务时聚合检查全部 wrapped Skills。
 3. 在每个 wrapped Skill 的 instruction surface 保留入口 preflight，使 Agent 选中该 Skill 后再校验该 Skill 的 source contract 和 release 状态。
-4. 全局 dispatcher 发现任何落后 harness 时严格阻断，并提示用户是否升级全部落后 harness。
+4. 全局 dispatcher 发现兼容的落后 harness 时给出 advisory warning 并继续业务流程；普通 Skill 调用不授权任何 harness 维护写入。
 5. manifest、诊断、preflight 和 reinstall 输出必须分别报告这两层能力，不再用一个布尔值混合表达。
 
 ### 当前无法精确实现
@@ -111,23 +111,22 @@ dispatcher 以 `~/.evozeus/.projects/OWNER/REPO` 为 wrapped target 注册事实
 4. 聚合比较所有 target 的 `wrapper_version` 与 authoritative EvoZeus-CoEvolve latest release。
 5. 不在 hook 输出中暴露 Skill 名称、本地路径、客户数据或 manifest 业务内容。
 
-### 严格阻断
+### 运行与维护授权
 
 当 latest release 已确定，且至少一个 target harness 落后时，dispatcher 返回：
 
 ```json
 {
-  "continue": false,
-  "stopReason": "检测到 3 个 EvoZeus harness 落后，最新版本为 v0.10.0。是否升级全部？",
-  "systemMessage": "回复‘升级全部’执行统一预检与升级；回复‘稍后’仅跳过本次任务。",
+  "continue": true,
+  "systemMessage": "检测到 3 个 EvoZeus harness 落后，最新版本为 v0.10.0。正常业务继续；普通 Skill 调用不授权 Harness 维护写入。只有用户明确请求维护后，才生成 dry-run 方案并单独确认写入。",
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "next_action=evozeus_harness_upgrade_all"
+    "additionalContext": "evozeus_global_gate=allow; next_action=continue_business_without_harness_writes"
   }
 }
 ```
 
-具体 target 列表只在用户确认后由 upgrade plan 展示，不进入全局 hook 输出。
+具体 target 列表只在用户明确请求维护后由 upgrade plan 展示，不进入全局 hook 输出。普通业务 Prompt、Skill 被选中或用户未声明“只读”均不构成维护授权。
 
 网络失败处理：
 
@@ -150,7 +149,7 @@ dispatcher 以 `~/.evozeus/.projects/OWNER/REPO` 为 wrapped target 注册事实
 2. 确认 canonical project pointer、origin 和 runtime install 指向同一 source。
 3. 确认 Skill release 与 target changelog/release contract。
 4. 全局 dispatcher 已检查 harness latest 时可复用本 session context，避免重复远端查询；自身 source contract 仍需校验。
-5. 失败时停在 Skill 业务逻辑之前。
+5. source contract 损坏、manifest 无效、迁移冲突或已确认不兼容时停在 Skill 业务逻辑之前；兼容版本落后只提示并继续。
 
 这层能力必须命名为 `skill_entry_preflight` 或 `prompt_runtime_check`，不能称为 native hook。
 
@@ -229,10 +228,11 @@ MCP/tool gateway 不是本次默认迁移目标。只有满足以下条件的 Sk
 - 模拟中途写失败后完整回滚。
 - command 不依赖 active git repository。
 
-### Strict Gate
+### Runtime Authorization Gate
 
 - 全部 target 最新时 allow。
-- 一个或多个 target 落后时 block，并只输出数量和 latest version。
+- 一个或多个 compatible target 落后时 warn/allow，并只输出数量和 latest version。
+- 普通 Skill 调用不授权 Harness 写入；用户明确请求维护后才进入 upgrade dry-run。
 - latest 查询失败但有缓存时使用缓存。
 - latest 查询失败且无缓存时 warn/allow，不伪造 latest。
 - 本地 manifest/source contract 确定性错误时 block。

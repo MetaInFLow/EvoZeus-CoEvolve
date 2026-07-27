@@ -256,6 +256,8 @@ class LifecycleBasicsTest(unittest.TestCase):
             updated = skill.read_text(encoding="utf-8")
             self.assertEqual(updated.count("## EvoZeus-CoEvolve 状态检查"), 1)
             self.assertNotIn("## EvoZeus-wrapper 状态检查", updated)
+            self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", updated)
+            self.assertNotIn("再进入主链路", updated)
             self.assertIn("# Target Skill Title\n\nTarget-owned content.", updated)
 
     def test_crlf_instruction_surface_inserts_status_after_frontmatter(self):
@@ -548,6 +550,22 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("repo_maintenance_hook", text)
         self.assertIn("global_session_dispatcher", text)
         self.assertIn("SkillInvoke", text)
+
+    def test_generated_status_keeps_compatible_harness_updates_advisory_and_requires_explicit_authorization(self):
+        replacements = {
+            "CURRENT_VERSION": "v0.1.0",
+            "REPO_NAME": "MetaInFLow/skill",
+            "VISIBILITY": "private",
+            "WRAPPER_VERSION": "v0.11.4",
+        }
+
+        text = build_status_section(replacements)
+
+        self.assertIn("兼容的旧 wrapper 只作为维护提醒，不阻塞业务主链路", text)
+        self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", text)
+        self.assertIn("用户明确请求 Harness 维护或升级", text)
+        self.assertNotIn("如果 wrapper 落后：先运行", text)
+        self.assertNotIn("再进入主链路", text)
 
     def test_preflight_root_entry_path_uses_manifest_instruction_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2246,7 +2264,7 @@ class GlobalDispatcherTest(unittest.TestCase):
         pointer.symlink_to(target)
         return target
 
-    def test_dispatcher_blocks_with_aggregate_count_when_targets_are_stale(self):
+    def test_dispatcher_warns_and_allows_with_aggregate_count_when_targets_are_stale(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             self.create_wrapped_target(home, "private-skill-a", "v0.9.1")
@@ -2262,8 +2280,15 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
             serialized = json.dumps(payload, ensure_ascii=False)
 
-            self.assertFalse(payload["continue"])
-            self.assertIn("2 个 EvoZeus harness 落后", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertIn("2 个 EvoZeus harness 落后", payload["systemMessage"])
+            self.assertIn("正常业务继续", payload["systemMessage"])
+            self.assertIn("用户明确请求", payload["systemMessage"])
+            self.assertIn("创建分支或 worktree", payload["systemMessage"])
+            self.assertIn(
+                "next_action=continue_business_without_harness_writes",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
             self.assertNotIn("private-skill", serialized)
             self.assertNotIn(str(home), serialized)
 
@@ -2401,8 +2426,9 @@ class GlobalDispatcherTest(unittest.TestCase):
             payload = json.loads(result.stdout)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(payload["continue"])
-            self.assertIn("1 个 EvoZeus harness 落后", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertIn("1 个 EvoZeus harness 落后", payload["systemMessage"])
+            self.assertIn("正常业务继续", payload["systemMessage"])
 
     def test_project_and_global_hooks_share_one_remote_lookup(self):
         project_template = Path(

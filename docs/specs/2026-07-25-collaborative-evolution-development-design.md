@@ -726,7 +726,7 @@ subprocess.Popen(
 - scanner 超时、CLI auth 失效、judge timeout、invalid JSON、invalid evidence ref 和 provider 缺失全部 fail open。
 - 失败时 `continue=true`，`additionalContext` 不注入反馈请求。
 - diagnostic 写入 `~/.evozeus/coevolve/logs/retrospective.jsonl`，默认保留 30 天。
-- 任何 retrospective 错误都不能影响现有 harness upgrade gate。
+- 任何 retrospective 错误都不能影响现有 Harness 状态检查；兼容版本落后保持 advisory allow，source contract 硬错误保持 blocking。
 - 后台 worker 必须设置 recursion guard；缺少 guard 时禁止启动 CLI judge。
 
 ### 6.7 Dispatcher 输出
@@ -2733,7 +2733,7 @@ CLI ownership 固定为：命令名称和行为契约归 EvoZeus-CoEvolve，参�
 | `40` | release_blocked | approval、tag、preflight 或 observation 不满足 |
 | `50` | internal_error | 未分类错误，必须有本地 diagnostic ID |
 
-SessionStart dispatcher 不把这些 code 直接转换为 block；只有原有 harness version/registry gate 保留当前 blocking 语义。Retrospective 相关错误都包装为 allow + diagnostic。
+SessionStart dispatcher 不把这些 code 直接转换为 block。Harness 兼容版本落后采用 advisory allow，registry/source contract 硬错误保留 blocking 语义。Retrospective 相关错误都包装为 allow + diagnostic。
 
 ### 18.5 兼容映射
 

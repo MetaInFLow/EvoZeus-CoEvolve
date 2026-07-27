@@ -192,10 +192,10 @@ python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py release --tag v0.1
 - Structure：目标 repo 必须包含 `.evozeus-wrapper/` canonical harness。说明入口由 manifest 的 `instruction_surface` 或根 `SKILL.md` / `AGENTS.md` 决定；project hook 必须声明 `scope=canonical_repository` 且不得声称 Skill invocation coverage；`onboarding` 和 `dashboard` contract 必须完整。
 - Version：运行 Skill 前必须检查 GitHub latest release；如果远端 release 比本地 `.evozeus-wrapper/CHANGELOG.md` 新，先更新再运行。
 - Existing repo version：已有 repo 不得重置为 `v0.1.0`；先取 GitHub latest release，再取 `.evozeus-wrapper/CHANGELOG.md`，两者都没有时让 owner 选择当前版本。
-- Harness：`harness upgrade-check` 默认从 GitHub latest release 获取权威最新版本；查询失败时返回 `latest_unknown`，不得把当前版本当成最新版本。旧 layout 或残缺的较早 v2 harness 先运行 `harness migrate-layout --dry-run`；迁移会安全合并 Codex hooks、刷新状态段和 manifest、追加 migration note，并在 structure post-validation 通过后才报告成功。
+- Harness：`harness upgrade-check` 默认从 GitHub latest release 获取权威最新版本；查询失败时返回 `latest_unknown`，不得把当前版本当成最新版本。兼容的旧 Harness 只警告并继续业务流程；普通 Skill 调用不授予维护写入权限。用户明确请求维护后先运行 dry-run，实际迁移继续要求单独确认。旧 layout 或残缺的较早 v2 harness 迁移会安全合并 Codex hooks、刷新状态段和 manifest、追加 migration note，并在 structure post-validation 通过后才报告成功。
 - Workflow：push 和 workflow_dispatch 始终运行 maintainer validation。Pages deployment 只有在仓库变量 `EVOZEUS_PAGES_ENABLED=true` 时运行；否则明确使用 repository-only fallback。
 - Project hook：target `.codex/hooks.json` 只覆盖 canonical repo 维护；adapter 优先复用 global dispatcher 的 latest cache，避免重复联网。
-- Global hook：`~/.codex/hooks.json` 调用 `~/.evozeus/hooks/evozeus_wrapper_dispatcher.py`，在 `SessionStart` 聚合检查全部 registered wrapped Skills。安装和 trust 分开报告，写操作必须显式批准。
+- Global hook：`~/.codex/hooks.json` 调用 `~/.evozeus/hooks/evozeus_wrapper_dispatcher.py`，在 `SessionStart` 聚合检查全部 registered wrapped Skills。兼容版本落后返回 advisory allow；source contract 硬错误继续阻塞。安装和 trust 分开报告，所有维护写入必须由用户明确发起并单独批准。
 - Upgrade all：显式版本必须与 dispatcher cache、环境 override 或 GitHub release 的 authoritative latest 一致；全部 target 均需可验证的 clean Git worktree 和写权限。任一 preflight 失败时零写入，应用中途失败则恢复完整 write-set snapshots。
 - Reinstall：先用 `--dry-run` 查看计划；实际执行会创建或修正 symlink。真实目录必须显式增加 `--approve-archive`，原内容移动到 `~/.evozeus/archives/runtime-installs/`，不会删除。
 - Feedback audit：`python3 scripts/evozeus_wrapper.py loop audit --target <repo> --user-input "<input>" --json` 判断用户纠正、不满意或机制缺陷是否应转为 Skill Feedback Issue，并输出脱敏 Issue draft；默认不写 GitHub。

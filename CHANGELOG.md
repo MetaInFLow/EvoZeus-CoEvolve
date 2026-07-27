@@ -4,6 +4,17 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Changed stale-but-compatible Harness detection from a global business gate to an advisory warning that continues normal Skill execution.
+- Required explicit user intent before any Harness upgrade, migration, branch, worktree, or other maintenance write; normal Skill invocation remains read-only for Harness state.
+- Refreshed generated Skill-entry guidance so source-contract errors and confirmed incompatibility remain blocking while compatible Harness drift does not block business work.
+
+### Verification
+
+- `python3 -m pytest -q` (134 passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py templates/global/evozeus_wrapper_dispatcher.py templates/target/.codex/hooks/evozeus_wrapper_start_check.py`
+
 ## [v0.12.0] - 2026-07-26
 
 ### Added

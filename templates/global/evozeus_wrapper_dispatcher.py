@@ -234,10 +234,11 @@ def evaluate_session_start(
         and version_key(target["wrapper_version"]) < latest_key
     )
     if outdated_count:
-        return _block(
-            f"检测到 {outdated_count} 个 EvoZeus harness 落后，最新版本为 {latest}。是否升级全部？",
-            "回复‘升级全部’执行统一预检与升级；回复‘稍后’仅跳过本次任务。",
-            "evozeus_harness_upgrade_all",
+        return _allow(
+            f"检测到 {outdated_count} 个 EvoZeus harness 落后，最新版本为 {latest}。"
+            "正常业务继续；普通 Skill 调用不授权 Harness 升级、迁移、创建分支或 worktree。"
+            "只有用户明确请求 Harness 维护或升级后，才生成 dry-run 方案并单独确认写入。",
+            "continue_business_without_harness_writes",
         )
     return _allow("EvoZeus wrapper harnesses are current.", "none")
 

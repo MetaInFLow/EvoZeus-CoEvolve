@@ -44,6 +44,14 @@ Wrapper 不能把所有启动检查都叫作 hook。`.evozeus-wrapper/wrapper.js
 
 Preflight 必须阻止能力夸大：project hook 的 scope 不是 `canonical_repository`、声称 `covers_skill_invocation=true`，或 manifest 没有真实 `SkillInvoke` 证据却声称 native invocation 时，结构检查必须失败。
 
+### Runtime Authorization Contract
+
+- 正常 Skill 调用只读取 Harness 状态，不授予升级、迁移、创建分支、创建 worktree 或其他维护写入权限。
+- compatible Harness drift 返回 advisory warning 并继续 Skill 业务流程；输出聚合数量、当前已知 latest version 和明确的维护授权提示，不暴露目标名称或本地路径。
+- 用户明确请求 Harness 维护或升级后，系统先生成 dry-run 方案；实际写入继续要求单独确认并执行完整 preflight、备份和回滚契约。
+- source contract 损坏、manifest 无效、迁移冲突或已确认不兼容属于硬错误，可以阻塞当前业务流程并给出修复动作。
+- Skill release 与 Harness version 始终作为两条版本轴呈现。
+
 ## Single Source Contract
 
 同一个 Skill 在本地只允许一个 physical GitHub repo clone。
