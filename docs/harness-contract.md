@@ -150,9 +150,9 @@ python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.12.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.12.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 --approve --json
 ```
 
 `loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、`🧙🏻‍♂️` 本地待确认标志、`route`、`severity` 和脱敏 Issue body。默认下一步是继续业务并等待用户确认，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。

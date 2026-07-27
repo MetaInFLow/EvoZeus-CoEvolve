@@ -4,7 +4,7 @@
 
 EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公开论文 artifact 入口。它为本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 加装可审查、可发布、可恢复的演进 harness，同时保留目标 Skillware 的核心任务逻辑和原开发方式。
 
-当前 `v0.12.0` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复，并提供由 EvoZeus Stable/UAT 渠道清单固定版本的 `external-sidecar` 合同包。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文只陈述已有验证结果。
+当前 `v0.12.1` 已实现 target diagnosis、增量 attachment、canonical repo/runtime binding、feedback/design/PR/release preflight、版本检查、迁移和本地恢复，并增加每次受管 Skill 调用的 EvoZeus 身份头、开发版/UAT/正式版渠道判断和分阶段反馈授权。它继续提供由 EvoZeus Stable/UAT 渠道清单固定版本的 `external-sidecar` 合同包。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文只陈述已有验证结果。
 
 开发中的 Slice-01 已在 `contracts/v1/` 建立首个 hash-bound Collaborative Evolution contract bundle。它只定义 attachment 和 target template inventory；执行、安装和本地状态由 `EvoZeus-infra` 的 EvoZeus Runtime 实现。`external-sidecar` contract 固定为目标 Skillware 零写入，尚未发布为 `v0.11.3` 的现有能力。
 
@@ -87,8 +87,8 @@ python3 scripts/evozeus_wrapper.py hook global plan --json
 python3 scripts/evozeus_wrapper.py hook global install --approve --json
 python3 scripts/evozeus_wrapper.py hook global status --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/my-skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.12.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.12.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.1 --dry-run --json
 ```
 
 如果 `env diagnose` 返回 `next_action: install_evozeus`，先安装 / 初始化 EvoZeus，不进入目标 repo transform。如果没有给 `Visibility`，Agent 必须先问用户选择 `public` 还是 `private`。如果本地发现多个 repo clone 或多个 real-directory 安装副本，必须先让用户选择 canonical repo 或归档策略。

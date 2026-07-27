@@ -6,6 +6,20 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Added
 
+- None yet.
+
+### Fixed
+
+- None yet.
+
+### Verification
+
+- None yet.
+
+## [v0.12.1] - 2026-07-27
+
+### Added
+
 - Added a versioned `runtime_identity` preflight result and `identity --json` command that render a Unicode-first EvoZeus maintenance header with canonical repository, Skill release, Harness version, and development/UAT/stable channel.
 - Required each wrapped Skill invocation to place `runtime_identity.display_line` on the first user-visible line exactly once.
 - Added `🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]` as the feedback-capture presentation contract.
