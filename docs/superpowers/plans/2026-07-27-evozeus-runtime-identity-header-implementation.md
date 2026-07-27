@@ -1,6 +1,6 @@
 # EvoZeus 调用身份头与反馈授权实施计划
 
-状态：执行中
+状态：已完成
 
 依据：`docs/superpowers/specs/2026-07-27-evozeus-runtime-identity-header-design.md`
 
@@ -90,7 +90,7 @@
 ```text
 python3 -m pytest -q
 python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py templates/global/evozeus_wrapper_dispatcher.py templates/target/.codex/hooks/evozeus_wrapper_start_check.py
-python3 scripts/evozeus_wrapper_preflight.py structure
+python3 -m pytest -q tests/test_evozeus_wrapper_lifecycle.py -k 'bootstrap or migration or runtime_identity'
 git diff --check
 ```
 
@@ -105,3 +105,12 @@ git diff --check
 ## 提交边界
 
 实施保持单主题分支。完成后提交代码与验证记录，停在 UAT 准备状态；不创建正式 release，不更新 Stable，不批量升级已接入 Skill。
+
+## 实施结果
+
+- `identity --json` 已输出版本化 `runtime_identity`，包含 Unicode 身份头、canonical repo、Skill release、Harness version 和三态渠道。
+- 渠道分类已覆盖正式版、UAT、开发分支、dirty worktree、未发布 Skill 和 release 不可用；所有不确定性 fail closed 为开发版。
+- generated status section 已要求每次 invocation 第一条用户可见输出首行展示一次 `runtime_identity.display_line`。
+- feedback audit 已生成短 signal id 与本地待确认 marker；`issue_create_command=null`，Issue 与修复保持独立授权。
+- target templates、公开 Harness contract、README、Skill 指令、contract bundle hash 和计划中的 `v0.12.1` source revision 已同步。
+- 完整验证：`139 passed, 8 subtests passed`；Python compile、contract hash、真实 Skill identity smoke、真实 feedback audit smoke 和 `git diff --check` 通过。

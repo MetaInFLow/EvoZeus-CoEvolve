@@ -52,6 +52,19 @@ Preflight 必须阻止能力夸大：project hook 的 scope 不是 `canonical_re
 - source contract 损坏、manifest 无效、迁移冲突或已确认不兼容属于硬错误，可以阻塞当前业务流程并给出修复动作。
 - Skill release 与 Harness version 始终作为两条版本轴呈现。
 
+### Runtime Identity Contract
+
+每次调用受管 Skill 时，目标 instruction surface 在入口 preflight 后读取 `runtime_identity.display_line`，并把它原样放在第一条用户可见输出的第一行。本次 invocation 的后续 commentary 与 final 不重复；下一次 invocation 再展示。
+
+```text
+🧙🏻‍♂️ [EvoZeus 自进化维护] [OWNER/REPO](https://github.com/OWNER/REPO) · Skill vX.Y.Z · Harness vA.B.C · 开发版/UAT/正式版
+```
+
+- 身份头使用 Unicode `🧙🏻‍♂️`，禁止 HTML、图片路径和自定义 shortcode。
+- `canonical_repo` 与 Harness version 来自 wrapper manifest；Skill release 来自目标 release/CHANGELOG；渠道来自 Git branch/HEAD/status 与 GitHub latest release 的交叉验证。
+- clean 受控 `uat/*` 来源显示 `UAT`；clean HEAD 与 latest release commit 完全一致时显示 `正式版`；其他情况 fail closed 为 `开发版`。
+- 当前平台没有原生 `SkillInvoke` 事件，展示由 `prompt_runtime_check` instruction surface 约束，不能声明 native enforcement。
+
 ## Single Source Contract
 
 同一个 Skill 在本地只允许一个 physical GitHub repo clone。
@@ -142,7 +155,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.0 
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.12.0 --approve --json
 ```
 
-`loop audit` 默认不写 GitHub；它输出 `should_capture`、`route`、`severity`、脱敏 Issue body 和可执行的 `gh issue create` 命令。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
+`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、`🧙🏻‍♂️` 本地待确认标志、`route`、`severity` 和脱敏 Issue body。默认下一步是继续业务并等待用户确认，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
 
 ## Harness Version Contract
 

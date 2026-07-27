@@ -1478,6 +1478,11 @@ def build_status_section(replacements: dict[str, str]) -> str:
 3. Source contract 状态
    - 检查命令：`python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`
    - 如果 `~/.evozeus/.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。
+4. 调用身份头
+   - 检查命令：`python3 {TARGET_PREFLIGHT_SCRIPT} identity --json`
+   - 读取 `runtime_identity.display_line`，并将其原样放在本次 Skill invocation 第一条用户可见输出的第一行。
+   - 身份头固定以 `🧙🏻‍♂️` 开始；禁止使用 HTML、自定义图片或 shortcode 替代。
+   - 同一次 invocation 的后续 commentary 和 final 不重复；下一次 invocation 再展示一次。
 
 解决顺序：Source contract 损坏、manifest 无效、迁移冲突或已确认不兼容时停止业务流程并说明原因；其他情况完成只读检查后直接进入主链路。
 """
@@ -1787,14 +1792,16 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
         user_input=user_input,
         context=context,
     )
-    issue_command = None
-    if should_capture and issue_repo:
-        issue_command = (
-            "gh issue create "
-            f"--repo {issue_repo} "
-            f"--title {json.dumps(title, ensure_ascii=False)} "
-            "--body-file <redacted-feedback.md>"
-        )
+    signal_seed = "|".join(
+        [canonical_repo or "unknown", route, " ".join(user_input.lower().split())]
+    )
+    signal_id = f"sig_{hashlib.sha256(signal_seed.encode('utf-8')).hexdigest()[:8].upper()}"
+    capture_state = "LOCAL_PENDING_CONFIRMATION" if should_capture else None
+    capture_marker = (
+        f"🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜{signal_id}]"
+        if should_capture
+        else None
+    )
 
     return {
         "stage": "continuous_evolution_loop",
@@ -1810,6 +1817,10 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
         "issue_repo": issue_repo,
         "secondary_issue_repo": secondary_issue_repo,
         "should_capture": should_capture,
+        "signal_id": signal_id if should_capture else None,
+        "capture_state": capture_state,
+        "capture_marker": capture_marker,
+        "capture_persisted": False,
         "reason": reason,
         "route": route,
         "severity": severity,
@@ -1818,8 +1829,16 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
         ),
         "issue_title": title if should_capture else None,
         "issue_body": body if should_capture else None,
-        "issue_create_command": issue_command,
-        "next_action": "create_or_confirm_feedback_issue" if should_capture else "no_capture_needed",
+        "issue_create_command": None,
+        "authorization": {
+            "issue_submission": "explicit_confirmation_required",
+            "fix_execution": "separate_confirmation_required",
+        },
+        "next_action": (
+            "continue_business_and_await_feedback_submission_confirmation"
+            if should_capture
+            else "no_capture_needed"
+        ),
     }
 
 
