@@ -27,7 +27,13 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 ## 反馈入口
 
-如果使用中遇到 Skill 输出不满意，请提交 Skill Feedback Issue。Issue 需要包含：
+如果使用中遇到 Skill 输出不满意，先运行 feedback audit，并显示：
+
+```text
+🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]
+```
+
+捕获阶段只保留当前 invocation 内的脱敏结构化结果，继续原业务且不执行外部写入。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
 
 - 不满意的 Skill 结果。
 - 期望结果。
@@ -35,9 +41,13 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 - 证据边界。
 - 影响程度。
 
+创建 Issue 不授权修改 Skill、创建分支、设计文档或 PR；实现修复需要新的明确授权。
+
 ## 进化规则
 
-`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract，再运行 `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py identity --json`。每次 Skill invocation 将 `runtime_identity.display_line` 原样放在第一条用户可见输出的第一行，只展示一次；下一次 invocation 再展示。如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+
+身份头固定使用 Unicode `🧙🏻‍♂️`，并显示 canonical repo、Skill release、Harness version 和 `开发版` / `UAT` / `正式版`。禁止使用 HTML、图片路径或自定义 shortcode。
 
 `.evozeus-wrapper/wrapper.json` 分开记录 Skill invocation mode 与 capability：
 

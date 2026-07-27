@@ -4,6 +4,40 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- None yet.
+
+### Fixed
+
+- None yet.
+
+### Verification
+
+- None yet.
+
+## [v0.12.1] - 2026-07-27
+
+### Added
+
+- Added a versioned `runtime_identity` preflight result and `identity --json` command that render a Unicode-first EvoZeus maintenance header with canonical repository, Skill release, Harness version, and development/UAT/stable channel.
+- Required each wrapped Skill invocation to place `runtime_identity.display_line` on the first user-visible line exactly once.
+- Added `🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]` as the feedback-capture presentation contract.
+
+### Fixed
+
+- Changed stale-but-compatible Harness detection from a global business gate to an advisory warning that continues normal Skill execution and tells the selected Skill to surface its current-to-latest Harness version.
+- Required explicit user intent before any Harness upgrade, migration, branch, worktree, or other maintenance write; normal Skill invocation remains read-only for Harness state.
+- Refreshed generated Skill-entry guidance so source-contract errors and confirmed incompatibility remain blocking while compatible Harness drift does not block business work.
+- Separated feedback capture, Issue submission, and fix execution into distinct authorization states; feedback audit no longer returns an executable Issue command before user confirmation.
+
+### Verification
+
+- `python3 -m pytest -q` (139 passed, 8 subtests passed)
+- `python3 -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py templates/global/evozeus_wrapper_dispatcher.py templates/target/.codex/hooks/evozeus_wrapper_start_check.py`
+- Real wrapped-Skill identity smoke against `MetaInFLow/metainflow-developer-onboarding`: `Skill v0.1.1 · Harness v0.12.0 · 正式版` with `channel_reason=exact_release_commit`.
+- Real feedback-audit smoke returned `LOCAL_PENDING_CONFIRMATION`, `writes=false`, `capture_persisted=false`, and `issue_create_command=null`.
+
 ## [v0.12.0] - 2026-07-26
 
 ### Added

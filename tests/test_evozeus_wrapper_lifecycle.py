@@ -65,8 +65,10 @@ from scripts.evozeus_wrapper_global_hook import (
     record_global_hook_trust,
 )
 from scripts.evozeus_wrapper_preflight import (
+    build_runtime_identity,
     check_onboarding_contract,
     check_integration_contract,
+    classify_runtime_channel,
     load_wrapper_manifest as load_preflight_manifest,
     referenced_runtime_files,
     root_entry_path as preflight_root_entry_path,
@@ -256,6 +258,8 @@ class LifecycleBasicsTest(unittest.TestCase):
             updated = skill.read_text(encoding="utf-8")
             self.assertEqual(updated.count("## EvoZeus-CoEvolve 状态检查"), 1)
             self.assertNotIn("## EvoZeus-wrapper 状态检查", updated)
+            self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", updated)
+            self.assertNotIn("再进入主链路", updated)
             self.assertIn("# Target Skill Title\n\nTarget-owned content.", updated)
 
     def test_crlf_instruction_surface_inserts_status_after_frontmatter(self):
@@ -549,6 +553,71 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("global_session_dispatcher", text)
         self.assertIn("SkillInvoke", text)
 
+    def test_generated_status_requires_runtime_identity_on_first_visible_line_once_per_invocation(self):
+        replacements = {
+            "CURRENT_VERSION": "v0.1.0",
+            "REPO_NAME": "MetaInFLow/skill",
+            "VISIBILITY": "private",
+            "WRAPPER_VERSION": "v0.12.1",
+        }
+
+        text = build_status_section(replacements)
+
+        self.assertIn(f"python3 {TARGET_PREFLIGHT_SCRIPT} identity --json", text)
+        self.assertIn("runtime_identity.display_line", text)
+        self.assertIn("第一条用户可见输出的第一行", text)
+        self.assertIn("同一次 invocation 的后续 commentary 和 final 不重复", text)
+        self.assertIn("下一次 invocation 再展示一次", text)
+        self.assertIn("🧙🏻‍♂️", text)
+        self.assertNotIn("<img", text)
+
+    def test_feedback_surfaces_require_local_pending_state_and_separate_fix_authorization(self):
+        checked_files = [
+            Path("skills/evolution-loop/SKILL.md"),
+            Path("templates/target/.evozeus_evoinfra/audit-rule.md"),
+            Path("templates/target/WRAPPER.md"),
+            Path("templates/target/docs/index.md"),
+        ]
+
+        for path in checked_files:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                self.assertIn("🧙🏻‍♂️", text)
+                self.assertIn("本地待确认", text)
+                self.assertIn("Issue", text)
+                self.assertTrue("授权" in text or "authorization" in text.lower())
+
+        policy = json.loads(
+            Path("templates/target/.evozeus_evoinfra/feedback-policy.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(policy["authorization"]["capture"], "no_external_write")
+        self.assertEqual(
+            policy["authorization"]["issue_submission"],
+            "explicit_confirmation_required",
+        )
+        self.assertEqual(
+            policy["authorization"]["fix_execution"],
+            "separate_confirmation_required",
+        )
+
+    def test_generated_status_keeps_compatible_harness_updates_advisory_and_requires_explicit_authorization(self):
+        replacements = {
+            "CURRENT_VERSION": "v0.1.0",
+            "REPO_NAME": "MetaInFLow/skill",
+            "VISIBILITY": "private",
+            "WRAPPER_VERSION": "v0.11.4",
+        }
+
+        text = build_status_section(replacements)
+
+        self.assertIn("兼容的旧 wrapper 只作为维护提醒，不阻塞业务主链路", text)
+        self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", text)
+        self.assertIn("用户明确请求 Harness 维护或升级", text)
+        self.assertNotIn("如果 wrapper 落后：先运行", text)
+        self.assertNotIn("再进入主链路", text)
+
     def test_preflight_root_entry_path_uses_manifest_instruction_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "hooked-skill-system"
@@ -583,6 +652,151 @@ class LifecycleBasicsTest(unittest.TestCase):
             entry = preflight_root_entry_path(target)
 
             self.assertEqual(str(entry.relative_to(target)), "skills/session-bootstrap/SKILL.md")
+
+    def test_runtime_channel_classification_fails_closed(self):
+        stable = classify_runtime_channel(
+            branch="main",
+            clean=True,
+            head="abc123",
+            skill_release="v1.2.3",
+            latest_release_tag="v1.2.3",
+            latest_release_commit="abc123",
+        )
+        uat = classify_runtime_channel(
+            branch="uat/current",
+            clean=True,
+            head="def456",
+            skill_release="v1.2.3",
+            latest_release_tag="v1.2.3",
+            latest_release_commit="abc123",
+        )
+
+        self.assertEqual(stable, "stable")
+        self.assertEqual(uat, "uat")
+
+        development_cases = [
+            {
+                "branch": "main",
+                "clean": False,
+                "head": "abc123",
+                "skill_release": "v1.2.3",
+                "latest_release_tag": "v1.2.3",
+                "latest_release_commit": "abc123",
+            },
+            {
+                "branch": "codex/feature",
+                "clean": True,
+                "head": "def456",
+                "skill_release": "v1.2.3",
+                "latest_release_tag": "v1.2.3",
+                "latest_release_commit": "abc123",
+            },
+            {
+                "branch": "main",
+                "clean": True,
+                "head": "abc123",
+                "skill_release": None,
+                "latest_release_tag": None,
+                "latest_release_commit": None,
+            },
+            {
+                "branch": "main",
+                "clean": True,
+                "head": "abc123",
+                "skill_release": "v1.2.3",
+                "latest_release_tag": None,
+                "latest_release_commit": None,
+            },
+        ]
+        for case in development_cases:
+            with self.subTest(case=case):
+                self.assertEqual(classify_runtime_channel(**case), "development")
+
+    def test_runtime_identity_contains_clickable_repo_dual_versions_and_stable_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            manifest = target / TARGET_WRAPPER_MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "canonical_repo": "MetaInFLow/skill",
+                        "wrapper_version": "v0.12.1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (target / TARGET_CHANGELOG).write_text(
+                "# Changelog\n\n## [v1.2.3] - 2026-07-27\n\n- Stable.\n",
+                encoding="utf-8",
+            )
+
+            identity = build_runtime_identity(
+                target,
+                latest_release={"available": True, "tag": "v1.2.3", "error": None},
+                git_facts={
+                    "branch": "main",
+                    "clean": True,
+                    "head": "abc123",
+                    "release_commit": "abc123",
+                    "origin_repo": "MetaInFLow/skill",
+                },
+            )
+
+            self.assertEqual(identity["schema_version"], "v1")
+            self.assertEqual(identity["skill_release"], "v1.2.3")
+            self.assertEqual(identity["harness_version"], "v0.12.1")
+            self.assertEqual(identity["channel"], "stable")
+            self.assertEqual(identity["channel_label"], "正式版")
+            self.assertEqual(identity["display_once_scope"], "skill_invocation")
+            self.assertEqual(
+                identity["display_line"],
+                "🧙🏻‍♂️ [EvoZeus 自进化维护] [MetaInFLow/skill](https://github.com/MetaInFLow/skill) · Skill v1.2.3 · Harness v0.12.1 · 正式版",
+            )
+            self.assertNotIn("<img", identity["display_line"])
+
+    def test_runtime_identity_uses_uat_and_unverified_development_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            manifest = target / TARGET_WRAPPER_MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "canonical_repo": "MetaInFLow/skill",
+                        "wrapper_version": "v0.12.1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (target / TARGET_CHANGELOG).write_text(
+                "# Changelog\n\n## [v1.2.3] - 2026-07-27\n\n- Current.\n",
+                encoding="utf-8",
+            )
+            base_facts = {
+                "clean": True,
+                "head": "def456",
+                "release_commit": "abc123",
+                "origin_repo": "MetaInFLow/skill",
+            }
+
+            uat = build_runtime_identity(
+                target,
+                latest_release={"available": True, "tag": "v1.2.3", "error": None},
+                git_facts={**base_facts, "branch": "uat/current"},
+            )
+            development = build_runtime_identity(
+                target,
+                latest_release={"available": False, "tag": None, "error": "offline"},
+                git_facts={**base_facts, "branch": "main", "release_commit": None},
+            )
+
+            self.assertEqual((uat["channel"], uat["channel_label"]), ("uat", "UAT"))
+            self.assertEqual(
+                (development["channel"], development["channel_label"]),
+                ("development", "开发版"),
+            )
+            self.assertEqual(development["channel_reason"], "release_unverified")
 
     def test_runtime_reference_parser_excludes_command_arguments(self):
         text = "Run `scripts/research_search.py --plan path/to/plan.json --out output.jsonl`."
@@ -951,7 +1165,21 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertEqual(report["route"], "wrapper")
             self.assertEqual(report["issue_repo"], "MetaInFLow/EvoZeus-CoEvolve")
             self.assertEqual(report["policy_path"], TARGET_FEEDBACK_POLICY)
-            self.assertIn("gh issue create --repo MetaInFLow/EvoZeus-CoEvolve", report["issue_create_command"])
+            self.assertEqual(report["capture_state"], "LOCAL_PENDING_CONFIRMATION")
+            self.assertRegex(report["signal_id"], r"^sig_[0-9A-F]{8}$")
+            self.assertEqual(
+                report["capture_marker"],
+                f"🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜{report['signal_id']}]",
+            )
+            self.assertFalse(report["writes"])
+            self.assertFalse(report["capture_persisted"])
+            self.assertIsNone(report["issue_create_command"])
+            self.assertEqual(
+                report["next_action"],
+                "continue_business_and_await_feedback_submission_confirmation",
+            )
+            self.assertEqual(report["authorization"]["issue_submission"], "explicit_confirmation_required")
+            self.assertEqual(report["authorization"]["fix_execution"], "separate_confirmation_required")
 
     def test_preflight_rejects_native_hook_mode_without_hook_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2246,7 +2474,7 @@ class GlobalDispatcherTest(unittest.TestCase):
         pointer.symlink_to(target)
         return target
 
-    def test_dispatcher_blocks_with_aggregate_count_when_targets_are_stale(self):
+    def test_dispatcher_warns_and_allows_with_aggregate_count_when_targets_are_stale(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             self.create_wrapped_target(home, "private-skill-a", "v0.9.1")
@@ -2262,8 +2490,25 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
             serialized = json.dumps(payload, ensure_ascii=False)
 
-            self.assertFalse(payload["continue"])
-            self.assertIn("2 个 EvoZeus harness 落后", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertIn("2 个 EvoZeus harness 落后", payload["systemMessage"])
+            self.assertIn("正常业务继续", payload["systemMessage"])
+            self.assertIn("用户明确请求", payload["systemMessage"])
+            self.assertIn("创建分支或 worktree", payload["systemMessage"])
+            self.assertIn("若本任务选中了落后 Skill", payload["systemMessage"])
+            self.assertIn("当前 Harness 版本", payload["systemMessage"])
+            self.assertIn(
+                "next_action=continue_business_without_harness_writes",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertIn(
+                "selected_skill_notice=current_to_latest_advisory",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertIn(
+                "latest_harness_version=v0.10.0",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
             self.assertNotIn("private-skill", serialized)
             self.assertNotIn(str(home), serialized)
 
@@ -2401,8 +2646,9 @@ class GlobalDispatcherTest(unittest.TestCase):
             payload = json.loads(result.stdout)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(payload["continue"])
-            self.assertIn("1 个 EvoZeus harness 落后", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertIn("1 个 EvoZeus harness 落后", payload["systemMessage"])
+            self.assertIn("正常业务继续", payload["systemMessage"])
 
     def test_project_and_global_hooks_share_one_remote_lookup(self):
         project_template = Path(
@@ -2457,8 +2703,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
         return {"version": "v0.11.4", "source": "test", "error": None}
 
     @staticmethod
-    def latest_v0120():
-        return {"version": "v0.12.0", "source": "test", "error": None}
+    def latest_v0121():
+        return {"version": "v0.12.1", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -2684,9 +2930,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.12.0",
+                    "v0.12.1",
                     approve=True,
-                    latest_resolver=self.latest_v0120,
+                    latest_resolver=self.latest_v0121,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -2754,16 +3000,16 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.12.0",
+                "v0.12.1",
                 approve=True,
-                latest_resolver=self.latest_v0120,
+                latest_resolver=self.latest_v0121,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.12.0",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.12.1",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)

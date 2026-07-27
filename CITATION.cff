@@ -11,8 +11,8 @@ authors:
     given-names: Zucong
     email: neillan@metainflow.cn
     affiliation: MetaInFlow
-version: 0.11.4
-date-released: 2026-07-26
+version: 0.12.1
+date-released: 2026-07-27
 repository-code: https://github.com/MetaInFLow/EvoZeus-CoEvolve
 url: https://github.com/MetaInFLow/EvoZeus-CoEvolve
 license: MIT
