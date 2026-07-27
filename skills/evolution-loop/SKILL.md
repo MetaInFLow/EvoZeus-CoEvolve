@@ -21,14 +21,18 @@ Ask the user whether to submit a lesson candidate. If approved, submit it as an 
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 ```
 
-Use this when the user corrected the agent, expressed dissatisfaction, identified a reusable Skill/wrapper defect, or asked to preserve a repeatable behavior. The command returns whether to capture feedback, a short signal id, the user-visible capture marker, route, severity, evidence boundary, and an Issue draft. It does not persist a signal or write GitHub.
+Use this when the user corrected the agent, expressed dissatisfaction, identified a reusable Skill/wrapper defect, or asked to preserve a repeatable behavior. The command returns whether to capture feedback, a short signal id, a structured `user_notice`, route, severity, evidence boundary, and an Issue draft. It does not persist a signal or write GitHub.
 
-When `should_capture=true`, show the returned `capture_marker` and state the boundary verbatim: the signal exists only in the current invocation, no Issue was created, no Skill was modified, and no PR was opened. Continue the original business task while waiting for the user to decide whether to submit the feedback.
+When `should_capture=true`, finish the current business correction first, then show `user_notice.display_text` as a separate block at the end of the same response. The action must ask whether to record the Lesson and state that recording does not start a fix. The signal exists only in the current invocation, no Issue was created, no Skill was modified, and no PR was opened.
 
 The marker contract is:
 
 ```text
-🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]
+💡 `EvoZeus · Lesson` 待记录
+
+<reusable lesson summary>
+
+是否记录到 Skill Feedback Issue？本次授权仅用于记录，不启动修复。
 ```
 
 Authorization is staged:

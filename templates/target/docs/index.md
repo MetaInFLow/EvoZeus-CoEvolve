@@ -27,10 +27,10 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 ## 反馈入口
 
-如果使用中遇到 Skill 输出不满意，先运行 feedback audit，并显示：
+如果使用中遇到 Skill 输出不满意，先完成业务纠正，再运行 feedback audit，并使用 Notice CLI 显示：
 
 ```text
-🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]
+💡 `EvoZeus · Lesson` 待记录
 ```
 
 捕获阶段只保留当前 invocation 内的脱敏结构化结果，继续原业务且不执行外部写入。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
@@ -45,7 +45,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 ## 进化规则
 
-`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract，再运行 `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py identity --json`。每次 Skill invocation 将 `runtime_identity.display_line` 原样放在第一条用户可见输出的第一行，只展示一次；下一次 invocation 再展示。如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract，再运行 `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py identity --json`。每次 Skill invocation 将 `runtime_identity.display_line` 原样放在第一条用户可见输出的第一行，只展示一次；下一次 invocation 再展示。后续 EvoZeus 生命周期事件统一调用 `.evozeus-wrapper/scripts/evozeus_notice.py`，配置来自 `.evozeus-wrapper/policies/notice-policy.json`。如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
 
 身份头固定使用 Unicode `🧙🏻‍♂️`，并显示 canonical repo、Skill release、Harness version 和 `开发版` / `UAT` / `正式版`。禁止使用 HTML、图片路径或自定义 shortcode。
 

@@ -21,6 +21,7 @@ The wrapper exists to add:
 - design docs
 - changelog and release governance
 - preflight checks
+- target-local configurable EvoZeus Notice policy and read-only renderer
 - wrapper harness migration records
 
 It must not rewrite target business rules or absorb the evolution runtime, scanner, or prompt management platform.

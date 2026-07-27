@@ -4,17 +4,25 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+- None yet.
+
+## [v0.13.0] - 2026-07-27
+
 ### Added
 
-- None yet.
+- Added a target-local, configurable EvoZeus Notice policy and read-only rendering CLI for managed Skills.
+- Added stable Emoji + `EvoZeus · <event>` contracts for Skill identity, Lesson, Evolution, Maintenance, Advisory, Blocked, UAT, and Release events.
 
 ### Fixed
 
-- None yet.
+- Replaced the dense feedback signal marker with a clear Lesson notice that asks for record-only consent after the current business correction.
+- Routed runtime identity rendering through the target Notice policy so configured visuals apply to Skill startup as well as later lifecycle events.
 
 ### Verification
 
-- None yet.
+- `python3 -m pytest -q` (`157 passed`, `8 subtests passed`).
+- Python compile gate passed for the Notice CLI, lifecycle, preflight, global dispatcher, and target hook scripts.
+- Real target-Skill migration smoke against `MetaInFLow/daxing-phase2-project-management` added the policy and CLI, passed structure validation, rendered the development/UAT identity labels, produced a record-only Lesson Notice, and left no Notice bytecode cache.
 
 ## [v0.12.1] - 2026-07-27
 
