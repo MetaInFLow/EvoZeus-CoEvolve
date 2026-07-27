@@ -36,7 +36,7 @@ WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
 INITIAL_VERSION = "v0.1.0"
-WRAPPER_VERSION = "v0.12.0"
+WRAPPER_VERSION = "v0.12.1"
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
@@ -203,7 +203,7 @@ def build_evolution_section(replacements: dict[str, str]) -> str:
 
 进化流程：
 
-1. 使用中出现不满意结果时，先提交 Skill Feedback Issue，写清不满意结果、期望结果、复现场景、证据边界和影响程度。
+1. 使用中出现不满意结果时，先运行 feedback audit，显示 `🧙🏻‍♂️ [EvoZeus][进化信号已捕获｜本地待确认｜<signal-id>]`，继续原业务并等待用户确认是否提交反馈；只有明确确认后才创建 Skill Feedback Issue。
 2. 每次运行本 Skill 前，先执行 `python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`，确认 wrapper source contract 成立。
 3. 再执行 `python3 {TARGET_PREFLIGHT_SCRIPT} version --repo {replacements["REPO_NAME"]}`，确认 GitHub latest release 没有新版本。
 4. 开始修改前，在 `{TARGET_DESIGNS_DIR}/` 新建设计文档，明确 Related issue、优化目标、实现计划、验证计划和 release plan。
@@ -230,12 +230,12 @@ def build_wrapper_section(replacements: dict[str, str]) -> str:
 1. 本 Skill 需要 repo 化、adopt/repair wrapper harness、或确认 canonical source。
 2. `{TARGET_WRAPPER_MANIFEST}` 中的 wrapper harness version 落后于 EvoZeus-CoEvolve 最新版本。
 3. `~/.evozeus/.projects/{replacements["REPO_NAME"]}`、`.codex` 或 `.agents` runtime install 疑似不是同一个 source of truth。
-4. 使用反馈需要从 Skill Feedback Issue 进入 design doc、PR、CHANGELOG、release 的自进化闭环。
+4. 使用反馈先进入当前 invocation 的本地待确认状态；用户明确确认后才提交 Skill Feedback Issue；另获修复授权后才能进入 design doc、PR、CHANGELOG、release 的自进化闭环。
 5. 目标 GitHub repo、release tag、GitHub Pages 或 preflight check 需要创建、诊断或修复。
 
 路由规则：
 
-- 目标 Skill 行为问题：先提交 Skill Feedback Issue，不直接改 runtime install。
+- 目标 Skill 行为问题：先捕获为本地待确认信号；用户确认提交后才创建 Skill Feedback Issue，修复和 PR 继续要求单独授权。
 - 源头/安装问题：先运行 `python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`。
 - 结构问题：运行 `python3 {TARGET_PREFLIGHT_SCRIPT} structure`。
 - Skill release 问题：运行 `python3 {TARGET_PREFLIGHT_SCRIPT} version --repo {replacements["REPO_NAME"]}`。

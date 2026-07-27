@@ -219,6 +219,8 @@ python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/target-
 
 Use the returned route, severity, evidence boundary, and Issue draft before creating or recommending a Skill Feedback Issue.
 
+If the result has `should_capture=true`, first show the returned `capture_marker`, continue the original business task, and wait for explicit feedback-submission confirmation. The audit does not persist a signal or return an executable Issue command. Creating an Issue requires explicit confirmation; implementing a fix, creating a branch/design doc, or opening a PR requires a later separate authorization.
+
 ### 8. Harness Upgrade
 
 Use `skills/harness-upgrade/SKILL.md`.
@@ -230,12 +232,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.12.0 \
+  --latest-version v0.12.1 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.12.0 \
+  --latest-version v0.12.1 \
   --dry-run \
   --json
 ```
