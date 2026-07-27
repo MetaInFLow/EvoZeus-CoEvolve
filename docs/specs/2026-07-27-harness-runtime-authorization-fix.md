@@ -51,4 +51,4 @@
 
 ## 发布边界
 
-本补丁进入唯一 `uat/coevolve-slice-01` 分支，作为 `v0.12.1` 候选。UAT 验证完成前不创建正式 release，不更新 Stable。
+本补丁先进入当前开发分支 `codex/dev/20260726-uat-channel-migration`，在开发分支通过完整测试、编译和工作区检查后，再把同一 Commit 晋级到唯一 `uat/coevolve-slice-01`。UAT 验证完成前不创建正式 release，不更新 Stable。
