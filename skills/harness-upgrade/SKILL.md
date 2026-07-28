@@ -11,10 +11,10 @@ Use this stage to keep target Skill infrastructure aligned with `MetaInFLow/EvoZ
 
 ```bash
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.0 --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.1 --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --approve --json
 ```
 
 ## Rules
@@ -40,6 +40,8 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 
 - Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.
 - A target harness manifest declares global capability ownership and scope, but live user-level dispatcher installation/trust comes from `hook global status` or the diagnosis overlay.
 - The global dispatcher is a native `SessionStart` aggregate gate, not a native per-Skill invocation hook.
+- The same user-level command may also register a `UserPromptSubmit` Lesson watcher. It detects normal-Chat candidates before Skill selection, stays advisory/fail-open, and must not be described as exact Skill invocation enforcement.
+- A SessionStart-only legacy global installation is `upgrade_required`; refresh it through `hook global install --approve`, then review the changed Hook definition with Codex `/hooks`.
 
 ## Stop Conditions
 

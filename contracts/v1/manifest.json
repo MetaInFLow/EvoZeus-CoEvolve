@@ -3,7 +3,7 @@
   "bundle_id": "evozeus-coevolve",
   "bundle_version": "v1.0.0",
   "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
-  "source_revision": "v0.13.0",
+  "source_revision": "v0.13.1",
   "runtime_compatibility": {
     "min_inclusive": "0.1.0",
     "max_exclusive": "0.3.0"
@@ -16,7 +16,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "92fd2a1cea03f8d9059b99d602dee9b37c43f8e93485b34b26a30e4f065ff385",
+      "sha256": "31d942843dddcb567d0c2833b4916bdc859fe033328b56224b0b42777a088758",
       "role": "target-template-inventory"
     }
   ]

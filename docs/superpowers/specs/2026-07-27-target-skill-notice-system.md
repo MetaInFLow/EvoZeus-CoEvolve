@@ -1,6 +1,6 @@
 # EvoZeus 目标 Skill Notice 系统
 
-状态：对内-已确认，开发中
+状态：对内-已通过，已由普通 Chat Lesson watcher 扩展
 
 Related issue: https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/27
 
@@ -25,6 +25,7 @@ Related issue: https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/27
 | 目标 Skill `.evozeus-wrapper/` | 保存本地 policy 与 CLI；目标调用按状态段规则展示 Notice |
 | 目标 Skill 业务内容 | 继续负责业务判断，不拼接 EvoZeus Tag |
 | Global SessionStart dispatcher | 只负责会话级健康与版本提示，不伪造目标 Skill invocation Notice |
+| Global UserPromptSubmit watcher | 普通 Chat 高置信 Lesson 候选发现与模型指引；零持久化、fail-open、不证明精确 Skill invocation |
 
 ### 目标 Skill 文件
 

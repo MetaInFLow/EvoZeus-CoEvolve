@@ -42,7 +42,7 @@ If a real directory must be replaced after reviewing the dry-run, add `--approve
 - Files and other unsupported install types require manual handling.
 - Runtime Skill symlink installation and user-level global hook installation are separate outcomes in the report.
 - A written global hook registration remains `pending_review` until the user reviews it through Codex `/hooks` and records the trust decision with `hook global trust`.
-- The global dispatcher checks all registered wrapped Skills at `SessionStart`; it is not a native per-Skill invocation hook.
+- The global dispatcher checks all registered wrapped Skills at `SessionStart` and observes high-confidence Lesson candidates at `UserPromptSubmit`. The prompt watcher removes the need to `@Skill` before candidate detection, remains advisory, and does not prove exact Skill invocation.
 
 ## Stop Conditions
 

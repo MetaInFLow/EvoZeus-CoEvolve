@@ -6,6 +6,8 @@
 - 当前缺陷：target repo 内的 `.codex/hooks.json` 只在 canonical repo 作为活动项目时生效，却被 manifest 描述成已覆盖任意 consumer workspace 的 Skill 调用。
 - 目标：准确表达每种检查能力的作用域，并提供当前 Codex 能支持的最强组合方案。
 
+2026-07-28 补充：Issue #29 在 user-level command 上增加 `UserPromptSubmit` Lesson watcher。它用于普通 Chat 的高置信候选发现与模型指引，仍不承担 exact Skill invocation enforcement；详细合同见 [`2026-07-28-global-normal-chat-lesson-watcher.md`](../superpowers/specs/2026-07-28-global-normal-chat-lesson-watcher.md)。
+
 ## 平台事实
 
 当前 Codex 没有 `SkillInvoke` 或等价的 Skill 选择生命周期事件。现有事件包括 `SessionStart`、`UserPromptSubmit`、`PreToolUse` 等，但都不能精确表达“Agent 已选中某个 Skill”。
@@ -13,13 +15,14 @@
 | 方案 | 原生强制 | 精确绑定某个 Skill | 实际时机 |
 |---|---|---|---|
 | 全局 `SessionStart` dispatcher | 是 | 否 | 每个任务启动时检查全部 wrapped Skills |
+| 全局 `UserPromptSubmit` Lesson watcher | 是（逐轮执行） | 否 | Skill 选择前发现高置信 Lesson 候选；fail-open、零持久化 |
 | `SKILL.md` 入口 preflight | 否 | 基本是 | Agent 选中 Skill 后按指令检查 |
 | MCP/tool 网关 | 可强制 | 仅限工具化路径 | 具体工具调用前 |
 | 未来 `SkillInvoke` 事件 | 是 | 是 | Skill 被选中时 |
 
 补充边界：
 
-- `UserPromptSubmit` 发生在 Skill 选择前，且该事件不能依靠 matcher 精确绑定 Skill。分析提示词只能猜测，不作为 harness enforcement。
+- `UserPromptSubmit` 发生在 Skill 选择前，且该事件不能依靠 matcher 精确绑定 Skill。因此它适合高置信 Lesson 候选发现和模型指引，不作为 exact Skill invocation enforcement。
 - MCP 不必取消自然语言入口，但只有统一进入 MCP/tool 的关键执行路径才能被 `PreToolUse` 强制拦截。纯分析型 Skill 不适合强制工具化。
 - Plugin 可以提供稳定的 hook 分发路径，但仍受现有生命周期事件限制，不等于拥有 `SkillInvoke`。
 - target repo 内的 project hook 对 canonical repo 维护仍然有价值，但不覆盖 consumer workspace 中的 installed-Skill 调用。

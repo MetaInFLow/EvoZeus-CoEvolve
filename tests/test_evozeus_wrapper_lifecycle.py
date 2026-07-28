@@ -1059,6 +1059,17 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue(
                 manifest["integration"]["capabilities"]["repo_maintenance_hook"]["installed"]
             )
+            self.assertFalse(
+                manifest["integration"]["capabilities"]["global_prompt_lesson_watcher"][
+                    "installed"
+                ]
+            )
+            self.assertEqual(
+                manifest["integration"]["capabilities"]["global_prompt_lesson_watcher"][
+                    "event"
+                ],
+                "UserPromptSubmit",
+            )
             self.assertEqual(manifest["hook_registration"]["codex"]["event"], "SessionStart")
             self.assertIn("SessionStart", hooks["hooks"])
             self.assertIn(
@@ -1361,6 +1372,37 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertFalse(
             integration["capabilities"]["repo_maintenance_hook"]["covers_skill_invocation"]
         )
+        self.assertEqual(
+            integration["capabilities"]["global_prompt_lesson_watcher"]["event"],
+            "UserPromptSubmit",
+        )
+        self.assertEqual(
+            integration["capabilities"]["global_prompt_lesson_watcher"]["scope"],
+            "all_user_prompts",
+        )
+        self.assertFalse(
+            integration["capabilities"]["global_prompt_lesson_watcher"][
+                "covers_skill_invocation"
+            ]
+        )
+
+    def test_preflight_rejects_prompt_watcher_invocation_or_portable_install_claims(self):
+        manifest = build_wrapper_manifest(
+            "MetaInFLow/skill",
+            "v0.13.1",
+            [".codex/hooks.json", CODEX_START_HOOK_SCRIPT],
+            [],
+        )
+        watcher = manifest["integration"]["capabilities"]["global_prompt_lesson_watcher"]
+        watcher["installed"] = True
+        watcher["native_enforced"] = True
+        watcher["covers_skill_invocation"] = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                check_integration_contract(target, manifest)
 
     def test_detected_skill_entry_requires_actual_status_prelude(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2834,7 +2876,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
 
     @staticmethod
     def latest_v013():
-        return {"version": "v0.13.0", "source": "test", "error": None}
+        return {"version": "v0.13.1", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -3060,7 +3102,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.13.0",
+                    "v0.13.1",
                     approve=True,
                     latest_resolver=self.latest_v013,
                 )
@@ -3130,7 +3172,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.13.0",
+                "v0.13.1",
                 approve=True,
                 latest_resolver=self.latest_v013,
             )
@@ -3139,7 +3181,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.13.0",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.13.1",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)

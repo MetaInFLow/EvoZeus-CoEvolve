@@ -116,5 +116,5 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 - Do not say “ready” when version requires owner choice.
 - Do not hide why the evolution surface was selected; explain the controlling evidence, such as `AGENTS.md`, hooks, plugin manifests, or a hook-loaded Skill.
 - Do not treat script-produced `evolution_surface.candidates` as final placement; they are evidence for the evolution surface diagnosis Skill.
-- Do not call `prompt_runtime_check`, `manual_only`, project-local hooks, or wrapper CLI commands native per-Skill invocation hooks.
+- Do not call `prompt_runtime_check`, `manual_only`, project-local hooks, user-level prompt watchers, or wrapper CLI commands native per-Skill invocation hooks.
 - Do not infer user-level global hook installation from a portable target manifest; use the live diagnosis overlay.

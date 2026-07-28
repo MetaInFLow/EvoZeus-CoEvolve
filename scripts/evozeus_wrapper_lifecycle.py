@@ -763,6 +763,15 @@ def classify_integration_mode(
             "scope": "all_registered_wrapped_skills",
             "covers_skill_invocation": False,
         },
+        "global_prompt_lesson_watcher": {
+            "installed": False,
+            "native_enforced": False,
+            "event": "UserPromptSubmit",
+            "scope": "all_user_prompts",
+            "covers_skill_invocation": False,
+            "persistence": "none_before_confirmation",
+            "failure_mode": "fail_open",
+        },
         "skill_entry_preflight": {
             "installed": skill_entry_preflight_installed,
             "native_enforced": False,
@@ -1130,10 +1139,32 @@ def diagnose_skill(
     global_capability = architecture["integration"]["capabilities"][
         "global_session_dispatcher"
     ]
+    prompt_capability = architecture["integration"]["capabilities"][
+        "global_prompt_lesson_watcher"
+    ]
+    global_runtime_present = (
+        global_hook_status["dispatcher_installed"] and global_hook_status["state_installed"]
+    )
+    session_installed = (
+        global_hook_status["session_registration_installed"] and global_runtime_present
+    )
+    prompt_installed = (
+        global_hook_status["prompt_registration_installed"] and global_runtime_present
+    )
     global_capability.update(
         {
-            "installed": global_hook_status["status"] == "installed",
-            "native_enforced": global_hook_status["native_enforced"],
+            "installed": session_installed,
+            "native_enforced": session_installed
+            and global_hook_status["trust_status"] == "trusted",
+            "trust_status": global_hook_status["trust_status"],
+            "status_source": "user_runtime_diagnosis",
+        }
+    )
+    prompt_capability.update(
+        {
+            "installed": prompt_installed,
+            "native_enforced": prompt_installed
+            and global_hook_status["trust_status"] == "trusted",
             "trust_status": global_hook_status["trust_status"],
             "status_source": "user_runtime_diagnosis",
         }
@@ -1468,7 +1499,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 
 本段是 Skill 入口 preflight。Agent 选中本 Skill 后、进入业务主链路前执行；它基本绑定当前 Skill，但依赖 instruction compliance，不是 native Skill invocation hook。
 
-`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把前两者描述成 per-Skill native invocation hook。
+`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；`global_prompt_lesson_watcher` 在普通 Chat 每轮识别高置信 Lesson 候选；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把这些能力描述成 per-Skill native invocation hook。
 
 若当前只是 runtime-only install，缺少维护资产时不要把安装副本当作事实源，回 canonical repo 处理 wrapper harness 或 Skill release。
 
@@ -1494,7 +1525,8 @@ def build_status_section(replacements: dict[str, str]) -> str:
 5. EvoZeus Notice
    - 渲染入口：`python3 {TARGET_NOTICE_SCRIPT} render --kind <kind> --state <state> --message <message> [--action <action>] [--json]`。
    - 配置事实源：`{TARGET_NOTICE_POLICY}`。普通业务进度不展示 EvoZeus Tag。
-   - 用户纠错、不满意或复盘发现可复用机制缺陷时，先完成当前业务纠正，再运行 feedback audit，并通过 `--context` 传入一句脱敏、可复用、可行动的 Lesson 摘要；在同一响应末尾原样显示 `user_notice.display_text`。
+   - 受信任的 global prompt watcher 可以在普通 Chat 自动发现高置信候选，无需先 `@Skill`。先完成当前业务纠正；Lesson 成立时在同一响应末尾只显示自然语言 Notice。
+   - 需要确定路由或准备 Issue 时再运行 feedback audit，并通过 `--context` 传入一句脱敏、可复用、可行动的 Lesson 摘要。Audit JSON、signal id、capture state、route 和 Issue draft 仅供内部诊断，不得展示给用户。
    - Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。
    - Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。
 
@@ -3012,7 +3044,8 @@ def plan_harness_upgrade(
         "integration": integration,
         "integration_policy": (
             "repo_maintenance_hook covers only the canonical repository; global_session_dispatcher checks all "
-            "registered wrapped Skills at SessionStart; skill_entry_preflight is prompt-compliance fallback; "
+            "registered wrapped Skills at SessionStart; global_prompt_lesson_watcher observes high-confidence "
+            "UserPromptSubmit candidates without persisting them; skill_entry_preflight is prompt-compliance fallback; "
             "none is a native per-Skill invocation hook without a SkillInvoke event"
         ),
         "skill_md_policy": (

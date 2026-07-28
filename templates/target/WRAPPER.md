@@ -38,11 +38,12 @@ The identity line starts with Unicode `🧙🏻‍♂️` and includes the click
 
 - `repo_maintenance_hook`: project-local `SessionStart` coverage for canonical repository maintenance only.
 - `global_session_dispatcher`: user-level `SessionStart` coverage that checks all registered wrapped Skills before a task starts.
+- `global_prompt_lesson_watcher`: user-level `UserPromptSubmit` coverage that detects high-confidence normal-Chat Lesson candidates without requiring `@Skill`; it is advisory and never records automatically.
 - `skill_entry_preflight`: the instruction surface checks the selected Skill before its business flow; this is prompt-compliance fallback.
 - `bootstrap_skill`: plugin lifecycle can load a control Skill, but it does not add a Skill-invocation event.
 - `manual_only`: wrapper commands must be run manually.
 
-Codex currently has no `SkillInvoke` event. Do not describe the project hook, global dispatcher, plugin lifecycle, or Skill entry preflight as a native per-Skill invocation hook. Review and trust new or changed hooks with `/hooks`.
+Codex currently has no `SkillInvoke` event. `UserPromptSubmit` can observe a correction before Skill selection, but cannot prove exact Skill invocation. Do not describe the project hook, global dispatcher, prompt watcher, plugin lifecycle, or Skill entry preflight as a native per-Skill invocation hook. Review and trust new or changed hooks with `/hooks`.
 
 ## Install And Onboarding
 
@@ -72,7 +73,7 @@ The manifest records `dashboard.deployment_mode=opt_in_github_pages`. Push and w
    - use GitHub user/org/public search only as fallback when wrapper state is absent.
 3. Before running the Skill, check whether GitHub has a newer release:
    `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py version --repo {{REPO_NAME}}`
-4. When the user reports an unsatisfactory result or a reusable mechanism gap is found, finish the business correction, run feedback audit with a concise redacted Lesson in `--context`, then show `user_notice.display_text` as the generated `EvoZeus · Lesson` Notice in `待记录` state and ask whether to record it. Do not create an Issue or start a fix without the corresponding authorization.
+4. A trusted global prompt watcher may flag an ordinary Chat correction before this Skill is explicitly invoked. Finish the business correction, form a concise redacted Lesson, and show only the generated `EvoZeus · Lesson` Notice in `待记录` state. Run feedback audit for deterministic routing or Issue preparation; its JSON stays internal. Do not create an Issue or start a fix without the corresponding authorization.
 5. Create a Skill Feedback Issue only after explicit submission confirmation.
 6. Wait for a separate explicit fix authorization before creating a branch or design doc.
 7. Maintainer opens a PR referencing the approved design doc.

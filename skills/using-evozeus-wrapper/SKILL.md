@@ -104,7 +104,7 @@ The diagnosis script reports facts only:
 - target kind: `single_skill`, `runtime_skill_bundle`, `hooked_skill_bundle`, `skill_bundle`, `agents_runtime`, or `unknown`
 - `skills/*/SKILL.md` inventory
 - evolution surface candidates and controller files
-- runtime integration mode plus scoped capabilities: `repo_maintenance_hook`, `global_session_dispatcher`, `skill_entry_preflight`, `tool_gateway`, and future `skill_invocation_hook`
+- runtime integration mode plus scoped capabilities: `repo_maintenance_hook`, `global_session_dispatcher`, `global_prompt_lesson_watcher`, `skill_entry_preflight`, `tool_gateway`, and future `skill_invocation_hook`
 - Codex hook registration evidence from `.codex/hooks.json` and `.evozeus-wrapper/hooks/evozeus_wrapper_start_check.py`
 - wrapper component gaps
 - source contract and runtime install state
@@ -201,6 +201,8 @@ python3 scripts/evozeus_wrapper.py hook global status --json
 
 After installation, review the new registration with Codex `/hooks`, then record the result with `hook global trust`. Installation and trust must never be reported as the same state.
 
+The installed command owns two user-level capabilities: `global_session_dispatcher` for task-start health and `global_prompt_lesson_watcher` for ordinary `UserPromptSubmit` turns. The prompt watcher detects candidates without requiring `@Skill`, injects model-only guidance, remains fail-open, and never records an Issue automatically.
+
 ### 7. Evolution Loop
 
 Use `skills/evolution-loop/SKILL.md`.
@@ -211,7 +213,7 @@ Every behavior change must flow through:
 feedback Issue -> design doc -> PR -> CHANGELOG -> release -> latest release check
 ```
 
-When feedback comes from a live user correction or dissatisfaction signal, first run:
+When the global prompt watcher is installed, ordinary Chat corrections can be surfaced before a target Skill is selected. After the user confirms recording or the target needs deterministic routing, run:
 
 ```bash
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/target-skill --user-input "<input>" --json
@@ -220,6 +222,8 @@ python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/target-
 Use the returned route, severity, evidence boundary, and Issue draft before creating or recommending a Skill Feedback Issue.
 
 If the result has `should_capture=true`, finish the original business correction and then show `user_notice.display_text` as a separate Lesson block. Wait for explicit feedback-submission confirmation. The audit does not persist a signal or return an executable Issue command. Creating an Issue requires explicit confirmation; implementing a fix, creating a branch/design doc, or opening a PR requires a later separate authorization.
+
+Treat the full audit object as machine-only. Never expose its JSON, signal id, capture state, route, severity, evidence boundary, or Issue draft in normal Chat.
 
 ### 8. Harness Upgrade
 
@@ -232,12 +236,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.13.0 \
+  --latest-version v0.13.1 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.13.0 \
+  --latest-version v0.13.1 \
   --dry-run \
   --json
 ```
@@ -250,6 +254,7 @@ For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capa
 - `.evozeus-wrapper/hooks/evozeus_wrapper_start_check.py` reads `.evozeus-wrapper/wrapper.json` and emits Codex hook JSON.
 - The project hook reports `capability=repo_maintenance_hook` and `scope=canonical_repository`; it is not a per-Skill invocation hook.
 - `~/.codex/hooks.json` may separately register the global dispatcher, which aggregates every registered wrapped Skill at task start.
+- The user-level registration also includes `UserPromptSubmit`, which observes high-confidence normal-Chat Lesson candidates and injects record-only model guidance. It does not identify exact Skill invocation by itself.
 - Non-managed hooks require Codex review/trust through `/hooks` before they run.
 - Project and global hooks share a successful latest-release cache. Deterministic local source-contract errors block; compatible outdated harnesses warn and allow normal business execution. A normal Skill invocation never authorizes Harness maintenance writes. An unknown remote version with no usable cache also warns and allows.
 - `upgrade-all` verifies the authoritative latest version, clean Git state and write access for every target before writing. It backs up the complete migration write set, including target-owned files containing legacy wrapper path references, and rolls all targets back if any apply step fails.

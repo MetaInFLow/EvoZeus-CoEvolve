@@ -9,6 +9,8 @@ Use this stage after the target Skill is wrapped and installed through canonical
 
 ## Lesson Intake
 
+安装 user-level global hook 后，`UserPromptSubmit` 会在普通 Chat 每轮自动识别高置信 Lesson 候选，无需先调用目标 Skill。Watcher 只注入模型侧指引，不持久化内容；先完成当前业务纠正，再决定是否展示 Lesson。
+
 ```bash
 python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 ```
@@ -21,9 +23,11 @@ Ask the user whether to submit a lesson candidate. If approved, submit it as an 
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 ```
 
-Use this when the user corrected the agent, expressed dissatisfaction, identified a reusable Skill/wrapper defect, or asked to preserve a repeatable behavior. The command returns whether to capture feedback, a short signal id, a structured `user_notice`, route, severity, evidence boundary, and an Issue draft. It does not persist a signal or write GitHub.
+Use this manual audit after the watcher or user identifies a candidate and the target needs a deterministic route, severity, evidence boundary, and Issue draft. It does not persist a signal or write GitHub.
 
 When `should_capture=true`, finish the current business correction first, then show `user_notice.display_text` as a separate block at the end of the same response. The action must ask whether to record the Lesson and state that recording does not start a fix. The signal exists only in the current invocation, no Issue was created, no Skill was modified, and no PR was opened.
+
+The audit JSON is machine-only. Never paste the object, signal id, capture state, route, severity, evidence boundary, or Issue draft into the normal Chat response.
 
 The marker contract is:
 

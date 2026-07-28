@@ -14,6 +14,7 @@ GLOBAL_DISPATCHER_COMMAND = (
     '/usr/bin/python3 "$HOME/.evozeus/hooks/evozeus_wrapper_dispatcher.py"'
 )
 GLOBAL_HOOK_EVENT = "SessionStart"
+GLOBAL_PROMPT_HOOK_EVENT = "UserPromptSubmit"
 GLOBAL_HOOK_MATCHER = "startup|resume"
 GLOBAL_HOOKS_CONFIG = Path(".codex/hooks.json")
 GLOBAL_DISPATCHER = Path(".evozeus/hooks/evozeus_wrapper_dispatcher.py")
@@ -54,18 +55,20 @@ def _dispatcher_template(wrapper_root: Path) -> Path:
     return wrapper_root.expanduser().resolve() / "templates/global/evozeus_wrapper_dispatcher.py"
 
 
-def _dispatcher_entry() -> dict[str, Any]:
-    return {
-        "matcher": GLOBAL_HOOK_MATCHER,
-        "hooks": [
-            {
-                "type": "command",
-                "command": GLOBAL_DISPATCHER_COMMAND,
-                "timeout": 30,
-                "statusMessage": "Checking EvoZeus harnesses",
-            }
-        ],
+def _dispatcher_entry(event: str) -> dict[str, Any]:
+    handler = {
+        "type": "command",
+        "command": GLOBAL_DISPATCHER_COMMAND,
+        "timeout": 30 if event == GLOBAL_HOOK_EVENT else 3,
     }
+    if event == GLOBAL_HOOK_EVENT:
+        handler["statusMessage"] = "Checking EvoZeus harnesses"
+    else:
+        handler["additionalContextLimit"] = 1200
+    entry: dict[str, Any] = {"hooks": [handler]}
+    if event == GLOBAL_HOOK_EVENT:
+        entry["matcher"] = GLOBAL_HOOK_MATCHER
+    return entry
 
 
 def _read_hooks_config(path: Path) -> dict[str, Any]:
@@ -115,26 +118,34 @@ def _without_dispatcher_handlers(entry: dict[str, Any]) -> tuple[dict[str, Any] 
     return preserved_entry, removed
 
 
-def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    merged = json.loads(json.dumps(config))
-    hooks = merged.setdefault("hooks", {})
-    session_start = hooks.setdefault(GLOBAL_HOOK_EVENT, [])
-    if not isinstance(session_start, list):
-        raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
-
+def _merge_event_registration(
+    hooks: dict[str, Any], event: str
+) -> bool:
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        raise ValueError(f"global hooks {event} must be a list")
     preserved: list[dict[str, Any]] = []
     found = False
-    for index, entry in enumerate(session_start):
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}] must be an object")
+            raise ValueError(f"global hooks {event}[{index}] must be an object")
         try:
             preserved_entry, removed = _without_dispatcher_handlers(entry)
         except ValueError as exc:
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}]: {exc}") from exc
+            raise ValueError(f"global hooks {event}[{index}]: {exc}") from exc
         found = found or removed
         if preserved_entry is not None:
             preserved.append(preserved_entry)
-    hooks[GLOBAL_HOOK_EVENT] = [*preserved, _dispatcher_entry()]
+    hooks[event] = [*preserved, _dispatcher_entry(event)]
+    return found
+
+
+def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    merged = json.loads(json.dumps(config))
+    hooks = merged.setdefault("hooks", {})
+    found = False
+    for event in (GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT):
+        found = _merge_event_registration(hooks, event) or found
     if merged == config:
         return merged, "already_registered"
     return merged, "refresh" if found else "merge"
@@ -143,22 +154,29 @@ def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, An
 def _without_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     updated = json.loads(json.dumps(config))
     hooks = updated.setdefault("hooks", {})
-    session_start = hooks.get(GLOBAL_HOOK_EVENT, [])
-    if not isinstance(session_start, list):
-        raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
-    preserved: list[dict[str, Any]] = []
     removed = False
-    for index, entry in enumerate(session_start):
-        if not isinstance(entry, dict):
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}] must be an object")
-        try:
-            preserved_entry, entry_removed = _without_dispatcher_handlers(entry)
-        except ValueError as exc:
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}]: {exc}") from exc
-        removed = removed or entry_removed
-        if preserved_entry is not None:
-            preserved.append(preserved_entry)
-    hooks[GLOBAL_HOOK_EVENT] = preserved
+    for event in (GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT):
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"global hooks {event} must be a list")
+        preserved: list[dict[str, Any]] = []
+        event_removed = False
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(f"global hooks {event}[{index}] must be an object")
+            try:
+                preserved_entry, entry_removed = _without_dispatcher_handlers(entry)
+            except ValueError as exc:
+                raise ValueError(f"global hooks {event}[{index}]: {exc}") from exc
+            removed = removed or entry_removed
+            event_removed = event_removed or entry_removed
+            if preserved_entry is not None:
+                preserved.append(preserved_entry)
+        if event_removed:
+            if preserved:
+                hooks[event] = preserved
+            else:
+                hooks.pop(event, None)
     return updated, removed
 
 
@@ -183,6 +201,7 @@ def _state_payload(wrapper_root: Path) -> dict[str, Any]:
         "wrapper_source": str(wrapper_root.expanduser().resolve()),
         "installed_version": _latest_changelog_version(wrapper_root),
         "command": GLOBAL_DISPATCHER_COMMAND,
+        "events": [GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT],
         "installation_status": "installed",
         "trust_status": "pending_review",
         "trust_status_source": "requires_user_confirmation_after_codex_hooks_review",
@@ -252,11 +271,14 @@ def plan_global_hook_install(home: Path, wrapper_root: Path) -> dict[str, Any]:
 def read_global_hook_status(home: Path) -> dict[str, Any]:
     paths = _paths(home)
     errors: list[str] = []
-    registered = False
+    session_registered = False
+    prompt_registered = False
     try:
         config = _read_hooks_config(paths["hooks"])
         session_start = config.get("hooks", {}).get(GLOBAL_HOOK_EVENT, [])
-        registered = any(_entry_has_dispatcher(entry) for entry in session_start)
+        prompt_submit = config.get("hooks", {}).get(GLOBAL_PROMPT_HOOK_EVENT, [])
+        session_registered = any(_entry_has_dispatcher(entry) for entry in session_start)
+        prompt_registered = any(_entry_has_dispatcher(entry) for entry in prompt_submit)
     except ValueError as exc:
         errors.append(str(exc))
     state: dict[str, Any] = {}
@@ -266,15 +288,26 @@ def read_global_hook_status(home: Path) -> dict[str, Any]:
             state = loaded if isinstance(loaded, dict) else {}
         except json.JSONDecodeError as exc:
             errors.append(f"invalid global hook state JSON: {exc}")
-    installed = registered and paths["dispatcher"].is_file() and bool(state)
+    registered = session_registered and prompt_registered
+    any_registered = session_registered or prompt_registered
+    runtime_files_installed = paths["dispatcher"].is_file() and bool(state)
+    installed = registered and runtime_files_installed
+    upgrade_required = any_registered and runtime_files_installed and not installed
     return {
         "stage": "global_hook_status",
-        "status": "installed" if installed else "not_installed",
+        "status": "installed" if installed else "upgrade_required" if upgrade_required else "not_installed",
         "writes": False,
         "mode": "global_session_dispatcher",
+        "capabilities": [
+            "global_session_dispatcher",
+            "global_prompt_lesson_watcher",
+        ],
         "scope": "all_registered_wrapped_skills",
         "native_enforced": installed and state.get("trust_status") == "trusted",
         "registration_installed": registered,
+        "any_registration_installed": any_registered,
+        "session_registration_installed": session_registered,
+        "prompt_registration_installed": prompt_registered,
         "dispatcher_installed": paths["dispatcher"].is_file(),
         "state_installed": bool(state),
         "trust_status": state.get("trust_status", "not_installed"),
@@ -825,7 +858,7 @@ def apply_upgrade_all(
         return {**plan, "status": "approval_required"}
 
     home = home.expanduser().resolve()
-    refresh_installed_global_hook = read_global_hook_status(home)["status"] == "installed"
+    refresh_installed_global_hook = read_global_hook_status(home)["any_registration_installed"]
     backup_root = home / HARNESS_UPGRADE_BACKUPS / _utc_transaction_id()
     snapshots: list[dict[str, Any]] = []
     for index, item in enumerate(plan["targets"]):

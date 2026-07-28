@@ -7,7 +7,7 @@
 1. 在 EvoZeus-CoEvolve repo 中运行 `onboarding.installation.command`，把 runtime install 建成指向 canonical repo 的 symlink。
 2. 真实目录不会被删除。先用 `--dry-run` 查看计划；确认归档后显式增加 `--approve-archive`。原目录归档到 `~/.evozeus/archives/runtime-installs/`。
 3. 运行 `onboarding.installation.verification`，确认 runtime pointer 和 canonical repo 一致。
-4. runtime Skill 安装与全局 hook 安装是两个状态；软链接成功不代表 `global_session_dispatcher` 已安装或已信任。
+4. runtime Skill 安装与全局 hook 安装是两个状态；软链接成功不代表 `global_session_dispatcher` / `global_prompt_lesson_watcher` 已安装或已信任。
 
 ## 全局 Dispatcher
 
@@ -15,6 +15,7 @@
 - 用户明确确认后运行 `hook global install --approve --json`，结构化合并 `~/.codex/hooks.json`。
 - 安装后通过 `/hooks` 审核，再用 `hook global trust --status trusted --approve --json` 记录审核结果。
 - global dispatcher 在 `SessionStart` 聚合检查全部 registered wrapped Skills，不精确绑定随后被选中的某个 Skill。
+- 同一 user-level command 在 `UserPromptSubmit` 自动发现普通 Chat 高置信 Lesson 候选，无需先 `@Skill`；它不持久化候选，也不精确证明目标 Skill。
 
 ## 调用
 
@@ -25,6 +26,7 @@
 - 启动身份与后续 EvoZeus 生命周期事件由 `.evozeus-wrapper/scripts/evozeus_notice.py` 按 `.evozeus-wrapper/policies/notice-policy.json` 渲染。
 - 用 `python3 .evozeus-wrapper/scripts/evozeus_notice.py render --kind lesson --state pending --message "smoke" --json` 验证本地 Notice 能力；结果必须包含 `writes=false`。
 - 普通业务输出不使用 EvoZeus Tag；可复用 Lesson 在业务纠正完成后独立展示。
+- Hook 与 feedback audit 的 JSON、signal id、capture state、route 和 Issue draft 只供内部诊断，不进入普通 Chat。
 
 ## 初始化
 

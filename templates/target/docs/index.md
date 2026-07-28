@@ -33,7 +33,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 💡 `EvoZeus · Lesson` 待记录
 ```
 
-捕获阶段只保留当前 invocation 内的脱敏结构化结果，继续原业务且不执行外部写入。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
+受信任的 global `UserPromptSubmit` watcher 可以在普通 Chat 自动发现高置信候选，无需先 `@Skill`。捕获阶段只注入模型侧规则，继续原业务且不执行外部写入；feedback audit JSON 保持内部使用。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
 
 - 不满意的 Skill 结果。
 - 期望结果。
@@ -53,11 +53,12 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 - `repo_maintenance_hook`：project-local `SessionStart`，仅覆盖 canonical repo 维护。
 - `global_session_dispatcher`：user-level `SessionStart`，任务启动时聚合检查全部 wrapped Skills。
+- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit`，普通 Chat 逐轮发现高置信 Lesson 候选；始终 fail-open，不自动记录。
 - `skill_entry_preflight`：Agent 选中 Skill 后按 instruction surface 检查，依赖 prompt compliance。
 - `bootstrap_skill`：Plugin lifecycle 可加载控制 Skill，但不会新增 Skill invocation event。
 - `manual_only`：只能手动运行 wrapper 命令。
 
-当前 Codex 没有 `SkillInvoke` 事件。project hook、global dispatcher、Plugin lifecycle 和 Skill 入口 preflight 都不得描述成 native per-Skill invocation hook。新建或变更 hook 后，需要通过 `/hooks` 审核并单独记录 trust 状态。
+当前 Codex 没有 `SkillInvoke` 事件。`UserPromptSubmit` 能观察 Skill 选择前的用户消息，无法证明精确 Skill invocation。project hook、global dispatcher、prompt watcher、Plugin lifecycle 和 Skill 入口 preflight 都不得描述成 native per-Skill invocation hook。新建或变更 hook 后，需要通过 `/hooks` 审核并单独记录 trust 状态。
 
 安装、调用、初始化和子 Skill hook 接入以 `.evozeus-wrapper/wrapper.json` 的 `onboarding` 字段及 [onboarding 指南](onboarding.html) 为准。子 Skill 不继承父级 hook，必须单独接入 wrapper、通过 `/hooks` 信任审核，并完成 structure preflight 和 consumer-project smoke test。
 

@@ -6,6 +6,23 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - None yet.
 
+## [v0.13.1] - 2026-07-28
+
+### Added
+
+- Added a user-level `UserPromptSubmit` Lesson watcher so normal Chat corrections can surface a record-only Lesson candidate without explicitly invoking a target Skill.
+
+### Fixed
+
+- Kept feedback-audit JSON, signal ids, capture states, routing fields, and Hook diagnostics out of the user-facing Lesson contract.
+- Reported legacy SessionStart-only global installations as `upgrade_required` and refreshed them without replacing unrelated hooks.
+
+### Verification
+
+- `python3 -m pytest -q` (`177 passed`, `25 subtests passed`).
+- Python compile gate passed for the CLI, bootstrap, global hook lifecycle, target lifecycle, preflight, global dispatcher, target hook, and Lesson watcher tests.
+- Fresh isolated HOME smoke installed both Hook events, injected a record-only Lesson instruction for a correction, and returned zero Lesson context for a neutral prompt.
+
 ## [v0.13.0] - 2026-07-27
 
 ### Added
