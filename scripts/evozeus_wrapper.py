@@ -30,6 +30,7 @@ from evozeus_wrapper_global_hook import (
     read_global_hook_status,
     record_global_hook_trust,
 )
+from evozeus_harness_publish import publish_admin_upgrade_all
 
 
 def print_report(report: dict, as_json: bool, stage: str) -> None:
@@ -159,6 +160,11 @@ def main() -> int:
     )
     upgrade_all.add_argument("--dry-run", action="store_true")
     upgrade_all.add_argument("--approve", action="store_true")
+    upgrade_all.add_argument(
+        "--publish",
+        action="store_true",
+        help="Require GitHub ADMIN permission and publish one isolated upgrade PR per eligible repo.",
+    )
     upgrade_all.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
@@ -355,7 +361,14 @@ def main() -> int:
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade-all":
-        if args.dry_run:
+        if args.publish:
+            report = publish_admin_upgrade_all(
+                Path.home(),
+                Path(args.wrapper_root),
+                args.latest_version,
+                approve=True,
+            )
+        elif args.dry_run:
             report = plan_upgrade_all(
                 Path.home(),
                 Path(args.wrapper_root),
@@ -369,7 +382,13 @@ def main() -> int:
                 approve=args.approve,
             )
         print_report(report, args.json, "loop")
-        return 0 if report.get("status") not in {"blocked", "approval_required", "rolled_back"} else 1
+        return 0 if report.get("status") not in {
+            "blocked",
+            "approval_required",
+            "rolled_back",
+            "permission_denied",
+            "failed",
+        } else 1
 
     parser.error("unsupported command")
     return 2

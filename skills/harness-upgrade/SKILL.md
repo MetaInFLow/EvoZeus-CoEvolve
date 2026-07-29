@@ -15,6 +15,7 @@ python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/pat
 python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.1 --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --approve --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --publish --json
 ```
 
 ## Rules
@@ -35,6 +36,10 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 
 - Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.
 - Major wrapper upgrades require explicit user confirmation.
 - `upgrade-all` must prevalidate every registered target before the first write and restore every target snapshot if any apply step fails.
+- Keep local all-or-nothing migration under `--approve`. Use `--publish` for the GitHub administrator flow: verify live `viewerPermission=ADMIN`, verify canonical `origin`, create an isolated worktree from the remote default branch, push a dedicated Harness branch, and create or reuse one Pull Request per repo.
+- Never accept a local role flag as administrator proof. Treat `ADMIN` as the only publishable GitHub permission; skip `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`, missing, and failed permission checks.
+- Never publish a UAT Harness to target default branches. The requested/source Harness version must equal the authoritative GitHub Release before publication planning can proceed.
+- Record approved publication runs under `~/.evozeus/skills/runs/` and append privacy-safe result events to `~/.evozeus/skills/events.jsonl`.
 - Resolve authority before deciding targets are current. The requested latest version must match the dispatcher cache, environment override, or GitHub latest release. Every target must have a verifiable clean Git worktree, writable write-set files and parents, and no symlink in any write path.
 - Snapshot every file the migration may rewrite, move, refresh, or delete. Legacy wrapper path references in target-owned files are part of this explicit write set even though business semantics remain unchanged.
 - Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.

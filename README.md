@@ -90,7 +90,10 @@ python3 scripts/evozeus_wrapper.py hook global status --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/my-skill --json
 python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.13.1 --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --publish --json
 ```
+
+`--publish` is an administrator operation. It resolves the authenticated GitHub viewer for every registered repo, accepts only `viewerPermission=ADMIN`, upgrades eligible targets in isolated worktrees, and opens one Pull Request per repo. It never writes a target default branch directly. UAT Harness source remains non-publishable until it becomes the authoritative GitHub Release.
 
 如果 `env diagnose` 返回 `next_action: install_evozeus`，先安装 / 初始化 EvoZeus，不进入目标 repo transform。如果没有给 `Visibility`，Agent 必须先问用户选择 `public` 还是 `private`。如果本地发现多个 repo clone 或多个 real-directory 安装副本，必须先让用户选择 canonical repo 或归档策略。
 

@@ -2982,6 +2982,45 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertIn("original clean", (clean / "SKILL.md").read_text(encoding="utf-8"))
             self.assertIn("original dirty", (dirty / "SKILL.md").read_text(encoding="utf-8"))
 
+    def test_upgrade_all_publish_plan_can_isolate_target_preflight_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root)
+            clean = self.create_upgrade_target(home, "clean-publish")
+            blocked = self.create_upgrade_target(home, "blocked-publish")
+
+            def fake_plan(target, latest_version, **kwargs):
+                conflicts = ["synthetic target conflict"] if target == blocked else []
+                return {
+                    "target": str(target),
+                    "migration_required": True,
+                    "can_apply": not conflicts,
+                    "conflicts": conflicts,
+                    "instruction_surface": "SKILL.md",
+                    "migration_record": ".evozeus-wrapper/docs/migrations/refresh.md",
+                    "moves": [],
+                    "managed_file_refreshes": [],
+                }
+
+            with patch(
+                "scripts.evozeus_wrapper_lifecycle.plan_target_layout_migration",
+                side_effect=fake_plan,
+            ):
+                report = plan_upgrade_all(
+                    home,
+                    wrapper_root,
+                    "v0.10.0",
+                    latest_resolver=self.latest_v010,
+                    allow_partial=True,
+                )
+
+            self.assertEqual(report["status"], "planned")
+            targets = {item["repo"]: item for item in report["targets"]}
+            self.assertEqual(targets["MetaInFLow/clean-publish"]["errors"], [])
+            self.assertTrue(targets["MetaInFLow/blocked-publish"]["errors"])
+            self.assertIn("original clean-publish", (clean / "SKILL.md").read_text())
+
     def test_upgrade_all_blocks_incomplete_wrapper_source_before_target_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3334,6 +3373,40 @@ class UpgradeAllHarnessTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["status"], "up_to_date")
+
+    def test_upgrade_all_publish_cli_is_available_and_safe_for_empty_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "harness",
+                    "upgrade-all",
+                    "--latest-version",
+                    "v0.13.1",
+                    "--wrapper-root",
+                    str(Path.cwd()),
+                    "--publish",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "EVOZEUS_WRAPPER_LATEST_VERSION": "v0.13.1",
+                },
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["stage"], "harness_upgrade_all_publish")
+            self.assertEqual(payload["status"], "up_to_date")
+            self.assertFalse(payload["writes"])
 
     def test_upgrade_all_cli_serializes_populated_registry(self):
         with tempfile.TemporaryDirectory() as tmp:

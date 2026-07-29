@@ -4,7 +4,15 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
-- None yet.
+### Added
+
+- Added an admin-gated Harness `upgrade-all --publish` flow that validates live GitHub `ADMIN` permission per registered repo, migrates eligible targets in isolated worktrees, pushes one upgrade branch per repo, and creates or reuses Pull Requests.
+- Added local batch run and append-only event ledgers under `~/.evozeus/skills/` without storing raw sessions or target business content.
+
+### Safety
+
+- Kept plan mode read-only and required explicit `--publish` before any repo or GitHub write.
+- Rejected canonical checkouts whose `origin` does not match the manifest repo, serialized concurrent batches, preserved canonical checkouts, and prohibited direct default-branch writes.
 
 ## [v0.13.1] - 2026-07-28
 
