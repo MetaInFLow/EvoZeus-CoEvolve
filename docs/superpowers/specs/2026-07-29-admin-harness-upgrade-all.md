@@ -70,4 +70,3 @@ Registry discovery
 5. Managed Harness升级保留Skill业务内容。
 6. 相同升级重复执行不会创建重复 PR。
 7. 本地Run Ledger完整记录成功、跳过和失败。
-
