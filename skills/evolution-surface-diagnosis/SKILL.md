@@ -91,7 +91,7 @@ Use concise Chinese, with concrete file paths.
 - <other relevant wrapper gaps>
 
 下一步命令：
-python3 scripts/evozeus_wrapper.py skill transform --mode <adopt|bootstrap|repair|verify> \
+python3 scripts/evozeus_wrapper.py skill transform --mode <attach|adopt|repair|verify> \
   --target /absolute/path/to/repo \
   --repo OWNER/REPO \
   --instruction-surface <relative path> \

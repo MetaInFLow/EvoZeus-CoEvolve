@@ -1,5 +1,7 @@
 # 权威升级检查与 onboarding 契约
 
+> 历史设计：生成子 Skill 的独立 wrapper lifecycle 已被 [2026-07-30 独立 Repo Harness 边界](2026-07-30-independent-repo-harness-boundary.md) 取代。升级权威源与安全重装规则继续有效。
+
 Related issues: #8, #9
 
 ## 优化目标

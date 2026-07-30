@@ -60,8 +60,8 @@ Choose next transform mode from harness state:
 |---|---|---|
 | `complete` | any | `verify` |
 | `partial` | any | `repair` |
-| `missing` | `true` | `adopt` |
-| `missing` | `false` | `bootstrap` |
+| `missing` | `true` | `attach` |
+| `missing` | `false` | create the independent Repo first |
 | `missing` | `null` | rerun repo check |
 
 ## Output Shape
@@ -93,7 +93,7 @@ Use concise Chinese. Do not dump raw JSON.
 If ready to continue:
 
 ```bash
-python3 scripts/evozeus_wrapper.py skill transform --mode <adopt|bootstrap|repair|verify> \
+python3 scripts/evozeus_wrapper.py skill transform --mode <attach|adopt|repair|verify> \
   --target /absolute/path/to/repo \
   --repo OWNER/REPO \
   --instruction-surface <relative path> \

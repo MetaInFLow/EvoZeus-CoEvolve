@@ -366,12 +366,12 @@ def diagnose_skill_version(
 
     if repo_exists is False:
         return {
-            "status": "new_repo_initial_release",
-            "current_tag": INITIAL_SKILL_VERSION,
+            "status": "repository_required",
+            "current_tag": None,
             "changelog_tag": changelog_tag,
             "latest_release_tag": None,
-            "rule": "new bootstrap repos use v0.1.0 as the first Skill release",
-            "requires_owner_choice": False,
+            "rule": "create and publish the independent repository before attaching a Harness",
+            "requires_owner_choice": True,
         }
 
     if repo_exists is None:
@@ -520,11 +520,112 @@ def target_canonical_path(target: Path, runner=run_command) -> str:
     return str(target.expanduser().resolve())
 
 
+def independent_repo_root(target: Path, runner=run_command) -> Path:
+    """Return the one repository root allowed to own an Evolution Harness."""
+    requested = target.expanduser().resolve()
+    if not requested.is_dir():
+        raise ValueError(f"target must be an existing directory: {requested}")
+    result = runner(["git", "-C", str(requested), "rev-parse", "--show-toplevel"])
+    if result["returncode"] != 0 or not result.get("stdout", "").strip():
+        raise ValueError(
+            "Evolution Harness requires an independent Git repository; "
+            f"no Git repository contains target: {requested}"
+        )
+    root = Path(result["stdout"].strip()).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"resolved Git repository root is unavailable: {root}")
+    return root
+
+
+def nested_harness_manifests(repo_root: Path) -> list[str]:
+    """List active Harness manifests below the repository root boundary."""
+    repo_root = repo_root.expanduser().resolve()
+    patterns = (
+        f"**/{TARGET_EVOINFRA_DIR}/wrapper.json",
+        f"**/{LEGACY_TARGET_EVOINFRA_DIR}/wrapper.json",
+        f"**/{OLDEST_TARGET_EVOINFRA_DIR}/wrapper.json",
+    )
+    allowed_root_manifests = {
+        repo_root / TARGET_WRAPPER_MANIFEST,
+        repo_root / LEGACY_TARGET_WRAPPER_MANIFEST,
+        repo_root / OLDEST_TARGET_WRAPPER_MANIFEST,
+    }
+    found: set[str] = set()
+    for pattern in patterns:
+        for path in repo_root.glob(pattern):
+            if path in allowed_root_manifests:
+                continue
+            if ".git" in path.parts:
+                continue
+            found.add(path.relative_to(repo_root).as_posix())
+    return sorted(found)
+
+
+def resolve_harness_target(target: Path, runner=run_command) -> dict[str, Any]:
+    """Normalize any path inside a repo to the repo-owned Harness boundary."""
+    requested = target.expanduser().resolve()
+    repo_root = independent_repo_root(requested, runner)
+    nested = nested_harness_manifests(repo_root)
+    return {
+        "requested_target": str(requested),
+        "repo_root": str(repo_root),
+        "requested_is_repo_root": requested == repo_root,
+        "nested_harness_manifests": nested,
+        "eligible": not nested,
+        "rule": "Only an independent Git repository root may own one Evolution Harness.",
+    }
+
+
 def git_origin_repo(path: Path, runner=run_command) -> str | None:
     remote_result = runner(["git", "-C", str(path), "remote", "get-url", "origin"])
     if remote_result["returncode"] != 0:
         return None
     return repo_from_remote(remote_result.get("stdout", ""))
+
+
+def require_repo_admin(
+    target: Path,
+    expected_repo: str | None = None,
+    runner=run_command,
+) -> dict[str, Any]:
+    """Require administrator authority before any Harness mutation or upload."""
+    repo_root = independent_repo_root(target, runner)
+    origin_repo = git_origin_repo(repo_root, runner)
+    if not origin_repo:
+        raise ValueError("Harness maintenance requires a GitHub origin on the target repository")
+    if expected_repo and origin_repo.lower() != expected_repo.lower():
+        raise ValueError(
+            "target GitHub origin does not match the requested repository: "
+            f"origin={origin_repo}; requested={expected_repo}"
+        )
+    result = runner(
+        [
+            "gh",
+            "repo",
+            "view",
+            origin_repo,
+            "--json",
+            "nameWithOwner,viewerPermission,url,visibility",
+        ]
+    )
+    if result["returncode"] != 0:
+        detail = (result.get("stderr") or result.get("stdout") or "GitHub access check failed").strip()
+        raise ValueError(f"cannot verify target repository administrator authority: {detail}")
+    data = parse_repo_view(result.get("stdout") or "")
+    permission = data.get("viewerPermission")
+    if permission != "ADMIN":
+        raise ValueError(
+            "Harness mutation and upload require ADMIN permission on the target repository; "
+            f"current permission={permission or 'unknown'}"
+        )
+    return {
+        "repo_root": str(repo_root),
+        "repository": data.get("nameWithOwner") or origin_repo,
+        "url": data.get("url"),
+        "visibility": data.get("visibility"),
+        "viewer_permission": permission,
+        "verified": True,
+    }
 
 
 def describe_install_path(path: Path, target: Path) -> dict[str, Any]:
@@ -1407,8 +1508,8 @@ def build_onboarding_contract(
     quoted_skill_name = shlex.quote(skill_name)
 
     child_verification = (
-        "Run the child structure preflight, review and trust its hook with /hooks, then pass a "
-        "consumer-project smoke test."
+        "Run the parent repository structure preflight and pass a child consumer-project smoke test. "
+        "Create a separate Harness only after the child becomes an independent Git repository."
         if generates_child_skills
         else "not_applicable"
     )
@@ -1445,8 +1546,10 @@ def build_onboarding_contract(
         "generated_child_skills": {
             "supported": generates_child_skills,
             "hooks_inherited": False,
-            "attachment": "separate_wrapper_lifecycle" if generates_child_skills else "not_applicable",
-            "trust_review": "/hooks" if generates_child_skills else "not_applicable",
+            "repo_harness_inherited": generates_child_skills,
+            "attachment": "inherited_repo_harness" if generates_child_skills else "not_applicable",
+            "separate_harness_boundary": "independent_git_repository",
+            "trust_review": "parent_repo_host_adapter" if generates_child_skills else "not_applicable",
             "verification": child_verification,
         },
     }
@@ -2648,7 +2751,7 @@ def plan_transform_action(harness_state: str, repo_exists: bool | None) -> str:
         raise ValueError(f"unknown harness state: {harness_state}")
     if repo_exists is None:
         return "needs_repo_check"
-    return "adopt" if repo_exists else "bootstrap"
+    return "attach" if repo_exists else "create_repo_first"
 
 
 def classify_install_action(install_path: Path, canonical_path: Path) -> dict[str, Any]:

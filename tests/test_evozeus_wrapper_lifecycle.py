@@ -48,6 +48,8 @@ from scripts.evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_transform_action,
     repo_from_remote,
+    require_repo_admin,
+    resolve_harness_target,
     runtime_pointer_scope,
     skill_name_from_skill_md,
     stage_label,
@@ -164,6 +166,124 @@ def create_complete_legacy_target(target: Path) -> str:
 
 
 class LifecycleBasicsTest(unittest.TestCase):
+    def test_repository_boundary_routes_nested_skill_to_git_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            skill = root / "skills" / "example"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            boundary = resolve_harness_target(skill)
+
+            self.assertEqual(Path(boundary["repo_root"]), root.resolve())
+            self.assertFalse(boundary["requested_is_repo_root"])
+            self.assertTrue(boundary["eligible"])
+
+    def test_repository_boundary_rejects_plain_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "independent Git repository"):
+                resolve_harness_target(Path(tmp))
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "harness",
+                    "upgrade-check",
+                    "--target",
+                    tmp,
+                    "--latest-version",
+                    "v0.13.0",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertTrue(any("independent Git repository" in item for item in payload["errors"]))
+
+    def test_cli_normalizes_nested_skill_target_to_repository_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            skill = root / "skills" / "example"
+            skill.mkdir(parents=True)
+            (root / "SKILL.md").write_text("# Root Skill\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text("# Nested Skill\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "skill",
+                    "transform",
+                    "--mode",
+                    "attach",
+                    "--target",
+                    str(skill),
+                    "--dry-run",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(payload["target"]), root.resolve())
+            self.assertFalse(payload["repository_boundary"]["requested_is_repo_root"])
+
+    def test_repository_boundary_rejects_nested_active_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            nested = root / "skills" / "example" / ".evozeus-wrapper"
+            nested.mkdir(parents=True)
+            (nested / "wrapper.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            boundary = resolve_harness_target(root)
+
+            self.assertFalse(boundary["eligible"])
+            self.assertEqual(
+                boundary["nested_harness_manifests"],
+                ["skills/example/.evozeus-wrapper/wrapper.json"],
+            )
+
+    def test_harness_mutation_requires_repository_admin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            root = root.resolve()
+
+            def runner(args, cwd=None):
+                if args[:4] == ["git", "-C", str(root), "rev-parse"]:
+                    return {"returncode": 0, "stdout": str(root), "stderr": ""}
+                if args[:5] == ["git", "-C", str(root), "remote", "get-url"]:
+                    return {
+                        "returncode": 0,
+                        "stdout": "https://github.com/MetaInFLow/example.git\n",
+                        "stderr": "",
+                    }
+                if args[:3] == ["gh", "repo", "view"]:
+                    return {
+                        "returncode": 0,
+                        "stdout": json.dumps(
+                            {
+                                "nameWithOwner": "MetaInFLow/example",
+                                "viewerPermission": "WRITE",
+                            }
+                        ),
+                        "stderr": "",
+                    }
+                return {"returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+            with self.assertRaisesRegex(ValueError, "ADMIN permission"):
+                require_repo_admin(root, "MetaInFLow/example", runner=runner)
+
     def test_replace_markdown_section_preserves_target_h1_and_suffix_bytes(self):
         frontmatter = (
             '---\nname: "example"\ndescription: |\n'
@@ -1917,8 +2037,9 @@ class WrapperManifestTest(unittest.TestCase):
         children = manifest["onboarding"]["generated_child_skills"]
         self.assertTrue(children["supported"])
         self.assertFalse(children["hooks_inherited"])
-        self.assertEqual(children["attachment"], "separate_wrapper_lifecycle")
-        self.assertEqual(children["trust_review"], "/hooks")
+        self.assertTrue(children["repo_harness_inherited"])
+        self.assertEqual(children["attachment"], "inherited_repo_harness")
+        self.assertEqual(children["separate_harness_boundary"], "independent_git_repository")
         self.assertIn("consumer-project smoke test", children["verification"])
 
     def test_onboarding_contract_rejects_incomplete_required_initialization(self):
@@ -2177,8 +2298,8 @@ class SourceContractTest(unittest.TestCase):
 class TransformPlanningTest(unittest.TestCase):
     def test_plan_transform_action_maps_diagnosis_to_mode(self):
         self.assertEqual(plan_transform_action("migration_required", True), "migrate_layout")
-        self.assertEqual(plan_transform_action("missing", False), "bootstrap")
-        self.assertEqual(plan_transform_action("missing", True), "adopt")
+        self.assertEqual(plan_transform_action("missing", False), "create_repo_first")
+        self.assertEqual(plan_transform_action("missing", True), "attach")
         self.assertEqual(plan_transform_action("partial", False), "repair")
         self.assertEqual(plan_transform_action("partial", True), "repair")
         self.assertEqual(plan_transform_action("complete", False), "verify")
@@ -2821,6 +2942,15 @@ class GlobalDispatcherTest(unittest.TestCase):
 
 class UpgradeAllHarnessTest(unittest.TestCase):
     @staticmethod
+    def admin(target, repo):
+        return {
+            "repo_root": str(Path(target).resolve()),
+            "repository": repo,
+            "viewer_permission": "ADMIN",
+            "verified": True,
+        }
+
+    @staticmethod
     def latest_v010():
         return {"version": "v0.10.0", "source": "test", "error": None}
 
@@ -2940,6 +3070,29 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertIn("original clean", (clean / "SKILL.md").read_text(encoding="utf-8"))
             self.assertIn("original dirty", (dirty / "SKILL.md").read_text(encoding="utf-8"))
 
+    def test_upgrade_all_blocks_write_when_target_admin_cannot_be_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root)
+            self.create_upgrade_target(home, "admin-required", initialize_git=True)
+
+            def deny_admin(target, repo):
+                raise ValueError(f"ADMIN permission required for {repo}")
+
+            report = apply_upgrade_all(
+                home,
+                wrapper_root,
+                "v0.10.0",
+                approve=True,
+                latest_resolver=self.latest_v010,
+                admin_resolver=deny_admin,
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertTrue(any("ADMIN permission" in item for item in report["errors"]))
+
     def test_upgrade_all_blocks_incomplete_wrapper_source_before_target_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2963,8 +3116,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            first = self.create_upgrade_target(home, "first")
-            second = self.create_upgrade_target(home, "second")
+            first = self.create_upgrade_target(home, "first", initialize_git=True)
+            second = self.create_upgrade_target(home, "second", initialize_git=True)
             (first / "README.md").write_text("business first\n", encoding="utf-8")
             (second / "README.md").write_text("business second\n", encoding="utf-8")
             (first / "empty-business-dir").mkdir()
@@ -3003,6 +3156,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -3063,6 +3217,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.13.0",
                     approve=True,
                     latest_resolver=self.latest_v013,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -3133,6 +3288,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 "v0.13.0",
                 approve=True,
                 latest_resolver=self.latest_v013,
+                admin_resolver=self.admin,
             )
             updated = skill.read_text(encoding="utf-8")
 
@@ -3149,7 +3305,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            target = self.create_upgrade_target(home, "current-after-upgrade")
+            target = self.create_upgrade_target(home, "current-after-upgrade", initialize_git=True)
 
             def fake_plan(target, latest_version, **kwargs):
                 return {
@@ -3183,6 +3339,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
                 second = apply_upgrade_all(
                     home,
@@ -3190,6 +3347,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(first["status"], "applied")
@@ -3204,7 +3362,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            target = self.create_upgrade_target(home, "refresh-global")
+            target = self.create_upgrade_target(home, "refresh-global", initialize_git=True)
             apply_global_hook_install(home, wrapper_root, approve=True)
             installed_dispatcher = home / ".evozeus/hooks/evozeus_wrapper_dispatcher.py"
             installed_dispatcher.write_text("# outdated dispatcher\n", encoding="utf-8")
@@ -3244,6 +3402,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "applied")
@@ -3344,7 +3503,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             )
 
             self.assertEqual(report["status"], "blocked")
-            self.assertTrue(any("git worktree" in error for error in report["errors"]))
+            self.assertTrue(any("Git repository" in error for error in report["errors"]))
 
     def test_upgrade_all_rejects_non_authoritative_latest_version(self):
         with tempfile.TemporaryDirectory() as tmp:

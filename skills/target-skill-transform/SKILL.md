@@ -1,6 +1,6 @@
 ---
 name: evozeus-wrapper-target-skill-transform
-description: Use when bootstrapping, adopting, repairing, or verifying a target Skill harness after diagnosis.
+description: Use when attaching, adopting, repairing, or verifying the root Harness of an independent Skillware Git repository after diagnosis.
 ---
 
 # Target Skill Transform
@@ -9,8 +9,9 @@ Use this stage only after target Skill diagnosis has identified the canonical re
 
 ## Modes
 
-- `bootstrap`: GitHub repo does not exist and harness is missing.
-- `adopt`: GitHub repo exists and harness is missing.
+- `attach`: GitHub Repo exists and its root Harness is missing.
+- `adopt`: compatibility alias for attaching to an existing Repo.
+- `bootstrap`: deprecated compatibility alias; it cannot create a Harness before the Repo exists.
 - `repair`: harness is partial.
 - `verify`: harness is complete or needs structure verification.
 
@@ -20,7 +21,7 @@ If diagnosis returns `migration_required`, run `harness migrate-layout` before e
 
 ```bash
 python3 scripts/evozeus_wrapper.py skill transform \
-  --mode bootstrap \
+  --mode attach \
   --target /absolute/path/to/skill \
   --repo OWNER/REPO \
   --instruction-surface <relative path> \
@@ -34,6 +35,8 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 ## Rules
 
 - Do not change target Skill business rules.
+- Only the independent Git Repo root may receive `.evozeus-wrapper/`; child paths inherit it.
+- Require a matching GitHub origin and verified `ADMIN` permission before any Harness write.
 - Single Skill targets use root `SKILL.md`; `SKILL.md` must put `EvoZeus-CoEvolve 状态检查` immediately after frontmatter so version/source checks run before the main chain.
 - Runtime kit targets often use root `AGENTS.md`; `AGENTS.md` must put `EvoZeus-CoEvolve 状态检查` before the main runtime instructions.
 - Hook/plugin-controlled Skill bundles use the instruction surface selected by `skills/evolution-surface-diagnosis/SKILL.md`, for example `skills/<control-skill>/SKILL.md`.
@@ -47,3 +50,5 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 
 - Managed files conflict with user edits and no merge decision exists.
 - Visibility or data boundary is unresolved.
+- Target is outside Git, target Repo does not exist remotely, or a nested Harness is present.
+- Current GitHub account is not an administrator of the target Repo.
