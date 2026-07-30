@@ -4,6 +4,10 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+- None yet.
+
+## [v0.14.0] - 2026-07-30
+
 ### Changed
 
 - Repositioned CoEvolve as EvoZeus's optional evolution extension and Harness SDK for independent Skillware repositories.
