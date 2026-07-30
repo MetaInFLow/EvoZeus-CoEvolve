@@ -4,7 +4,9 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
-- None yet.
+### Changed
+
+- Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
 
 ## [v0.14.0] - 2026-07-30
 
