@@ -392,7 +392,7 @@ git commit -m "feat: upgrade wrapped harnesses transactionally"
 - Modify: `skills/publish-reinstall/SKILL.md`
 - Modify: `skills/harness-upgrade/SKILL.md`
 - Modify: `CHANGELOG.md`
-- Create: `release-notes-v0.10.0.md`
+- Create: `docs/releases/v0.10.0.md`
 
 - [ ] **Step 1: 更新用户与维护文档**
 
@@ -431,7 +431,7 @@ Expected: all tests PASS；compile PASS；global plan `writes=false`。
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md docs skills CHANGELOG.md release-notes-v0.10.0.md
+git add README.md docs skills CHANGELOG.md docs/releases/v0.10.0.md
 git commit -m "docs: document global harness enforcement"
 ```
 

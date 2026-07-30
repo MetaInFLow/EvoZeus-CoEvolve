@@ -46,3 +46,4 @@ EvoZeus-CoEvolve 是 EvoZeus 体系中的独立进化扩展、Evolution Harness 
 - attach/bootstrap 变更必须验证普通文件夹被拒绝、Repo 子目录归一到 Repo 根目录、`~/.evozeus/.projects/OWNER/REPO` 指向根目录，且根说明面出现自进化方法段。
 - Harness 写入、升级与上传必须验证 GitHub `viewerPermission=ADMIN`；只读诊断和升级计划不要求管理员权限。
 - release tag 必须使用 `vMAJOR.MINOR.PATCH`；接入 Harness 不得重置目标 Repo 的已有版本。
+- 版本化 Release Notes 固定存放在 `docs/releases/vMAJOR.MINOR.PATCH.md`；tag 工作流是路径解析的执行事实源，仓库根目录不得新增 `release-notes-v*.md`。

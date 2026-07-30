@@ -186,6 +186,8 @@ python3 -m py_compile \
 
 贡献前请阅读 [AGENTS.md](AGENTS.md) 与 [CHANGELOG.md](CHANGELOG.md)。
 
+版本说明归档见 [Release Notes](docs/releases/README.md)。
+
 ## License
 
 [MIT](LICENSE)
