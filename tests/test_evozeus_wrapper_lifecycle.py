@@ -2966,6 +2966,10 @@ class UpgradeAllHarnessTest(unittest.TestCase):
     def latest_v013():
         return {"version": "v0.13.0", "source": "test", "error": None}
 
+    @staticmethod
+    def latest_v014():
+        return {"version": "v0.14.0", "source": "test", "error": None}
+
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
         wrapper_root.mkdir()
@@ -3214,9 +3218,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.13.0",
+                    "v0.14.0",
                     approve=True,
-                    latest_resolver=self.latest_v013,
+                    latest_resolver=self.latest_v014,
                     admin_resolver=self.admin,
                 )
 
@@ -3285,9 +3289,9 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.13.0",
+                "v0.14.0",
                 approve=True,
-                latest_resolver=self.latest_v013,
+                latest_resolver=self.latest_v014,
                 admin_resolver=self.admin,
             )
             updated = skill.read_text(encoding="utf-8")
@@ -3295,7 +3299,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
             self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.13.0",
+                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.14.0",
                 updated,
             )
             self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
