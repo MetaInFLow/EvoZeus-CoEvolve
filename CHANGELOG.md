@@ -4,7 +4,19 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
-- None yet.
+### Changed
+
+- Repositioned CoEvolve as EvoZeus's optional evolution extension and Harness SDK for independent Skillware repositories.
+- Enforced one Evolution Harness per independent Git repository root; nested Skills and packages inherit the root Harness.
+- Changed generated child Skill onboarding to inherit the parent Repo Harness unless the child becomes an independent Repo.
+
+### Security
+
+- Required verified GitHub `ADMIN` permission before Harness attachment, mutation, upgrade, or upload while keeping diagnosis and dry-run planning read-only.
+
+### Verification
+
+- Added regression coverage for Repo-root normalization, plain-folder rejection, nested-Harness rejection, and administrator authority.
 
 ## [v0.13.0] - 2026-07-27
 

@@ -20,6 +20,9 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 
 ## Rules
 
 - Skill release version and wrapper harness version are separate axes.
+- Resolve every target to its independent Git Repo root. Skill, package, pack, and app directories inherit that root Harness.
+- Reject plain folders and any active Harness manifest below the Repo root.
+- Read-only checks and dry-run plans do not require administrator authority. Every Harness write, upgrade, or upload requires verified GitHub `ADMIN` permission.
 - `upgrade-check` resolves GitHub latest release by default. It may report `latest_unknown`, but must never self-substitute the installed version.
 - Only update harness-managed files.
 - Do not touch target Skill business rules.

@@ -1,6 +1,6 @@
 ---
 name: evozeus-wrapper
-description: Use when EvoZeus routes an existing SKILL.md folder, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle into the EvoZeus-CoEvolve attachment and lifecycle harness.
+description: Use when EvoZeus routes an independent Skillware Git repository into the EvoZeus-CoEvolve attachment and lifecycle Harness.
 ---
 
 # EvoZeus-CoEvolve
@@ -11,7 +11,7 @@ When this Skill applies, immediately use `skills/using-evozeus-wrapper/SKILL.md`
 
 ## Role
 
-EvoZeus-CoEvolve is the paper-system and artifact entry under EvoZeus. This repository directly wraps an existing local Skill folder, `AGENTS.md` runtime kit, or hook/plugin-controlled Skill bundle with the attachment and governed lifecycle substrate used by the larger Collaborative Evolution design.
+EvoZeus-CoEvolve is the optional evolution extension and public research artifact under EvoZeus. It attaches a governed evolution lifecycle to an independent Skillware Git repository. A Skill, package, pack, app, or other subdirectory inherits its repository Harness and cannot own another Harness.
 
 The wrapper exists to add:
 
@@ -35,7 +35,7 @@ Use these Skills in order:
 3. `skills/target-skill-diagnosis/SKILL.md` - target repo facts, GitHub access, architecture, candidates, gaps.
 4. `skills/evolution-surface-diagnosis/SKILL.md` - whole-repo instruction surface decision.
 5. `skills/status-assessment/SKILL.md` - user-understandable assessment and next step.
-6. `skills/target-skill-transform/SKILL.md` - bootstrap / adopt / repair / verify planning.
+6. `skills/target-skill-transform/SKILL.md` - attach / adopt / repair / verify planning.
 7. `skills/publish-reinstall/SKILL.md` - canonical repo and runtime pointer handling.
 8. `skills/evolution-loop/SKILL.md` - feedback-to-release loop.
 9. `skills/harness-upgrade/SKILL.md` - wrapper harness version migrations.
@@ -43,6 +43,9 @@ Use these Skills in order:
 ## Hard Boundaries
 
 - If `~/.evozeus` is missing, stop and install / initialize EvoZeus before target transform.
+- If the target is outside Git or cannot be resolved to an independent repository root, stop.
+- If an active Harness exists below the repository root, stop and migrate it to the root boundary.
+- Harness mutation, upgrade, and upload require verified `ADMIN` permission on the target GitHub repository.
 - If visibility is missing, ask `public` or `private` before creating or pushing anything.
 - If an existing repo has no GitHub release and no `.evozeus-wrapper/CHANGELOG.md` version entry, ask the owner to choose the current Skill / kit version.
 - If no controlling instruction surface can be proven, run evolution surface diagnosis and ask the owner when needed.

@@ -2,7 +2,11 @@
 
 ## 核心判断
 
-EvoZeus-CoEvolve 面向一个已经存在的本地 Skill 文件夹或兼容 Skillware bundle。用户安装和启动 EvoZeus，由 EvoZeus 在 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时路由到 CoEvolve attachment layer。
+EvoZeus-CoEvolve 面向一个已经存在的独立 Skillware Git Repo。用户安装和启动 EvoZeus，由 EvoZeus 在该 Repo 需要反馈闭环、版本治理或 Harness 维护时路由到 CoEvolve attachment layer。
+
+活动 Harness 只能位于独立 Git Repo 根目录的 `.evozeus-wrapper/`。Repo 内部 Skill、package、pack 和 app 继承根 Harness；普通文件夹和嵌套 Harness 不在合同范围内。任何 Harness 写入、升级或上传要求目标 GitHub Repo 的 `ADMIN` 权限。
+
+边界决策见 [`specs/2026-07-30-independent-repo-harness-boundary.md`](specs/2026-07-30-independent-repo-harness-boundary.md)。
 
 它把目标补齐成一个最小 Collaborative Evolution lifecycle harness：
 
@@ -173,7 +177,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 
 - Skill release 描述目标 Skill 行为版本。
 - Wrapper harness version 描述 EvoZeus-CoEvolve 注入的模板、脚本和治理逻辑版本。
 - `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities` 和 `onboarding`。
-- `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及不继承父 hook 的子 Skill 单独接入和验证。
+- `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及子 Skill 继承 Repo 根 Harness后的独立运行验证。
 - `dashboard.deployment_mode=opt_in_github_pages`；workflow validation 不依赖 Pages，部署由 `EVOZEUS_PAGES_ENABLED=true` 显式开启。
 - 最新 wrapper 版本默认取 GitHub latest release；来源不可用时必须返回 `latest_unknown` 和查询证据，不能回退为当前版本。
 - wrapper major upgrade 必须用户确认。
@@ -193,7 +197,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 
 `engineering-everything` 自进化时暴露了一个 wrapper 级反模式：agent 先修改安装副本，再查公开 GitHub，最后才发现用户自己的 repo 已存在。正确机制必须进入 wrapper，而不是只留在具体 Skill case 中：
 
 1. 先检查 `git` / `gh` / `gh auth status`。
-2. 当前目录在 git repo 内时，先验证 `origin` 是否是可访问 GitHub repo；bootstrap pre-create 阶段可用 `--allow-missing-repo` 验证目标 repo 可创建。
+2. 当前目录必须解析到独立 Git Repo 根目录；验证 `origin` 与目标 GitHub Repo 匹配。Repo 不存在时先创建 Repo，不能预先写入 Harness。
 3. 当前目录只是安装副本时，先查当前 `gh` 用户 repo，再查用户所属 org repo，最后才扩大到公开 repo 搜索。
 4. lesson 候选先进入 GitHub Issue 队列，再决定是否写入 Skill 内部 lesson / pattern。
 5. 安装副本只作为部署目标；GitHub repo clone 才是 canonical source。
@@ -201,7 +205,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.0 
    - GitHub latest release tag。
    - `.evozeus-wrapper/CHANGELOG.md` 最新 `vMAJOR.MINOR.PATCH` 条目，并先为该 tag 创建或确认 GitHub release。
    - 两者都没有时停止，让 owner 选择首个 Skill version。
-7. `v0.1.0` 只用于新建目标 repo 的首个 wrapped Skill release；wrapper harness version 另由 `.evozeus-wrapper/wrapper.json` 记录。
+7. 接入 Harness 不重置目标 Repo 的版本；wrapper harness version 另由 `.evozeus-wrapper/wrapper.json` 记录。
 
 ## Data Policy
 

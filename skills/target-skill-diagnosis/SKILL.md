@@ -1,15 +1,15 @@
 ---
 name: evozeus-wrapper-target-skill-diagnosis
-description: Use when identifying the target Skill, AGENTS.md-root runtime kit, or hook/plugin-controlled Skill bundle; local installs; candidate repos; GitHub repo state; harness state; architecture; evolution surface; component gaps; and publication boundary.
+description: Use when identifying an independent Skillware Git Repo, its local installs, GitHub state, root Harness state, architecture, evolution surface, component gaps, and publication boundary.
 ---
 
 # Target Skill Diagnosis
 
-Use this stage after environment diagnosis and before bootstrap, adopt, repair, publish, or reinstall.
+Use this stage after environment diagnosis and before attach, adopt, repair, publish, or reinstall.
 
 ## Required Inputs
 
-- Target folder. It may be a single Skill with root `SKILL.md`, a runtime kit with root `AGENTS.md` and `skills/*/SKILL.md`, or a hook/plugin-controlled bundle where a startup hook loads a control Skill.
+- Target path inside an independent Git Repo. The CLI normalizes it to the Repo root; Harness ownership always stays at that root.
 - Target GitHub repo in `OWNER/REPO` format when known.
 - Skill name override only when the target surface cannot identify it.
 
@@ -35,23 +35,25 @@ Ask the user only when:
 ## Required Order
 
 1. Confirm environment diagnosis has passed. If `~/.evozeus` is missing, install / initialize EvoZeus before target transform.
-2. Check GitHub repo access, visibility, default branch, and current account permission.
-3. Classify the target architecture:
+2. Confirm the target resolves to an independent Git Repo root and no nested Harness manifest exists.
+3. Check GitHub Repo access, visibility, default branch, and current account permission. Record whether `ADMIN` authority is available for later writes.
+4. Classify the target architecture:
    - `single_skill`
    - `runtime_skill_bundle`
    - `hooked_skill_bundle`
    - `skill_bundle`
    - `agents_runtime`
    - `unknown`
-4. Report runtime integration mode and each scoped capability from `skill.integration`. Distinguish project maintenance, user-level global dispatch, Skill-entry preflight, tool gateway, and future Skill invocation hooks. Do not call project hooks or wrapper CLI commands native per-Skill invocation hooks.
-5. Report Skill inventory from `skills/*/SKILL.md` when present.
-6. Report `evolution_surface` facts: candidate instruction surfaces, controller files, and evidence boundaries. Do not treat script candidates as final placement.
-7. Use `skills/evolution-surface-diagnosis/SKILL.md` to browse the whole repo and choose the controlling instruction surface.
-8. Report `component_gaps`: missing wrapper files, manifest, changelog, and status-check concept after the surface decision is known.
-9. Hand the diagnosis JSON and surface decision to `skills/status-assessment/SKILL.md`; do not write user-facing status analysis in the script.
+5. Report runtime integration mode and each scoped capability from `skill.integration`. Distinguish project maintenance, user-level global dispatch, Skill-entry preflight, tool gateway, and future Skill invocation hooks. Do not call project hooks or wrapper CLI commands native per-Skill invocation hooks.
+6. Report Skill inventory from `skills/*/SKILL.md` when present.
+7. Report `evolution_surface` facts: candidate instruction surfaces, controller files, and evidence boundaries. Do not treat script candidates as final placement.
+8. Use `skills/evolution-surface-diagnosis/SKILL.md` to browse the whole repo and choose the controlling instruction surface.
+9. Report `component_gaps`: missing wrapper files, manifest, changelog, and status-check concept after the surface decision is known.
+10. Hand the diagnosis JSON and surface decision to `skills/status-assessment/SKILL.md`; do not write user-facing status analysis in the script.
 
 ## Stop Conditions
 
 - Target Skill identity is ambiguous.
+- Target is outside Git or contains an active nested Harness.
 - The user has not chosen visibility.
 - Sensitive data cannot be safely redacted.

@@ -59,7 +59,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 当前 Codex 没有 `SkillInvoke` 事件。project hook、global dispatcher、Plugin lifecycle 和 Skill 入口 preflight 都不得描述成 native per-Skill invocation hook。新建或变更 hook 后，需要通过 `/hooks` 审核并单独记录 trust 状态。
 
-安装、调用、初始化和子 Skill hook 接入以 `.evozeus-wrapper/wrapper.json` 的 `onboarding` 字段及 [onboarding 指南](onboarding.html) 为准。子 Skill 不继承父级 hook，必须单独接入 wrapper、通过 `/hooks` 信任审核，并完成 structure preflight 和 consumer-project smoke test。
+安装、调用、初始化和子 Skill 接入以 `.evozeus-wrapper/wrapper.json` 的 `onboarding` 字段及 [onboarding 指南](onboarding.html) 为准。子 Skill 继承 Repo 根 Harness；独立运行入口仍需 consumer-project smoke test，成为独立 Git Repo 后才允许拥有单独 Harness。
 
 push 和 workflow dispatch 始终运行 maintainer validation。只有在确认仓库支持 GitHub Pages，并设置 repository variable `EVOZEUS_PAGES_ENABLED=true` 后，workflow 才部署 dashboard；否则以 repository-only mode 成功结束。
 
@@ -78,7 +78,7 @@ python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py doctor --repo {{RE
 python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py version --repo {{REPO_NAME}}
 ```
 
-每次 Skill 更新必须先写 design doc，再开 PR。根目录 `SKILL.md` 是 repo 化后的可运行入口；`~/.evozeus/.projects/{{REPO_NAME}}` 和 runtime 安装路径应指向同一个 canonical repo，不保留 copied install 作为第二事实源，也不要直接修改 `.codex/skills/...` 或 `.agents/skills/...`。
+每次 Skill 更新必须先写 design doc，再开 PR。目标 Repo 必须在接入 Harness 前完成独立 GitHub Repo 建立；`~/.evozeus/.projects/{{REPO_NAME}}` 和 runtime 安装路径应指向同一个 canonical Repo，不保留 copied install 作为第二事实源，也不要直接修改 `.codex/skills/...` 或 `.agents/skills/...`。
 
 EvoZeus-CoEvolve harness 升级时，不能重写目标 Skill 业务段落。先在 EvoZeus-CoEvolve repo 里生成迁移方案：
 

@@ -1,5 +1,7 @@
 # Case: Engineering Everything source discovery and dependency gate
 
+> 历史案例：其中 pre-create bootstrap 口径已被 [独立 Repo Harness 边界](../specs/2026-07-30-independent-repo-harness-boundary.md) 取代。当前必须先建立独立 GitHub Repo，再接入 Harness。
+
 ## 背景
 
 在 `engineering-everything` 自进化过程中，wrapper 机制暴露了两个缺口：

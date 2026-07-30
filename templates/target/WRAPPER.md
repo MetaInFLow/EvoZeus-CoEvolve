@@ -46,7 +46,7 @@ Codex currently has no `SkillInvoke` event. Do not describe the project hook, gl
 
 ## Install And Onboarding
 
-Read `.evozeus-wrapper/docs/onboarding.md` and the manifest `onboarding` contract. Runtime installs must be canonical repo symlinks. Initialization commands are owned by the target Skill. Generated child Skills do not inherit this repo's hooks; each child needs a separate wrapper lifecycle, `/hooks` trust review, structure preflight, and consumer-project smoke test.
+Read `.evozeus-wrapper/docs/onboarding.md` and the manifest `onboarding` contract. Runtime installs must be canonical Repo symlinks. Initialization commands are owned by the target Skillware. Generated child Skills inherit this Repo's Harness; they may own a separate Harness only after becoming independent Git Repos.
 
 The global dispatcher is installed separately from the runtime Skill symlink. Its file installation and Codex trust state must be reported independently.
 

@@ -440,14 +440,16 @@ def check_onboarding_contract(manifest: dict | None) -> None:
     if not isinstance(children.get("supported"), bool):
         fail("onboarding.generated_child_skills.supported must be boolean")
     if children.get("supported"):
-        if children.get("attachment") != "separate_wrapper_lifecycle":
-            fail("generated child Skills must use a separate_wrapper_lifecycle attachment")
-        if children.get("trust_review") != "/hooks":
-            fail("generated child Skill hooks must require /hooks trust review")
+        if children.get("repo_harness_inherited") is not True:
+            fail("generated child Skills must inherit the parent repository Harness")
+        if children.get("attachment") != "inherited_repo_harness":
+            fail("generated child Skills must use inherited_repo_harness attachment")
+        if children.get("separate_harness_boundary") != "independent_git_repository":
+            fail("a generated child may own a separate Harness only as an independent Git repository")
         verification = children.get("verification") or ""
-        required_terms = ["structure preflight", "consumer-project smoke test"]
+        required_terms = ["repository structure preflight", "consumer-project smoke test"]
         if not all(term in verification for term in required_terms):
-            fail("generated child Skill verification must include structure preflight and consumer-project smoke test")
+            fail("generated child Skill verification must include parent repository preflight and consumer-project smoke test")
     ok("onboarding contract is complete")
 
 
@@ -802,6 +804,13 @@ def check_doctor(args: argparse.Namespace) -> None:
     require_command("git")
     require_command("gh")
 
+    git_root_result = run_command(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
+    if git_root_result.returncode != 0 or not git_root_result.stdout.strip():
+        fail("Evolution Harness requires an independent Git repository")
+    git_root = Path(git_root_result.stdout.strip()).resolve()
+    if git_root != target:
+        fail(f"Harness doctor must run at the Git repository root: {git_root}")
+
     auth = run_command(["gh", "auth", "status"])
     if auth.returncode != 0:
         fail("gh is installed but not authenticated; run gh auth login")
@@ -816,34 +825,21 @@ def check_doctor(args: argparse.Namespace) -> None:
         check_wrapper_managed_doctor(target, repo, manifest, args.allow_missing_repo)
         return
 
-    git_root_result = run_command(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
-    if git_root_result.returncode == 0:
-        git_root = Path(git_root_result.stdout.strip())
-        remote_result = run_command(["git", "-C", str(git_root), "remote", "get-url", "origin"])
-        if remote_result.returncode == 0:
-            remote_repo = repo_from_remote(remote_result.stdout)
-            if remote_repo:
-                repo = repo or remote_repo
-                ok(f"origin GitHub repo detected: {remote_repo}")
-            else:
-                fail(f"origin remote is not a GitHub repo: {remote_result.stdout.strip()}")
-        elif not repo:
-            fail("target is a git repo but origin remote is missing; pass --repo OWNER/REPO")
-    elif not repo:
-        candidates = discover_repo_candidates(target.name)
-        if candidates:
-            repo = candidates[0]
-            ok(f"target is not a git repo; discovered candidate repo: {repo}")
+    remote_result = run_command(["git", "-C", str(git_root), "remote", "get-url", "origin"])
+    if remote_result.returncode == 0:
+        remote_repo = repo_from_remote(remote_result.stdout)
+        if remote_repo:
+            repo = repo or remote_repo
+            ok(f"origin GitHub repo detected: {remote_repo}")
         else:
-            fail("target is not a git repo and no --repo was provided")
+            fail(f"origin remote is not a GitHub repo: {remote_result.stdout.strip()}")
+    else:
+        fail("target independent Git repository has no GitHub origin")
 
     if repo:
         view = run_command(["gh", "repo", "view", repo, "--json", "nameWithOwner,url,visibility"])
         if view.returncode != 0:
             detail = (view.stderr or view.stdout or "").strip()
-            if args.allow_missing_repo and is_repo_not_found(detail):
-                ok(f"GitHub repo is available to create: {repo}")
-                return
             fail(f"cannot access GitHub repo {repo}: {detail}")
         ok(f"GitHub repo accessible: {repo}")
 
@@ -877,18 +873,13 @@ def check_wrapper_managed_doctor(
         if origin_repo != manifest_repo:
             fail(f"canonical repo origin {origin_repo} does not match wrapper canonical_repo {manifest_repo}")
         ok(f"canonical repo origin matches wrapper manifest: {origin_repo}")
-    elif allow_missing_repo:
-        warn("canonical repo has no GitHub origin yet; allowed only during pre-publish bootstrap")
     else:
-        fail("canonical repo has no GitHub origin; publish or pass --allow-missing-repo only during bootstrap")
+        fail("canonical independent Git repository has no GitHub origin")
 
     view = run_command(["gh", "repo", "view", manifest_repo, "--json", "nameWithOwner,url,visibility"])
     if view.returncode != 0:
         detail = (view.stderr or view.stdout or "").strip()
-        if allow_missing_repo and is_repo_not_found(detail):
-            ok(f"GitHub repo is available to create: {manifest_repo}")
-        else:
-            fail(f"cannot access GitHub repo {manifest_repo}: {detail}")
+        fail(f"cannot access GitHub repo {manifest_repo}: {detail}")
     else:
         ok(f"GitHub repo accessible: {manifest_repo}")
 
@@ -1271,7 +1262,7 @@ def main() -> int:
     doctor = sub.add_parser("doctor", help="Check local git/gh dependencies and source repo access.")
     doctor.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     doctor.add_argument("--repo", help="GitHub repo in OWNER/REPO format. Defaults to origin remote or discovered candidate.")
-    doctor.add_argument("--allow-missing-repo", action="store_true", help="Allow --repo to be absent on GitHub when bootstrapping a new repo.")
+    doctor.add_argument("--allow-missing-repo", action="store_true", help=argparse.SUPPRESS)
 
     runtime = sub.add_parser("runtime", help="Check runtime-copy runnable Skill files.")
     runtime.add_argument("--target", default=".", help="Target Skill runtime or wrapped repo path.")
