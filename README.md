@@ -75,7 +75,7 @@ EvoZeus 只在关键生命周期状态真实变化时显示一行短标记。事
 | --- | --- | --- | --- | --- | --- |
 | 启动 | `🧙 EvoZeus · 已启动｜复盘这次 Agent 执行` | EvoZeus 已接管本次显式任务。 | 用户明确调用 EvoZeus。 | Core | 隐式辅助、普通问答和后台检查不得宣称已启动。 |
 | 受管运行 | `👁️ EvoZeus · 受管运行｜企业场景地图 Skill · UAT` | 当前业务任务由已纳入治理的 Skillware 承载。 | Repo、Harness/Plugin 身份与渠道均已核验。 | Core + Harness | 未核验 Repo、版本或渠道时不得显示。 |
-| Lesson 候选 | `🧙 EvoZeus · 捕捉到一条 Lesson｜证据不足时不能直接报完成。要记录下来吗？` | 发现了一条可能复用的改进，并请求记录授权。 | 当前业务结果已完成，Lesson 已脱敏且可行动。 | Core；Harness 可渲染目标 Repo 的本地 Lesson Notice | 标记不得抢在业务结果前；候选状态不得表示已持久化。 |
+| Lesson 候选 | `🧙 EvoZeus · 捕捉到一条 Lesson｜证据不足时不能直接报完成｜拟记录到：owner/example-skill · GitHub Feedback Issue｜影响范围：任务完成门禁｜写入边界：仅创建脱敏 Issue；不修改代码、不创建 PR。要按此记录吗？` | 发现了一条可能复用的改进，并明确目标位置、记录载体、影响范围与本次授权边界。 | 当前业务结果已完成，Lesson 已脱敏、可行动，记录落点与写入边界均已确定。 | Core；Harness 可渲染目标 Repo 的本地 Lesson Notice | 标记不得抢在业务结果前；缺少目标位置、记录载体、影响范围或写入边界时不得询问记录；候选状态不得表示已持久化。 |
 | Lesson 已记录 | `📝 EvoZeus · Lesson 已记录｜Feedback Issue #12` | 经用户确认的 Lesson 已成功写入指定载体。 | 本地记录或 Feedback Issue 创建成功。 | Core / CoEvolve | 写入失败、仅生成草稿或仍在等待授权时不得显示。 |
 | 等待确认 | `🔐 EvoZeus · 等待确认｜创建 Feedback Issue` | 下一步会产生本地写入或外部影响，当前正在等用户授权。 | 写入、Issue、维护、发布等具体动作需要新的批准。 | Core / CoEvolve | 普通进度、只读诊断或模糊的未来计划不得使用。 |
 | 版本状态 | `🧭 EvoZeus · 版本状态｜Stable v0.4.1 → UAT v0.4.2` | 展示对齐、切换或升级前的当前版本与目标版本。 | 渠道事务开始前已解析出两端版本。 | Core | 该标记只说明状态，不得当作切换成功证明。 |

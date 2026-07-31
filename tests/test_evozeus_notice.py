@@ -21,24 +21,24 @@ CANONICAL_EVENT_CONTRACT = (
     "docs/reference/user-visible-events.md"
 )
 # Documentation compatibility snapshot only; runtime semantics stay in the Core contract.
-CANONICAL_EVENT_NAMES_SNAPSHOT = (
-    "启动",
-    "受管运行",
-    "Lesson 候选",
-    "Lesson 已记录",
-    "等待确认",
-    "版本状态",
-    "发现更新",
-    "自动更新中",
-    "自动更新完成",
-    "自动更新失败",
-    "进化执行",
-    "UAT 就绪",
-    "正式发布",
-    "回滚",
-    "暂停",
-    "验证完成",
-)
+CANONICAL_EVENT_PREFIXES_SNAPSHOT = {
+    "启动": "🧙 EvoZeus · 已启动｜",
+    "受管运行": "👁️ EvoZeus · 受管运行｜",
+    "Lesson 候选": "🧙 EvoZeus · 捕捉到一条 Lesson｜",
+    "Lesson 已记录": "📝 EvoZeus · Lesson 已记录｜",
+    "等待确认": "🔐 EvoZeus · 等待确认｜",
+    "版本状态": "🧭 EvoZeus · 版本状态｜",
+    "发现更新": "🧭 EvoZeus · 发现更新｜",
+    "自动更新中": "🛠️ EvoZeus · 自动更新中｜",
+    "自动更新完成": "✅ EvoZeus · 自动更新完成｜",
+    "自动更新失败": "🛡️ EvoZeus · 自动更新失败｜",
+    "进化执行": "🛠️ EvoZeus · 进化中｜",
+    "UAT 就绪": "🧪 EvoZeus · UAT 就绪｜",
+    "正式发布": "🚀 EvoZeus · 已发布｜",
+    "回滚": "↩️ EvoZeus · 已回滚｜",
+    "暂停": "🛡️ EvoZeus · 暂停｜",
+    "验证完成": "✅ EvoZeus · 已验证｜",
+}
 
 
 def _readme_section(text: str, start: str, end: str) -> str:
@@ -55,8 +55,24 @@ def test_readme_covers_canonical_user_visible_event_contract() -> None:
 
     assert CANONICAL_EVENT_CONTRACT in section
     assert "普通业务分析和普通工具调用不打标" in section
-    for event_name in CANONICAL_EVENT_NAMES_SNAPSHOT:
-        assert f"| {event_name} |" in section
+    canonical_rows = {
+        event_name: next(
+            line for line in section.splitlines() if line.startswith(f"| {event_name} |")
+        )
+        for event_name in CANONICAL_EVENT_PREFIXES_SNAPSHOT
+    }
+    for event_name, prefix in CANONICAL_EVENT_PREFIXES_SNAPSHOT.items():
+        assert prefix in canonical_rows[event_name]
+
+    lesson_row = canonical_rows["Lesson 候选"]
+    for required_fragment in (
+        "拟记录到：",
+        "GitHub Feedback Issue",
+        "影响范围：",
+        "写入边界：",
+        "要按此记录吗？",
+    ):
+        assert required_fragment in lesson_row
 
 
 def test_readme_local_notice_matrix_tracks_deployed_policy() -> None:
