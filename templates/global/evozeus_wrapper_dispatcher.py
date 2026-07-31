@@ -33,7 +33,7 @@ SESSION_SIGNAL_ATTACHMENT = {
     "component_version": "v0.1.1",
     "availability": "unreleased",
     "component_manifest": "contracts/lesson-candidate-v1.json",
-    "component_manifest_sha256": "64c9047994262dabcd9e0a0f795f0c8ea32ca2c99313711e4e6c8d670c602331",
+    "component_manifest_sha256": "d9a80f46875cbd290d2686387aa5862aa21c86a0fbbcccae8940ef9110169682",
     "api": "evozeus.session-signal.lesson-candidate.v1",
     "entrypoint": "scripts/evaluate_lesson_candidate.py",
 }
