@@ -197,11 +197,21 @@ def validate_template_destination(target: Path, destination: Path) -> None:
     except ValueError as exc:
         raise ValueError(f"template destination escapes target repository: {destination}") from exc
     cursor = target
-    for part in relative.parts:
+    for index, part in enumerate(relative.parts):
         cursor /= part
         if cursor.is_symlink():
             raise ValueError(
                 "template destination contains a symlink component: "
+                + str(cursor.relative_to(target))
+            )
+        if cursor.exists() and index < len(relative.parts) - 1 and not cursor.is_dir():
+            raise ValueError(
+                "template destination parent is not a directory: "
+                + str(cursor.relative_to(target))
+            )
+        if cursor.exists() and index == len(relative.parts) - 1 and not cursor.is_file():
+            raise ValueError(
+                "template destination is not a regular file: "
                 + str(cursor.relative_to(target))
             )
 

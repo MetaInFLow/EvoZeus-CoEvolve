@@ -603,10 +603,15 @@ def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     surface_rel = manifest.get("instruction_surface")
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
-    if text.count(HARNESS_ENTRY_BEGIN) != 1 or text.count(HARNESS_ENTRY_END) != 1:
+    start = text.find(HARNESS_ENTRY_BEGIN)
+    end = text.find(HARNESS_ENTRY_END)
+    if (
+        text.count(HARNESS_ENTRY_BEGIN) != 1
+        or text.count(HARNESS_ENTRY_END) != 1
+        or start > end
+    ):
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
-    start = text.index(HARNESS_ENTRY_BEGIN)
-    end = text.index(HARNESS_ENTRY_END, start) + len(HARNESS_ENTRY_END)
+    end += len(HARNESS_ENTRY_END)
     block = text[start:end]
     if block != _canonical_harness_entry_block():
         fail("instruction surface Harness Skill link does not match the canonical manifest path")
