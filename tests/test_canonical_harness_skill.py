@@ -28,6 +28,7 @@ from scripts.evozeus_wrapper_lifecycle import (
     TARGET_WRAPPER_MANIFEST,
     build_harness_activation_block,
     build_wrapper_manifest,
+    canonical_harness_skill_text_valid,
     detect_target_architecture,
     migrate_instruction_surface_to_harness_entry,
     migrate_target_layout,
@@ -229,6 +230,22 @@ def test_attach_preflights_every_template_destination_before_any_write(tmp_path:
 
     assert list(outside.iterdir()) == []
     assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".codex").exists()
+
+
+def test_attach_rejects_a_non_directory_template_parent_before_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    wrapper = target / ".evozeus-wrapper"
+    wrapper.mkdir()
+    (wrapper / "skills").write_text("OWNER FILE\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="template destination parent is not a directory"):
+        copy_templates(target, replacements(), force=False)
+
+    assert (wrapper / "skills").read_text(encoding="utf-8") == "OWNER FILE\n"
+    assert not (target / ".github").exists()
     assert not (target / ".codex").exists()
 
 
@@ -932,8 +949,13 @@ def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -
     write_manifest(target, legacy=True)
     harness = target / TARGET_HARNESS_SKILL
     harness.parent.mkdir(parents=True, exist_ok=True)
-    owner_bytes = b"# Owner file at reserved path\n"
+    template = (
+        ROOT
+        / "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
+    ).read_bytes()
+    owner_bytes = template + b"\n# Owner customization at reserved path\n"
     harness.write_bytes(owner_bytes)
+    assert canonical_harness_skill_text_valid(harness.read_text(encoding="utf-8"))
     skill_bytes = (target / "SKILL.md").read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
@@ -944,6 +966,28 @@ def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -
     assert any("not proven wrapper-managed" in item for item in plan["conflicts"])
     assert harness.read_bytes() == owner_bytes
     assert (target / "SKILL.md").read_bytes() == skill_bytes
+
+
+def test_preflight_rejects_reversed_harness_entry_markers_without_traceback(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    entry = target / "SKILL.md"
+    text = entry.read_text(encoding="utf-8")
+    block = build_harness_activation_block()
+    reversed_block = block.replace(HARNESS_ENTRY_BEGIN, "__BEGIN__").replace(
+        HARNESS_ENTRY_END,
+        HARNESS_ENTRY_BEGIN,
+    ).replace("__BEGIN__", HARNESS_ENTRY_END)
+    entry.write_text(text.replace(block, reversed_block), encoding="utf-8")
+
+    with contextlib.redirect_stderr(io.StringIO()) as stderr, pytest.raises(SystemExit):
+        check_harness_entry_contract(target, manifest)
+
+    assert "exactly one canonical Harness Skill activation block" in stderr.getvalue()
+    assert "Traceback" not in stderr.getvalue()
 
 
 def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
