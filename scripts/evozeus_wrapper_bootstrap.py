@@ -79,6 +79,9 @@ TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
 EXACT_SNAPSHOT_TEMPLATE_PATHS = {
     Path("contracts/v1/contributor-branch-contract.json"),
     Path("contracts/v1/contributor-branch-provenance.json"),
@@ -232,12 +235,35 @@ def validate_existing_manifest_for_attach(
         "harness_skill_path": TARGET_HARNESS_SKILL,
         "harness_skill_version": HARNESS_SKILL_VERSION,
         "harness_skill_managed": True,
+        "contributor_branch": {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        },
     }
     mismatches = [
         field
         for field, value in expected.items()
         if not isinstance(manifest, dict) or manifest.get(field) != value
     ]
+    managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
+    required_managed_files = (
+        TARGET_HARNESS_SKILL,
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    )
+    if (
+        not isinstance(managed_files, list)
+        or any(path not in managed_files for path in required_managed_files)
+    ):
+        mismatches.append("managed_files")
     if mismatches:
         raise ValueError(
             "existing wrapper manifest requires migrate-layout before attach; incompatible fields: "
