@@ -441,6 +441,8 @@ def _canonical_harness_entry_block() -> str:
 def _mask_markdown_fenced_code(text: str) -> str:
     """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
+    offset = 0
+    frontmatter_end = _frontmatter_end(text)
     fence: tuple[str, int] | None = None
     html_block: tuple[str, re.Pattern[str] | None] | None = None
 
@@ -467,6 +469,10 @@ def _mask_markdown_fenced_code(text: str) -> str:
 
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
         if fence:
             fence_char, minimum_length = fence
             if re.match(
@@ -475,6 +481,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 fence = None
             masked.append(mask_line(line))
+            offset += len(line)
             continue
         if html_block:
             mode, end_pattern = html_block
@@ -483,6 +490,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 html_block = None
             masked.append(mask_line(line))
+            offset += len(line)
             continue
         fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
         if fence_match:
@@ -530,6 +538,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             masked.append(mask_line(line))
         else:
             masked.append(line)
+        offset += len(line)
     return "".join(masked)
 
 
@@ -859,10 +868,7 @@ def _frontmatter_end(text: str) -> int:
         quote: str | None = None
         escaped = False
         comment = False
-        stack: list[str] = []
-        segment_has_content = False
-        segment_has_separator = False
-        saw_pair = False
+        frames = [{"kind": "map", "content": False, "separator": False, "items": 0}]
         valid_flow = True
         for index, character in enumerate(inner):
             if comment:
@@ -881,43 +887,65 @@ def _frontmatter_end(text: str) -> int:
                 continue
             if character in {"'", '"'}:
                 quote = character
-                segment_has_content = True
+                frames[-1]["content"] = True
             elif character == "#":
                 comment = True
             elif character in "[{":
-                stack.append(character)
-                segment_has_content = True
+                frames[-1]["content"] = True
+                frames.append(
+                    {
+                        "kind": "sequence" if character == "[" else "map",
+                        "content": False,
+                        "separator": False,
+                        "items": 0,
+                    }
+                )
             elif character in "]}":
-                expected = "[" if character == "]" else "{"
-                if not stack or stack.pop() != expected:
+                expected = "sequence" if character == "]" else "map"
+                if len(frames) == 1 or frames[-1]["kind"] != expected:
                     valid_flow = False
                     break
-            elif not stack and character == ",":
-                if not segment_has_content or not segment_has_separator:
-                    valid_flow = False
-                    break
-                saw_pair = True
-                segment_has_content = False
-                segment_has_separator = False
-            elif not stack and character == ":":
-                if not segment_has_content:
-                    valid_flow = False
-                    break
-                if segment_has_separator:
-                    next_character = inner[index + 1 : index + 2]
-                    if not next_character or next_character.isspace():
+                frame = frames.pop()
+                if frame["content"]:
+                    if frame["kind"] == "map" and not frame["separator"]:
                         valid_flow = False
                         break
+                    frame["items"] += 1
+            elif character == ",":
+                frame = frames[-1]
+                if not frame["content"] or (
+                    frame["kind"] == "map" and not frame["separator"]
+                ):
+                    valid_flow = False
+                    break
+                frame["items"] += 1
+                frame["content"] = False
+                frame["separator"] = False
+            elif character == ":":
+                frame = frames[-1]
+                if frame["kind"] == "map":
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        next_character = inner[index + 1 : index + 2]
+                        if not next_character or next_character.isspace():
+                            valid_flow = False
+                            break
+                    else:
+                        frame["separator"] = True
                 else:
-                    segment_has_separator = True
+                    frame["content"] = True
             elif not character.isspace():
-                segment_has_content = True
-        valid_flow = valid_flow and quote is None and not stack
-        if segment_has_content:
-            valid_flow = valid_flow and segment_has_separator
-            saw_pair = saw_pair or segment_has_separator
-        if valid_flow and (not inner.strip() or saw_pair):
+                frames[-1]["content"] = True
+        valid_flow = valid_flow and quote is None and len(frames) == 1
+        root = frames[0]
+        if root["content"]:
+            valid_flow = valid_flow and bool(root["separator"])
+            root["items"] += 1
+        if valid_flow and (not inner.strip() or root["items"]):
             return offset
+        return 0
 
     def mapping_key_separator(line: str) -> int | None:
         quote: str | None = None
