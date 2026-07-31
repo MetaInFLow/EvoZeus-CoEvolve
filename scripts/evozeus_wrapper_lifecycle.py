@@ -2528,21 +2528,7 @@ def _harness_contract_needs_migration(
     if harness is None:
         return True
     harness_text = _read_text_preserving_newlines(harness)
-    metadata = re.search(
-        r"(?m)^metadata:[ \t]*\r?\n(?P<values>(?:^[ \t]+[^\r\n]*(?:\r?\n|$))*)",
-        harness_text,
-    )
-    if not re.search(
-        r"(?m)^name:[ \t]*[\"']?using-evozeus-harness[\"']?[ \t]*\r?$",
-        harness_text,
-    ):
-        return True
-    if not metadata or not re.search(
-        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
-        metadata.group("values"),
-    ):
-        return True
-    if any(term not in harness_text for term in HARNESS_SKILL_REQUIRED_TERMS):
+    if not canonical_harness_skill_text_valid(harness_text):
         return True
     if not isinstance(instruction_surface, str):
         return True
@@ -2550,6 +2536,35 @@ def _harness_contract_needs_migration(
     if surface is None:
         return True
     return not _has_canonical_harness_entry(_read_text_preserving_newlines(surface))
+
+
+def canonical_harness_skill_text_valid(harness_text: str) -> bool:
+    """Validate the canonical Harness Skill using the same bounded frontmatter contract as preflight."""
+    frontmatter = re.match(
+        r"\A---\r?\n(?P<body>.*?)\r?\n(?:---|\.\.\.)\r?\n",
+        harness_text,
+        re.DOTALL,
+    )
+    if not frontmatter:
+        return False
+    body = frontmatter.group("body")
+    if not re.search(
+        r"(?m)^name:[ \t]*[\"']?using-evozeus-harness[\"']?[ \t]*\r?$",
+        body,
+    ):
+        return False
+    metadata = re.search(
+        r"(?m)^metadata:[ \t]*\r?\n(?P<values>(?:^[ \t]+[^\r\n]*(?:\r?\n|$))*)",
+        body,
+    )
+    if not metadata or not re.search(
+        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
+        metadata.group("values"),
+    ):
+        return False
+    if any(term not in harness_text for term in HARNESS_SKILL_REQUIRED_TERMS):
+        return False
+    return True
 
 
 def plan_target_layout_migration(

@@ -11,10 +11,12 @@ from pathlib import Path
 
 try:
     from .evozeus_wrapper_lifecycle import (
+        TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
+        canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
@@ -24,10 +26,12 @@ try:
     )
 except ImportError:
     from evozeus_wrapper_lifecycle import (
+        TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
+        canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
@@ -159,6 +163,26 @@ def target_template_path(rel: Path) -> Path:
 
 
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
+    existing_harness = target / TARGET_HARNESS_SKILL
+    if (existing_harness.exists() or existing_harness.is_symlink()) and not force:
+        if existing_harness.is_symlink() or not existing_harness.is_file():
+            raise ValueError(
+                f"existing canonical Harness Skill path is unsafe: {existing_harness}; "
+                "use an approved repair with --force"
+            )
+        try:
+            existing_text = existing_harness.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(
+                f"existing canonical Harness Skill cannot be verified: {existing_harness}; "
+                "use an approved repair with --force"
+            ) from exc
+        if not canonical_harness_skill_text_valid(existing_text):
+            raise ValueError(
+                f"existing canonical Harness Skill is incompatible: {existing_harness}; "
+                "preserve it and use an approved repair with --force"
+            )
+
     actions: list[str] = []
     for src in sorted(TARGET_TEMPLATE_DIR.rglob("*")):
         if src.is_dir() or "__pycache__" in src.parts or src.suffix in {".pyc", ".pyo"}:
@@ -393,7 +417,10 @@ def main() -> int:
         f"verified independent Git repository root: {target}",
         f"verified GitHub ADMIN authority: {authority['repository']}",
     ]
-    actions.extend(copy_templates(target, replacements, args.force))
+    try:
+        actions.extend(copy_templates(target, replacements, args.force))
+    except ValueError as exc:
+        fail(str(exc))
     actions.extend(ensure_project_pointer(target, args.repo, args.force))
     actions.extend(inject_evolution_method(target, replacements, instruction_surface="SKILL.md"))
     actions.append(
