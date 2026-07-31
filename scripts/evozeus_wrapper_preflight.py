@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import hashlib
 import json
 import re
 import shutil
@@ -67,6 +68,20 @@ TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKIL
 HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+PR_TEMPLATE_PATH = ".github/pull_request_template.md"
+PR_PLAN_BEGIN = "<!-- evozeus-contributor-branch-plan:v1 -->"
+PR_PLAN_END = "<!-- /evozeus-contributor-branch-plan -->"
+PR_PLAN_HEADING = "## Contributor Branch Plan"
+PR_TEMPLATE_MANAGED_BASELINE_SHA256 = frozenset(
+    {
+        "665b9f164a9174aef97a2a664de1a1f5bb8616069833e86f6fe7a4d62fbd8926",
+        "1b236cfb74c7c02d66aefa301f0a6ca264120587dd8f0a5e22efb152e6973de4",
+        "b0764492f1d39035f7cb4ec8f82b3e66f42b032a5607f14390011d9a0fbc6bd0",
+        "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+        "639527014104f356b03d6dc659a692113e33dfd2662728e05f0c9c0030e8c52f",
+        "82abdbe67712bf623c128184f94f0f43eeee7c35e1a9e7051e0ec9b3b13344e5",
+    }
+)
 
 REQUIRED_FILES = [
     TARGET_CHANGELOG,
@@ -250,6 +265,11 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _read_text_preserving_newlines(path: Path) -> str:
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        return stream.read()
+
+
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower())
 
@@ -271,6 +291,75 @@ def version_key(tag: str) -> tuple[int, int, int]:
     if not match:
         fail(f"release tag must use vMAJOR.MINOR.PATCH format: {tag}")
     return tuple(int(part) for part in match.groups())
+
+
+def _pr_template_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text and text.count("\r\n") == text.count("\n") else "\n"
+
+
+def _canonical_pr_plan_block(official_text: str) -> tuple[str, str]:
+    if official_text.count(PR_PLAN_BEGIN) != 1 or official_text.count(PR_PLAN_END) != 1:
+        raise ValueError("official Pull Request template must contain one managed Contributor Branch Plan block")
+    start = official_text.index(PR_PLAN_BEGIN)
+    end_marker = official_text.index(PR_PLAN_END)
+    if end_marker <= start:
+        raise ValueError("official Pull Request template managed block markers are out of order")
+    end = end_marker + len(PR_PLAN_END)
+    block = official_text[start:end]
+    inner = official_text[start + len(PR_PLAN_BEGIN) : end_marker].strip("\r\n")
+    if len(re.findall(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", inner)) != 1:
+        raise ValueError("official Pull Request template managed block has an invalid heading")
+    return block, inner
+
+
+def merge_pull_request_template(current_text: str, official_text: str) -> tuple[str, str]:
+    official_block, official_inner = _canonical_pr_plan_block(official_text)
+    digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+    if current_text == official_text or digest in PR_TEMPLATE_MANAGED_BASELINE_SHA256:
+        return official_text, "refresh_managed_baseline"
+
+    newline = _pr_template_newline(current_text)
+    block = official_block.replace("\r\n", "\n").replace("\n", newline)
+    begin_count = current_text.count(PR_PLAN_BEGIN)
+    end_count = current_text.count(PR_PLAN_END)
+    if begin_count or end_count:
+        if begin_count != 1 or end_count != 1:
+            raise ValueError("target Pull Request template has ambiguous managed block markers")
+        start = current_text.index(PR_PLAN_BEGIN)
+        end_marker = current_text.index(PR_PLAN_END)
+        if end_marker <= start:
+            raise ValueError("target Pull Request template managed block markers are out of order")
+        end = end_marker + len(PR_PLAN_END)
+        return current_text[:start] + block + current_text[end:], "refresh_managed_block"
+
+    headings = list(re.finditer(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", current_text))
+    if len(headings) > 1:
+        raise ValueError("target Pull Request template has multiple Contributor Branch Plan headings")
+    if headings:
+        start = headings[0].start()
+        following = re.search(r"(?m)^#{1,2}[ \t]+", current_text[headings[0].end() :])
+        end = headings[0].end() + following.start() if following else len(current_text)
+        section = current_text[start:end].strip(" \t\r\n").replace("\r\n", "\n")
+        if section != official_inner.replace("\r\n", "\n"):
+            raise ValueError("target Pull Request template has an unowned Contributor Branch Plan section")
+        suffix = current_text[end:].lstrip("\r\n")
+        separator = newline * (2 if suffix else 1)
+        return current_text[:start] + block + separator + suffix, "adopt_legacy_managed_block"
+
+    anchors = list(re.finditer(r"(?m)^## What Changed[ \t]*\r?$", current_text))
+    offset = anchors[0].start() if len(anchors) == 1 else len(current_text)
+    prefix = current_text[:offset]
+    suffix = current_text[offset:]
+    if not prefix:
+        before = ""
+    elif prefix.endswith(newline * 2):
+        before = ""
+    elif prefix.endswith(newline):
+        before = newline
+    else:
+        before = newline * 2
+    after = newline * (2 if suffix else 1)
+    return prefix + before + block + after + suffix, "inject_managed_block"
 
 
 def run_command(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -1826,6 +1915,20 @@ def check_trusted_pr_checkouts(
                 fail("Harness upgrade Codex hooks provenance is invalid")
             if candidate_hooks != expected_hooks:
                 fail("Harness upgrade changes target-owned Codex hook entries")
+            continue
+        if relative_path == PR_TEMPLATE_PATH:
+            trusted_template = _manifest_relative_file(
+                trusted_root,
+                relative_path,
+                "trusted Pull Request template",
+            )
+            trusted_template_text = _read_text_preserving_newlines(trusted_template)
+            try:
+                expected_template, _ = merge_pull_request_template(trusted_template_text, official_text)
+            except ValueError as exc:
+                fail(f"Harness upgrade Pull Request template cannot be safely merged: {exc}")
+            if _read_text_preserving_newlines(candidate_file) != expected_template:
+                fail("Harness upgrade changes target-owned Pull Request template bytes")
             continue
         if candidate_file.read_bytes() != official_text.encode("utf-8"):
             fail(f"candidate Harness control file does not match official Release {candidate_version}: {relative_path}")

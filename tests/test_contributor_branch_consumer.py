@@ -1,5 +1,6 @@
 import base64
 import copy
+import importlib
 import json
 import os
 import shutil
@@ -32,11 +33,13 @@ from scripts.evozeus_wrapper_lifecycle import (
 )
 from scripts.evozeus_wrapper_preflight import (
     MAINTAINER_REQUIRED_FILES,
+    PR_TEMPLATE_PATH,
     TRUSTED_CONTROL_SOURCES,
     _canonical_harness_entry_block,
     check_branch_pr_metadata,
     check_pr,
     check_trusted_pr_checkouts,
+    merge_pull_request_template,
     revalidate_linked_pull_request_runs,
 )
 
@@ -298,6 +301,20 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
     assert resumed["resume"]["decision"] == "resume"
     assert resumed["worktree"]["registered"] is True
 
+    run(["git", "worktree", "remove", str(worktree)], repo)
+    recovered, recovered_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+    )
+    assert recovered_code == 0
+    assert recovered["resume"]["decision"] == "resume"
+    assert recovered["worktree"]["registered"] is False
+    assert recovered["next_write_action"] == "recreate_resume_worktree_for_existing_branch"
+    assert not worktree.exists()
+
     owner_directory = ledger_root / "MetaInFLow"
     owner_directory.chmod(0o755)
     with pytest.raises(ConsumerError) as caught:
@@ -464,6 +481,42 @@ def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path
     assert local["permission_path"]["resolved"] == "local"
     assert local["permission_path"]["push_allowed"] is False
     assert local["permission_path"]["pull_request_allowed"] is False
+
+
+def test_core_snapshot_rejects_lookalike_origin_and_nested_registered_worktree(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    origin_root = tmp_path / "lookalike-origin"
+    origin_root.mkdir()
+    origin_repo = create_repo(origin_root)
+    run(["git", "remote", "set-url", "origin", f"https://evilgithub.com/{REPO}.git"], origin_repo)
+    lookalike, lookalike_code = execute_plan(
+        origin_repo,
+        origin_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert lookalike_code == 2
+    assert "missing_origin_identity" in blocker_codes(lookalike)
+
+    nested_root = tmp_path / "nested-worktree"
+    nested_root.mkdir()
+    nested_repo = create_repo(nested_root)
+    outer = nested_root / "outer"
+    run(["git", "worktree", "add", "-b", "outer-contribution", str(outer), "origin/main"], nested_repo)
+    nested_path = outer / "nested"
+    nested, nested_code = execute_plan(
+        nested_repo,
+        nested_path,
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert nested_code == 2
+    assert "registered_worktree_descendant" in blocker_codes(nested)
+    assert nested["worktree"]["isolated"] is False
+    assert not nested_path.exists()
+    assert run(["git", "status", "--porcelain=v1", "--untracked-files=all"], outer) == ""
 
 
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:
@@ -673,6 +726,60 @@ def test_issue_to_pr_cli_derives_canonical_repo_and_runs_target_gate(tmp_path: P
     assert report["repository_boundary"]["repo_root"] == str(repo)
 
 
+def test_issue_to_pr_cli_forwards_explicit_owner_reconfirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    wrapper_cli = importlib.import_module("evozeus_wrapper")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        wrapper_cli,
+        "repository_target",
+        lambda _path: (tmp_path, {"repo_root": str(tmp_path), "eligible": True}),
+    )
+    monkeypatch.setattr(wrapper_cli, "load_wrapper_manifest", lambda _path: {"canonical_repo": REPO})
+
+    def fake_planner(options, **_kwargs):
+        captured.update(options)
+        return {"blockers": [], "writes": False}, 0
+
+    monkeypatch.setattr(wrapper_cli, "run_core_planner", fake_planner)
+    argv = [
+        "evozeus_wrapper.py",
+        "loop",
+        "issue-to-pr",
+        "--target",
+        str(tmp_path),
+        "--issue",
+        f"{REPO}#36",
+        "--actor",
+        "alice",
+        "--type",
+        "bug",
+        "--component",
+        "skill",
+        "--summary",
+        "fix-feedback-flow",
+        "--permission",
+        "direct",
+        "--worktree",
+        str(tmp_path.parent / "isolated-worktree"),
+        "--resume-plan",
+        str(tmp_path.parent / "stale-plan.json"),
+        "--reconfirm-owner",
+        "--json",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    assert wrapper_cli.main() == 0
+    assert captured["resume_plan"] == str(tmp_path.parent / "stale-plan.json")
+    assert captured["reconfirm_owner"] is True
+    assert json.loads(capsys.readouterr().out)["blockers"] == []
+
+
 def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -817,6 +924,8 @@ def make_control_checkout(root: Path, version: str, marker: str) -> str:
                 + "\n",
                 encoding="utf-8",
             )
+        elif relative_path == PR_TEMPLATE_PATH:
+            path.write_bytes((ROOT / "templates/target" / PR_TEMPLATE_PATH).read_bytes())
         else:
             path.write_text(f"{marker}:{relative_path}\n", encoding="utf-8")
     for relative_path in MAINTAINER_REQUIRED_FILES:
@@ -953,6 +1062,73 @@ def test_trusted_control_gate_accepts_official_admin_upgrade(tmp_path: Path) -> 
         github_api_runner=official_upgrade_runner(candidate, changed_paths),
     )
     assert mode == "official_harness_upgrade"
+
+
+def test_trusted_control_gate_preserves_custom_pull_request_template_bytes(tmp_path: Path) -> None:
+    trusted, candidate, _, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    custom = (
+        "# Team Pull Request\n\n"
+        "Keep this customer-impact checklist.\n\n"
+        "## What Changed\n\n"
+        "- Customer impact:\n"
+    )
+    trusted_template = trusted / PR_TEMPLATE_PATH
+    trusted_template.write_text(custom, encoding="utf-8")
+    run(["git", "add", PR_TEMPLATE_PATH], trusted)
+    run(["git", "commit", "-m", "test: target-owned PR template"], trusted)
+    base_sha = run(["git", "rev-parse", "HEAD"], trusted)
+
+    official = (ROOT / "templates/target" / PR_TEMPLATE_PATH).read_text(encoding="utf-8")
+    expected, mode = merge_pull_request_template(custom, official)
+    assert mode == "inject_managed_block"
+    candidate_template = candidate / PR_TEMPLATE_PATH
+    candidate_template.write_text(expected, encoding="utf-8")
+    run(["git", "add", PR_TEMPLATE_PATH], candidate)
+    run(["git", "commit", "-m", "test: merge contributor branch block"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    source_overrides = {
+        TRUSTED_CONTROL_SOURCES[PR_TEMPLATE_PATH]: official.encode("utf-8"),
+    }
+
+    trust_mode = check_trusted_pr_checkouts(
+        candidate,
+        trusted,
+        github_head_sha=head_sha,
+        github_base_sha=base_sha,
+        github_repository=REPO,
+        github_head_repo=REPO,
+        github_actor="alice",
+        github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+        github_pr_number=7,
+        github_api_runner=official_upgrade_runner(
+            candidate,
+            changed_paths,
+            source_overrides=source_overrides,
+        ),
+    )
+    assert trust_mode == "official_harness_upgrade"
+
+    candidate_template.write_text(expected.replace("Customer impact", "Changed target bytes"), encoding="utf-8")
+    run(["git", "add", PR_TEMPLATE_PATH], candidate)
+    run(["git", "commit", "-m", "test: tamper target-owned template"], candidate)
+    tampered_head = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=tampered_head,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(
+                candidate,
+                changed_paths,
+                source_overrides=source_overrides,
+            ),
+        )
 
 
 def test_trusted_control_gate_accepts_real_publisher_managed_output(tmp_path: Path) -> None:

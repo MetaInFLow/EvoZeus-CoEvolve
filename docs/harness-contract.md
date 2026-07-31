@@ -171,7 +171,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
 ```
 
-`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`loop issue-to-pr` 默认只读，权限参数只表达预期，Core 每次根据 live GitHub evidence 解析 direct/fork/local；缺少或不完整的权限证据进入 local，Issue 证据缺失或无效会阻断计划。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
+`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`loop issue-to-pr` 默认只读，权限参数只表达预期，Core 每次根据 live GitHub evidence 解析 direct/fork/local；缺少或不完整的权限证据进入 local，Issue 证据缺失或无效会阻断计划。stale ledger 仅在完整身份匹配时接受公开入口的 `--reconfirm-owner`，保存 refreshed plan 仍需 `--approve-save-plan`。Harness upgrade 只对已知完整受管基线执行整文件刷新；自定义 PR template 保留 marker 外字节并确定性注入或刷新 Contributor Branch Plan block，marker/同名 section 无法安全归属时在写入前阻断。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
 
 ## Harness Version Contract
 

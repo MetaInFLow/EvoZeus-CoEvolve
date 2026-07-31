@@ -8,6 +8,7 @@
 
 - Path:
 
+<!-- evozeus-contributor-branch-plan:v1 -->
 ## Contributor Branch Plan
 
 - Resume key:
@@ -25,6 +26,7 @@
 For a business contribution, copy these values from `pr_metadata`. The trusted base-SHA workflow recomputes actor, head repository/permission path, Issue state/type/classification, target branch, and resume key from the GitHub event and API. Keep ledger paths, local Repo/worktree paths, internal errors, secrets, and private context out of the PR.
 
 An official Harness upgrade on `evozeus/harness-vX-to-vY` may omit this section. Its separate gate requires a canonical direct branch, live `ADMIN`, an official published Stable CoEvolve Release, and a restricted migration-only diff.
+<!-- /evozeus-contributor-branch-plan -->
 
 ## What Changed
 

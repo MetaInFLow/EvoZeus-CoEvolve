@@ -1177,6 +1177,63 @@ class LifecycleBasicsTest(unittest.TestCase):
             )
             self.assertFalse(wrapper_manifest_status(target)["migration_required"])
 
+    def test_migrate_target_layout_preserves_custom_pull_request_template_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            template = target / ".github/pull_request_template.md"
+            custom = (
+                "# Team Pull Request\r\n\r\n"
+                "Keep this target-owned checklist byte-for-byte.\r\n\r\n"
+                "## What Changed\r\n\r\n"
+                "- Explain customer impact.\r\n"
+            )
+            with template.open("w", encoding="utf-8", newline="") as stream:
+                stream.write(custom)
+
+            plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+
+            self.assertEqual(plan["conflicts"], [])
+            self.assertEqual(plan["pull_request_template_update"]["mode"], "inject_managed_block")
+            self.assertTrue(plan["pull_request_template_update"]["target_owned_bytes_preserved"])
+
+            report = migrate_target_layout(target, latest_version="v0.14.0")
+            with template.open("r", encoding="utf-8", newline="") as stream:
+                updated = stream.read()
+
+            self.assertTrue(
+                updated.startswith(
+                    "# Team Pull Request\r\n\r\n"
+                    "Keep this target-owned checklist byte-for-byte.\r\n\r\n"
+                )
+            )
+            self.assertTrue(updated.endswith("## What Changed\r\n\r\n- Explain customer impact.\r\n"))
+            self.assertEqual(updated.count("<!-- evozeus-contributor-branch-plan:v1 -->"), 1)
+            self.assertEqual(updated.count("<!-- /evozeus-contributor-branch-plan -->"), 1)
+            self.assertIn(
+                "inject_managed_block .github/pull_request_template.md",
+                report["actions"],
+            )
+
+    def test_migrate_target_layout_blocks_ambiguous_custom_branch_plan_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            template = target / ".github/pull_request_template.md"
+            custom = "# Team PR\n\n## Contributor Branch Plan\n\n- Team-owned field: keep\n"
+            template.write_text(custom, encoding="utf-8")
+
+            plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+
+            self.assertFalse(plan["can_apply"])
+            self.assertTrue(any("unowned Contributor Branch Plan" in item for item in plan["conflicts"]))
+            with self.assertRaisesRegex(ValueError, "cannot migrate wrapper layout"):
+                migrate_target_layout(target, latest_version="v0.14.0")
+            self.assertEqual(template.read_text(encoding="utf-8"), custom)
+            self.assertTrue((target / LEGACY_TARGET_WRAPPER_MANIFEST).is_file())
+
     def test_migration_changed_files_include_removed_duplicate_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "skill"
