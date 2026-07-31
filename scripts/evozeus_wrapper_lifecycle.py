@@ -11,6 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 try:
     from .evozeus_wrapper_global_hook import read_global_hook_status
@@ -34,6 +35,7 @@ STAGE_LABELS = {
     "publish": "[4/5] Publish & Reinstall",
     "loop": "[5/5] Continuous Evolution Loop",
 }
+CONTRIBUTOR_GATE_REQUIRED_CHECK = "EvoZeus Contributor Gate"
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
 GLOBAL_EVOZEUS_PROJECTS_DIR = ".projects"
@@ -108,6 +110,7 @@ HARNESS_SKILL_REQUIRED_TERMS = (
     "issue_evidence",
     "permission_evidence",
     "pull_request_target",
+    "EvoZeus Contributor Gate",
     "evozeus/harness-vX-to-vY",
     "隔离 worktree",
 )
@@ -667,7 +670,7 @@ def require_repo_admin(
             "view",
             origin_repo,
             "--json",
-            "nameWithOwner,viewerPermission,url,visibility",
+            "nameWithOwner,viewerPermission,url,visibility,defaultBranchRef",
         ]
     )
     if result["returncode"] != 0:
@@ -685,8 +688,57 @@ def require_repo_admin(
         "repository": data.get("nameWithOwner") or origin_repo,
         "url": data.get("url"),
         "visibility": data.get("visibility"),
+        "default_branch": (data.get("defaultBranchRef") or {}).get("name"),
         "viewer_permission": permission,
         "verified": True,
+    }
+
+
+def require_contributor_gate_protection(
+    repository: str,
+    default_branch: str | None,
+    runner=run_command,
+) -> dict[str, Any]:
+    """Fail closed unless the default branch requires the trusted PR gate context."""
+    if not default_branch:
+        raise ValueError("cannot verify Contributor Gate protection without a GitHub default branch")
+    endpoint = (
+        f"repos/{repository}/branches/{quote(default_branch, safe='')}/"
+        "protection/required_status_checks"
+    )
+    result = runner(["gh", "api", endpoint, "--hostname", "github.com"])
+    if result["returncode"] != 0:
+        raise ValueError(
+            "cannot verify default-branch required status checks; configure "
+            f"{CONTRIBUTOR_GATE_REQUIRED_CHECK!r} on {default_branch} before attaching the Harness"
+        )
+    try:
+        data = json.loads(result.get("stdout") or "")
+    except json.JSONDecodeError as exc:
+        raise ValueError("default-branch required status check evidence is invalid") from exc
+    if not isinstance(data, dict):
+        raise ValueError("default-branch required status check evidence is invalid")
+    contexts = {item for item in data.get("contexts", []) if isinstance(item, str)}
+    checks = data.get("checks", [])
+    if isinstance(checks, list):
+        contexts.update(
+            item.get("context")
+            for item in checks
+            if isinstance(item, dict) and isinstance(item.get("context"), str)
+        )
+    if CONTRIBUTOR_GATE_REQUIRED_CHECK not in contexts:
+        raise ValueError(
+            f"default branch {default_branch} does not require {CONTRIBUTOR_GATE_REQUIRED_CHECK!r}; "
+            "configure the exact check before attaching the Harness"
+        )
+    return {
+        "schema_version": "evozeus.coevolve.required-check-evidence.v1",
+        "repository": repository,
+        "branch": default_branch,
+        "context": CONTRIBUTOR_GATE_REQUIRED_CHECK,
+        "source": "github_branch_protection_api",
+        "verified": True,
+        "writes": False,
     }
 
 

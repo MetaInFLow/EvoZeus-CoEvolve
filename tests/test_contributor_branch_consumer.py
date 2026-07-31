@@ -403,6 +403,39 @@ def test_stale_ledger_requires_explicit_matching_owner_reconfirmation(tmp_path: 
     assert blocked["resume"]["owner_reconfirmed"] is False
 
 
+def test_resume_without_date_recovers_original_ledger_branch_date(tmp_path: Path) -> None:
+    repo = create_repo(tmp_path)
+    worktree = tmp_path / "isolated-worktree"
+    ledger_root = tmp_path / "private-ledger"
+    env = planner_env(fake_github_bin(tmp_path))
+    initial, initial_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        approve_save_plan=True,
+        date="20200101",
+    )
+    assert initial_code == 0
+    ledger_path = Path(initial["ledger"]["path"])
+    original_branch = initial["branch"]["target"]
+    run(["git", "worktree", "add", "-b", original_branch, str(worktree), "origin/main"], repo)
+
+    resumed, resumed_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        date=None,
+    )
+
+    assert resumed_code == 0
+    assert resumed["resume"]["decision"] == "resume"
+    assert resumed["branch"]["target"] == original_branch
+    assert "stale_ownership" not in blocker_codes(resumed)
+
+
 def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path: Path) -> None:
     binary_dir = fake_github_bin(tmp_path)
     ledger_root = tmp_path / "ledger"

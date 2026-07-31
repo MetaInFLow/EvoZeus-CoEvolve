@@ -31,6 +31,8 @@ environment diagnosis
 | Before | 本地 Skill 文件夹，至少包含 `SKILL.md` |
 | After | canonical GitHub repo、repo dashboard、可选 GitHub Pages、`.evozeus-wrapper/` canonical harness、Issue template、PR template、host hook entrypoint、runtime symlink |
 
+接入前置条件：目标默认分支必须把 exact `EvoZeus Contributor Gate` 配置为 protected required status check。Bootstrap 已具备 ADMIN 证据，但只做 GitHub API 验证；缺失、名称不精确或 protection 证据不可用时，在任何 Harness 模板写入前 fail closed。
+
 ## Runtime Integration Contract
 
 Wrapper 不能把所有启动检查都叫作 hook。`.evozeus-wrapper/wrapper.json` 必须记录当前事实级别：

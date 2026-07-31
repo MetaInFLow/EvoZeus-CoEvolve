@@ -151,6 +151,7 @@ HARNESS_SKILL_TERMS = [
     "issue_evidence",
     "permission_evidence",
     "pull_request_target",
+    "EvoZeus Contributor Gate",
     "evozeus/harness-vX-to-vY",
     "隔离 worktree",
 ]

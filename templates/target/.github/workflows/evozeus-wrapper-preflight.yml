@@ -83,6 +83,7 @@ jobs:
           --json
 
   pull-request:
+    name: EvoZeus Contributor Gate
     if: github.event_name == 'pull_request_target'
     permissions:
       contents: read

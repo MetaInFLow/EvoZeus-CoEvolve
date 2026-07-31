@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,17 +47,29 @@ function isSameOrDescendant(path, ancestor) {
     || (pathFromAncestor !== ".." && !pathFromAncestor.startsWith(`..${sep}`) && !isAbsolute(pathFromAncestor));
 }
 
+function pathEntryExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    return true;
+  }
+}
+
 function parseWorktrees(text) {
   const worktrees = [];
   let current = null;
   for (const line of text.split("\n")) {
     if (line.startsWith("worktree ")) {
-      current = { path: canonicalPath(line.slice(9)), branch: null, bare: false };
+      current = { path: canonicalPath(line.slice(9)), branch: null, bare: false, prunable: false };
       worktrees.push(current);
     } else if (current && line.startsWith("branch ")) {
       current.branch = line.slice(7);
     } else if (current && line === "bare") {
       current.bare = true;
+    } else if (current && (line === "prunable" || line.startsWith("prunable "))) {
+      current.prunable = true;
     }
   }
   return worktrees;
@@ -129,6 +141,26 @@ function resumeKeyFor(fields) {
   return `branch_v1_${createHash("sha256").update(source).digest("hex").slice(0, 24)}`;
 }
 
+export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().toISOString().slice(0, 10).replaceAll("-", "")) {
+  if (options.date) return options.date;
+  const target = resumePlan?.branch?.target;
+  const purpose = resumePlan?.purpose;
+  const prefix = `codex/${options.type}/`;
+  const suffix = `-${options.component}-${options.summary}`;
+  if (
+    typeof target === "string"
+    && purpose?.type === options.type
+    && purpose?.component === options.component
+    && purpose?.summary === options.summary
+    && target.startsWith(prefix)
+    && target.endsWith(suffix)
+  ) {
+    const date = target.slice(prefix.length, target.length - suffix.length);
+    if (/^20[0-9]{6}$/.test(date)) return date;
+  }
+  return fallbackDate;
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -161,6 +193,12 @@ export function collectGitFacts(repoPath, baseRef, targetBranch) {
   const remoteCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/remotes/origin/${targetBranch}`], false)
     : null;
+  const targetCommit = localCommit || remoteCommit;
+  const targetDescendsFromBase = Boolean(
+    baseCommit
+    && targetCommit
+    && git(root, ["merge-base", "--is-ancestor", baseCommit, targetCommit]).status === 0
+  );
   return {
     root,
     origin_url: originUrl,
@@ -171,7 +209,8 @@ export function collectGitFacts(repoPath, baseRef, targetBranch) {
     current_status: currentStatus,
     canonical_status: canonicalStatus,
     base_commit: baseCommit,
-    target_commit: localCommit || remoteCommit,
+    target_commit: targetCommit,
+    target_descends_from_base: targetDescendsFromBase,
     target_local: Boolean(localCommit),
     target_remote: Boolean(remoteCommit),
     worktrees
@@ -352,7 +391,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
   if (isProtectedRef(branchName, contract)) addBlocker(blockers, "protected_target", "target branch is protected");
   if (!facts.base_commit) addBlocker(blockers, "missing_base", `base ref does not resolve: ${options.base}`);
-  if (facts.dirty_entries.length > 0) addBlocker(blockers, "dirty_tree", "repository worktree is dirty");
+  if (!facts.current_status.available) {
+    addBlocker(blockers, "current_checkout_status_unavailable", "current checkout status cannot be verified");
+  } else if (facts.dirty_entries.length > 0) {
+    addBlocker(blockers, "dirty_tree", "repository worktree is dirty");
+  }
   if (!facts.canonical_status.available) {
     addBlocker(blockers, "canonical_checkout_status_unavailable", "canonical checkout status cannot be verified");
   } else if (facts.canonical_status.dirty_entries.length > 0) {
@@ -395,6 +438,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   let ownerReconfirmed = false;
 
   if (resumePlan) {
+    const resumeEvidenceValid = resumePlan.writes === false
+      && Array.isArray(resumePlan.blockers)
+      && resumePlan.blockers.length === 0
+      && resumePlan.next_write_action !== "blocked"
+      && ["new", "resume"].includes(resumePlan.resume?.decision);
     const ownershipTime = Date.parse(resumePlan.ownership?.checked_at ?? "");
     const nowTime = Date.parse(options.now);
     const staleMs = contract.resume.stale_after_days * 86_400_000;
@@ -407,7 +455,9 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       || !Number.isFinite(nowTime)
       || ownershipTime > nowTime
       || nowTime - ownershipTime > staleMs;
-    if (!ownershipMatches) {
+    if (!resumeEvidenceValid) {
+      addBlocker(blockers, "resume_evidence_invalid", "resume plan must be a prior blocker-free zero-write plan");
+    } else if (!ownershipMatches) {
       addBlocker(blockers, "stale_ownership", "resume plan owner, key, or branch does not match");
     } else if (ownershipStale && !options.reconfirm_owner) {
       addBlocker(blockers, "stale_ownership", "resume plan ownership window is stale; Owner reconfirmation is required");
@@ -415,6 +465,8 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       addBlocker(blockers, "stale_base", "resume plan base commit no longer matches the canonical base");
     } else if (!facts.target_commit) {
       addBlocker(blockers, "resume_branch_missing", "resume plan target branch no longer exists");
+    } else if (!facts.target_descends_from_base) {
+      addBlocker(blockers, "resume_branch_wrong_base", "resume target branch does not descend from the saved canonical base");
     } else {
       decision = "resume";
       resumeValid = true;
@@ -433,7 +485,9 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
 
   const registeredAtPath = facts.worktrees.find((item) => item.path === requestedWorktree);
   const registeredForBranch = facts.worktrees.find((item) => item.branch === `refs/heads/${branchName}`);
-  if (existsSync(requestedWorktree) && !registeredAtPath) {
+  const registeredPathExists = pathEntryExists(requestedWorktree);
+  const usableRegisteredAtPath = registeredAtPath && registeredPathExists && !registeredAtPath.prunable;
+  if (registeredPathExists && !registeredAtPath) {
     addBlocker(blockers, "worktree_collision", "requested worktree path exists but is not registered");
   }
   if (registeredAtPath && registeredAtPath.branch !== `refs/heads/${branchName}`) {
@@ -485,9 +539,12 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       current_repo_path: facts.root,
       canonical_checkout_path: canonicalCheckout,
       isolated: !insideCanonicalCheckout && !nestedRegisteredWorktree,
-      registered: Boolean(registeredAtPath),
+      registered: Boolean(usableRegisteredAtPath),
+      registration_present: Boolean(registeredAtPath),
+      registration_prunable: Boolean(registeredAtPath?.prunable || (registeredAtPath && !registeredPathExists)),
       current_checkout: {
         status_available: facts.current_status.available,
+        status_reason: facts.current_status.reason,
         dirty_entry_count: facts.current_status.dirty_entries.length
       },
       canonical_checkout: {
@@ -501,9 +558,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     resume: { key: resumeKey, decision, owner_reconfirmed: ownerReconfirmed },
     next_write_action: blockers.length === 0
       ? (decision === "resume"
-        ? (registeredAtPath
+        ? (usableRegisteredAtPath
           ? "resume_existing_branch_in_isolated_worktree"
-          : "recreate_resume_worktree_for_existing_branch")
+          : (registeredAtPath
+            ? "prune_and_recreate_resume_worktree_for_existing_branch"
+            : "recreate_resume_worktree_for_existing_branch"))
         : permission.next_write_action)
       : "blocked",
     approval_boundaries: contract.approval_boundaries,
@@ -541,7 +600,6 @@ function parseArguments(argv) {
   if (options.reconfirm_owner && !options.resume_plan) {
     throw new Error("--reconfirm-owner requires --resume-plan");
   }
-  options.date ||= new Date().toISOString().slice(0, 10).replaceAll("-", "");
   options.now = new Date().toISOString();
   return options;
 }
@@ -551,12 +609,13 @@ function main() {
   try {
     const options = parseArguments(process.argv.slice(2));
     const contract = loadContributorBranchContract();
+    const resumePlan = options.resume_plan ? readJson(resolve(options.resume_plan)) : null;
+    options.date = resolvePlanDate(options, resumePlan);
     const provisionalBranch = `codex/${options.type}/${options.date}-${options.component}-${options.summary}`;
     const facts = collectGitFacts(resolve(options.repo_path), options.base, provisionalBranch);
     const permissionEvidence = collectGitHubPermissionEvidence(options.repo, options.now);
     const parsedIssue = parseIssue(options.issue, options.repo);
     const issueEvidence = collectGitHubIssueEvidence(options.repo, parsedIssue?.number, options.now);
-    const resumePlan = options.resume_plan ? readJson(resolve(options.resume_plan)) : null;
     plan = buildBranchPlan(options, contract, facts, permissionEvidence, issueEvidence, resumePlan);
   } catch (error) {
     plan = {

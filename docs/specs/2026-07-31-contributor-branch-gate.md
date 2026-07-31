@@ -21,10 +21,11 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 5. resume 绑定 Repo、base ref、base commit、target branch、actor、resolved permission 和稳定 resume key。
 6. ledger 只存在于本机 owner-only 目录；PR 仅携带公开安全元数据。
 7. 已接入目标可通过 Harness upgrade 获得同一门禁。
+8. 默认分支把 exact `EvoZeus Contributor Gate` 作为 protected required status check；fresh attach 在首次模板写入前通过 GitHub API 验证，无法确认则阻断。
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `58029dea8867c9503452536f0b335663fc388b3d`：
+权威文件来自 EvoZeus Core revision `e51341036549ca981386c9a475ae2f64ea1030cd`：
 
 - contract：`evozeus.contributor_branch` `1.2.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`

@@ -22,6 +22,7 @@ try:
         independent_repo_root,
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
+        require_contributor_gate_protection,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -40,6 +41,7 @@ except ImportError:
         independent_repo_root,
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
+        require_contributor_gate_protection,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -441,6 +443,10 @@ def main() -> int:
     require_github_cli()
     try:
         authority = require_repo_admin(target, args.repo)
+        protection = require_contributor_gate_protection(
+            authority["repository"],
+            authority.get("default_branch"),
+        )
     except ValueError as exc:
         fail(str(exc))
 
@@ -477,6 +483,10 @@ def main() -> int:
     actions = [
         f"verified independent Git repository root: {target}",
         f"verified GitHub ADMIN authority: {authority['repository']}",
+        (
+            "verified protected required check "
+            f"{protection['context']} on {protection['branch']}"
+        ),
     ]
     try:
         actions.extend(copy_templates(target, replacements, args.force))

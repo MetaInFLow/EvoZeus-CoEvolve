@@ -99,10 +99,13 @@
   "resume": {
     "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "purpose.type", "purpose.component", "purpose.summary"],
     "owner_field": "actor",
-    "base_match": ["ref", "commit"],
+    "base_match": ["ref", "commit", "target_descends_from_base"],
     "stale_after_days": 14,
     "mismatch_or_stale": "block_and_require_owner_reconfirmation",
     "matching_branch_without_worktree": "recreate_resume_worktree_for_existing_branch",
+    "matching_branch_with_prunable_worktree": "prune_and_recreate_resume_worktree_for_existing_branch",
+    "missing_cli_date_source": "validated_resume_plan_target_branch",
+    "evidence_requirements": { "writes": false, "blockers": "empty", "decision": ["new", "resume"], "next_write_action": "not_blocked" },
     "owner_reconfirmation": {
       "cli_flag": "--reconfirm-owner",
       "requires_resume_plan": true,
@@ -110,14 +113,16 @@
       "ledger_refresh_requires": "--approve-save-plan"
     }
   },
-  "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block" },
+  "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked" },
   "blocking_handling": {
     "dirty_tree": "block",
     "wrong_base": "block",
     "protected_ref_write": "block",
     "branch_collision": "block_without_matching_resume_plan",
+    "invalid_resume_evidence_or_wrong_base": "block",
     "stale_ownership": "block_and_require_owner_reconfirmation",
     "canonical_checkout_dirty_or_unavailable": "block",
+    "current_checkout_status_unavailable": "block",
     "actor_or_permission_expectation_mismatch": "block",
     "issue_unavailable_or_invalid": "block",
     "github_unavailable": "local_patch_only"
