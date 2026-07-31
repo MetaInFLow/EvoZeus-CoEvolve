@@ -1118,6 +1118,12 @@ def check_runtime(args: argparse.Namespace) -> None:
     missing = [path for path in bundle["required_files"] if not (target / path).is_file()]
     if missing:
         fail("missing required runtime files:\n" + "\n".join(f"- {path}" for path in missing))
+    if TARGET_HARNESS_SKILL in bundle["required_files"]:
+        manifest = load_wrapper_manifest(target)
+        if manifest is None:
+            fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
+        check_harness_skill_contract(target, manifest, allow_legacy=False)
+        check_harness_entry_contract(target, manifest)
     entry = target / bundle["instruction_surface"]
     check_runtime_safe_status_prelude(read_text(entry), bundle["instruction_surface"])
     ok("runtime bundle is complete")
