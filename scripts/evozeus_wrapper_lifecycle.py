@@ -2363,12 +2363,36 @@ def _instruction_insert_index(text: str) -> int:
     return 0
 
 
+def validate_instruction_surface_for_harness_entry(target: Path, surface_rel: str) -> str:
+    """Return the read-only surface only when canonical entry migration is provably safe."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    text = _read_text_preserving_newlines(surface)
+    begin_count = text.count(HARNESS_ENTRY_BEGIN)
+    end_count = text.count(HARNESS_ENTRY_END)
+    markers_out_of_order = bool(
+        begin_count
+        and end_count
+        and text.index(HARNESS_ENTRY_BEGIN) > text.index(HARNESS_ENTRY_END)
+    )
+    if begin_count != end_count or markers_out_of_order:
+        raise ValueError(f"instruction surface has an unbalanced canonical Harness entry: {surface_rel}")
+    _, conflicts = _wrapper_owned_section_analysis(text)
+    if conflicts:
+        raise ValueError(
+            f"instruction surface {surface_rel} cannot be migrated safely:\n- "
+            + "\n- ".join(conflicts)
+        )
+    return text
+
+
 def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str) -> bool:
     """Replace proven wrapper-owned legacy blocks with the compact canonical Read block."""
     surface = safe_target_relative_file(target, surface_rel)
     if surface is None:
         raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
-    original = _read_text_preserving_newlines(surface)
+    original = validate_instruction_surface_for_harness_entry(target, surface_rel)
     if _has_canonical_harness_entry(original):
         return False
 
