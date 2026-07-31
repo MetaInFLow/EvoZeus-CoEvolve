@@ -1140,6 +1140,36 @@ def test_migration_preserves_harness_entry_examples_inside_fenced_code(tmp_path:
     check_harness_entry_contract(target, manifest)
 
 
+def test_migration_preserves_harness_entry_examples_inside_indented_code(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    indented_example = (
+        f"    {HARNESS_ENTRY_BEGIN}\n"
+        "    EXAMPLE BUSINESS BYTES\n"
+        f"    {HARNESS_ENTRY_END}\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + indented_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert indented_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
     tmp_path: Path,
 ) -> None:
