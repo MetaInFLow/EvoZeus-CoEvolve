@@ -435,7 +435,6 @@ def diagnose_skill_version(
     latest_tag = latest_release.get("tag") if latest_release and latest_release.get("exists") else None
     if latest_tag:
         status = "adopt_existing_release"
-        requires_owner_choice = False
         current_tag = latest_tag
         rule = "existing repos keep GitHub latest release as the Skill version"
         if changelog_tag:

@@ -15,7 +15,7 @@ try:
     from .evozeus_wrapper_lifecycle import (
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
-        build_status_section,
+        build_status_section as _build_status_section,
         build_wrapper_manifest,
         independent_repo_root,
         latest_changelog_tag,
@@ -30,7 +30,7 @@ except ImportError:
     from evozeus_wrapper_lifecycle import (
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
-        build_status_section,
+        build_status_section as _build_status_section,
         build_wrapper_manifest,
         independent_repo_root,
         latest_changelog_tag,
@@ -39,6 +39,9 @@ except ImportError:
         version_key,
         write_wrapper_manifest,
     )
+
+
+build_status_section = _build_status_section
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -558,17 +558,18 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
 - Verified actor: alice
 - Permission path: direct
 """
-    issue_runner = lambda *args, **kwargs: subprocess.CompletedProcess(
-        args[0],
-        0,
-        json.dumps({
-            "number": 36,
-            "state": "open",
-            "title": "Reusable defect",
-            "labels": [{"name": "skill-feedback"}],
-        }),
-        "",
-    )
+    def issue_runner(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps({
+                "number": 36,
+                "state": "open",
+                "title": "Reusable defect",
+                "labels": [{"name": "skill-feedback"}],
+            }),
+            "",
+        )
     trusted_context = {
         "github_repository": REPO,
         "github_head_ref": TARGET_BRANCH,
@@ -606,17 +607,18 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
             **trusted_context,
         )
 
-    closed_issue_runner = lambda *args, **kwargs: subprocess.CompletedProcess(
-        args[0],
-        0,
-        json.dumps({
-            "number": 36,
-            "state": "closed",
-            "title": "Reusable defect",
-            "labels": [{"name": "skill-feedback"}],
-        }),
-        "",
-    )
+    def closed_issue_runner(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            json.dumps({
+                "number": 36,
+                "state": "closed",
+                "title": "Reusable defect",
+                "labels": [{"name": "skill-feedback"}],
+            }),
+            "",
+        )
     with pytest.raises(SystemExit):
         check_branch_pr_metadata(
             target,
