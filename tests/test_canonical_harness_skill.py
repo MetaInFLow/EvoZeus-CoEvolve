@@ -1143,6 +1143,8 @@ def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path:
         "显示名称: Demo",
         "{}",
         '{"name":"Demo"}',
+        "{name:'Demo'}",
+        '{\n"name":"Demo"\n}',
         "tags:\n- alpha",
         "!!map\n? complex key\n: Demo",
     ],
