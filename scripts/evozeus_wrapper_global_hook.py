@@ -276,8 +276,12 @@ def read_global_hook_status(home: Path) -> dict[str, Any]:
     try:
         config = _read_hooks_config(paths["hooks"])
         session_start = config.get("hooks", {}).get(GLOBAL_HOOK_EVENT, [])
-        prompt_submit = config.get("hooks", {}).get(GLOBAL_PROMPT_HOOK_EVENT, [])
+        if not isinstance(session_start, list):
+            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
         session_registered = any(_entry_has_dispatcher(entry) for entry in session_start)
+        prompt_submit = config.get("hooks", {}).get(GLOBAL_PROMPT_HOOK_EVENT, [])
+        if not isinstance(prompt_submit, list):
+            raise ValueError(f"global hooks {GLOBAL_PROMPT_HOOK_EVENT} must be a list")
         prompt_registered = any(_entry_has_dispatcher(entry) for entry in prompt_submit)
     except ValueError as exc:
         errors.append(str(exc))

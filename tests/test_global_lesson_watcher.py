@@ -243,6 +243,25 @@ class GlobalLessonWatcherTest(unittest.TestCase):
                 ["global_session_dispatcher", "global_prompt_lesson_watcher"],
             )
 
+    def test_status_reports_non_list_prompt_hook_values_as_errors(self):
+        for invalid in (None, 1, {}):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp) / "home"
+                hooks_path = home / ".codex" / "hooks.json"
+                hooks_path.parent.mkdir(parents=True)
+                hooks_path.write_text(
+                    json.dumps({"hooks": {"UserPromptSubmit": invalid}}),
+                    encoding="utf-8",
+                )
+
+                status = read_global_hook_status(home)
+
+                self.assertEqual(status["status"], "not_installed")
+                self.assertEqual(
+                    status["errors"],
+                    ["global hooks UserPromptSubmit must be a list"],
+                )
+
     def test_session_only_legacy_install_is_reported_as_upgrade_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
