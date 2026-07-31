@@ -438,17 +438,47 @@ def _canonical_harness_entry_block() -> str:
     )
 
 
+def _mask_markdown_fenced_code(text: str) -> str:
+    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    masked: list[str] = []
+    fence: tuple[str, int] | None = None
+
+    def mask_line(line: str) -> str:
+        return "".join(character if character in "\r\n" else " " for character in line)
+
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if fence:
+            fence_char, minimum_length = fence
+            if re.match(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{minimum_length},}}[ \t]*$",
+                content,
+            ):
+                fence = None
+            masked.append(mask_line(line))
+            continue
+        fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
+        if fence_match:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            masked.append(mask_line(line))
+        else:
+            masked.append(line)
+    return "".join(masked)
+
+
 def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     if manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL:
         fail(f"Harness entry manifest does not match canonical path {TARGET_HARNESS_SKILL}")
     surface_rel = manifest.get("instruction_surface")
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
-    start = text.find(HARNESS_ENTRY_BEGIN)
-    end = text.find(HARNESS_ENTRY_END)
+    visible = _mask_markdown_fenced_code(text)
+    start = visible.find(HARNESS_ENTRY_BEGIN)
+    end = visible.find(HARNESS_ENTRY_END)
     if (
-        text.count(HARNESS_ENTRY_BEGIN) != 1
-        or text.count(HARNESS_ENTRY_END) != 1
+        visible.count(HARNESS_ENTRY_BEGIN) != 1
+        or visible.count(HARNESS_ENTRY_END) != 1
         or start > end
     ):
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
@@ -941,6 +971,12 @@ def check_runtime(args: argparse.Namespace) -> None:
     missing = [path for path in bundle["required_files"] if not (target / path).is_file()]
     if missing:
         fail("missing required runtime files:\n" + "\n".join(f"- {path}" for path in missing))
+    if TARGET_HARNESS_SKILL in bundle["required_files"]:
+        manifest = load_wrapper_manifest(target)
+        if manifest is None:
+            fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
+        check_harness_skill_contract(target, manifest, allow_legacy=False)
+        check_harness_entry_contract(target, manifest)
     entry = target / bundle["instruction_surface"]
     check_runtime_safe_status_prelude(read_text(entry), bundle["instruction_surface"])
     ok("runtime bundle is complete")

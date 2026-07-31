@@ -2203,8 +2203,46 @@ def _harness_entry_pattern() -> re.Pattern[str]:
     )
 
 
+def _mask_markdown_fenced_code(text: str) -> str:
+    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    masked: list[str] = []
+    offset = 0
+    frontmatter_end = _frontmatter_end(text)
+    fence: tuple[str, int] | None = None
+
+    def mask_line(line: str) -> str:
+        return "".join(character if character in "\r\n" else " " for character in line)
+
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(line)
+            offset += len(line)
+            continue
+        if fence:
+            fence_char, minimum_length = fence
+            if re.match(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{minimum_length},}}[ \t]*$",
+                content,
+            ):
+                fence = None
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
+        if fence_match:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            masked.append(mask_line(line))
+        else:
+            masked.append(line)
+        offset += len(line)
+    return "".join(masked)
+
+
 def _harness_entry_markers_well_formed(text: str) -> bool:
     """Accept zero or more complete, non-nested canonical entry blocks."""
+    text = _mask_markdown_fenced_code(text)
     marker_pattern = re.compile(
         rf"{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)}"
     )
@@ -2390,6 +2428,7 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
 
 def _has_canonical_harness_entry(text: str) -> bool:
     normalized = text.replace("\r\n", "\n")
+    visible = _mask_markdown_fenced_code(text).replace("\r\n", "\n")
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
@@ -2399,9 +2438,9 @@ def _has_canonical_harness_entry(text: str) -> bool:
         and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
     )
     return (
-        normalized.count(HARNESS_ENTRY_BEGIN) == 1
-        and normalized.count(HARNESS_ENTRY_END) == 1
-        and build_harness_activation_block() in normalized
+        visible.count(HARNESS_ENTRY_BEGIN) == 1
+        and visible.count(HARNESS_ENTRY_END) == 1
+        and build_harness_activation_block() in visible
         and precedes_business
         and not owned_spans
         and not owned_conflicts
@@ -2448,7 +2487,13 @@ def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str)
     if _has_canonical_harness_entry(original):
         return False
 
-    updated = _harness_entry_pattern().sub("", original)
+    entry_spans = [
+        (match.start(), match.end())
+        for match in _harness_entry_pattern().finditer(_mask_markdown_fenced_code(original))
+    ]
+    updated = original
+    for start, end in reversed(entry_spans):
+        updated = updated[:start] + updated[end:]
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(updated)
     if owned_conflicts:
         raise ValueError("cannot safely migrate instruction surface:\n- " + "\n- ".join(owned_conflicts))
@@ -2844,15 +2889,27 @@ def plan_target_layout_migration(
             if relative_path.is_absolute() or ".." in relative_path.parts:
                 conflicts.append(f"migration write path escapes target repository: {relative}")
                 continue
-            cursor = target / relative_path
-            while cursor != target:
+            cursor = target
+            for index, part in enumerate(relative_path.parts):
+                cursor /= part
                 if cursor.is_symlink():
                     conflicts.append(
                         "migration write path contains a symlink: "
                         + str(cursor.relative_to(target))
                     )
                     break
-                cursor = cursor.parent
+                if cursor.exists() and index < len(relative_path.parts) - 1 and not cursor.is_dir():
+                    conflicts.append(
+                        "migration write path parent is not a directory: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
+                if cursor.exists() and index == len(relative_path.parts) - 1 and not cursor.is_file():
+                    conflicts.append(
+                        "migration write path is not a regular file: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
 
     return {
         "stage": "harness_layout_migration",
