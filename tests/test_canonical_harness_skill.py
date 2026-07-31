@@ -37,6 +37,7 @@ from scripts.evozeus_wrapper_lifecycle import (
 )
 from scripts.evozeus_wrapper_preflight import (
     HARNESS_SKILL_TERMS,
+    REQUIRED_FILES,
     check_harness_entry_contract,
     check_harness_skill_contract,
     discover_runtime_bundle,
@@ -871,7 +872,7 @@ def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_en
     wrapped.mkdir()
     prepare_fresh_target(wrapped)
     bundle = discover_runtime_bundle(wrapped)
-    assert TARGET_HARNESS_SKILL in bundle["required_files"]
+    assert set(REQUIRED_FILES).issubset(bundle["required_files"])
 
     harness = wrapped / TARGET_HARNESS_SKILL
     harness.unlink()
@@ -896,7 +897,43 @@ def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_en
         build_harness_activation_block() + "\n\n# Business\n",
         encoding="utf-8",
     )
-    assert TARGET_HARNESS_SKILL in discover_runtime_bundle(standalone)["required_files"]
+    assert set(REQUIRED_FILES).issubset(discover_runtime_bundle(standalone)["required_files"])
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        TARGET_WRAPPER_MANIFEST,
+        TARGET_PREFLIGHT_SCRIPT,
+        ".evozeus-wrapper/scripts/evozeus_notice.py",
+        ".evozeus-wrapper/policies/notice-policy.json",
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+    ],
+)
+def test_runtime_bundle_rejects_a_missing_harness_transitive_dependency(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    (wrapped / dependency).unlink()
+
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/evozeus_wrapper_preflight.py"),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert runtime.returncode == 1
+    assert dependency in runtime.stderr
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:
