@@ -439,15 +439,21 @@ def _canonical_harness_entry_block() -> str:
 
 
 def _mask_markdown_fenced_code(text: str) -> str:
-    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
+    frontmatter_end = len(text) - len(content_after_frontmatter(text))
     fence: tuple[str, int] | None = None
+    offset = 0
 
     def mask_line(line: str) -> str:
         return "".join(character if character in "\r\n" else " " for character in line)
 
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
         if fence:
             fence_char, minimum_length = fence
             if re.match(
@@ -456,6 +462,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 fence = None
             masked.append(mask_line(line))
+            offset += len(line)
             continue
         fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
         if fence_match:
@@ -466,6 +473,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             masked.append(mask_line(line))
         else:
             masked.append(line)
+        offset += len(line)
     return "".join(masked)
 
 

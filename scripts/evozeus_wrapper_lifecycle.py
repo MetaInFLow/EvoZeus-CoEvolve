@@ -2166,7 +2166,7 @@ def _harness_entry_pattern() -> re.Pattern[str]:
 
 
 def _mask_markdown_fenced_code(text: str) -> str:
-    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
     offset = 0
     frontmatter_end = _frontmatter_end(text)
@@ -2178,7 +2178,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         if offset < frontmatter_end:
-            masked.append(line)
+            masked.append(mask_line(line))
             offset += len(line)
             continue
         if fence:
