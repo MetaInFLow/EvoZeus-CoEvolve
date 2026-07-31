@@ -180,6 +180,31 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     assert run_structure(target).returncode == 0
 
 
+def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original_skill = '# Business Skill\n\nOwner content.\n'
+    skill.write_text(original_skill, encoding="utf-8")
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True)
+    original_harness = "# Owner file at the reserved Harness path\n"
+    harness.write_text(original_harness, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="existing canonical Harness Skill is incompatible"):
+        copy_templates(target, replacements(), force=False)
+
+    assert skill.read_text(encoding="utf-8") == original_skill
+    assert harness.read_text(encoding="utf-8") == original_harness
+    assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+    copy_templates(target, replacements(), force=True)
+    assert "name: using-evozeus-harness" in harness.read_text(encoding="utf-8")
+
+
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
     harness = (
         ROOT
@@ -761,6 +786,27 @@ def test_missing_damaged_mismatch_and_symlink_escape_are_deterministic(tmp_path:
     with contextlib.redirect_stderr(io.StringIO()) as stderr, pytest.raises(SystemExit):
         check_harness_entry_contract(target, manifest)
     assert "does not match" in stderr.getvalue()
+
+
+def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    prepare_fresh_target(target)
+    harness = target / TARGET_HARNESS_SKILL
+    valid = harness.read_text(encoding="utf-8")
+    assert valid.startswith("---\n")
+    harness.write_text(valid.removeprefix("---\n"), encoding="utf-8")
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    assert plan["instruction_surface_migration_required"] is True
+    assert plan["migration_required"] is True
+
+    report = migrate_target_layout(target, latest_version="v0.14.0")
+    assert report["writes"] is True
+    assert harness.read_text(encoding="utf-8").startswith("---\n")
+    assert run_structure(target).returncode == 0
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:
