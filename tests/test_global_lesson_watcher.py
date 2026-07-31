@@ -58,7 +58,10 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                 {
                     "schema_version": 2,
                     "wrapper_source": "channel-managed",
+                    "source_repository": "MetaInFLow/EvoZeus",
                     "installed_version": "v0.5.0",
+                    "core_version": "v0.5.0",
+                    "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                     "trust_status": "verified_by_product_manifest",
                 }
             )
@@ -241,6 +244,20 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             lifecycle = json.loads((home / GLOBAL_HOOK_STATE).read_text(encoding="utf-8"))
             self.assertEqual(lifecycle["trust_status"], "trusted")
             self.assertNotIn("wrapper_source", lifecycle)
+
+    def test_uninstalling_orphan_lifecycle_state_does_not_create_hooks_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            self._seed_core_runtime(home)
+            apply_global_hook_install(home, ROOT, approve=True)
+            hooks_path = home / ".codex/hooks.json"
+            hooks_path.unlink()
+
+            report = apply_global_hook_uninstall(home, approve=True)
+
+            self.assertEqual(report["status"], "uninstalled")
+            self.assertFalse(hooks_path.exists())
+            self.assertFalse((home / GLOBAL_HOOK_STATE).exists())
 
     @unittest.skipUnless(
         os.environ.get("EVOZEUS_TEST_CORE_ROOT"),

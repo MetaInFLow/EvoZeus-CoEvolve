@@ -108,7 +108,10 @@ def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
             {
                 "schema_version": 2,
                 "wrapper_source": "channel-managed",
+                "source_repository": "MetaInFLow/EvoZeus",
                 "installed_version": "v0.5.0",
+                "core_version": "v0.5.0",
+                "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                 "trust_status": "verified_by_product_manifest",
             }
         )

@@ -117,6 +117,8 @@ def _core_runtime_status(paths: dict[str, Path]) -> tuple[bool, dict[str, Any], 
             if (
                 core_state.get("schema_version") != 2
                 or core_state.get("wrapper_source") != "channel-managed"
+                or core_state.get("source_repository") != "MetaInFLow/EvoZeus"
+                or core_state.get("runtime_api") != CORE_USER_PROMPT_RUNTIME_API
                 or core_state.get("trust_status") != "verified_by_product_manifest"
             ):
                 errors.append("Core-owned global dispatcher state is not product-managed")
@@ -363,7 +365,7 @@ def read_global_hook_status(home: Path) -> dict[str, Any]:
         "runtime_owner": "MetaInFLow/EvoZeus",
         "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
         "core_state_installed": paths["core_state"].is_file(),
-        "core_runtime_version": core_state.get("installed_version"),
+        "core_runtime_version": core_state.get("core_version"),
         "state_installed": bool(state),
         "trust_status": state.get("trust_status", "not_installed"),
         "installed_version": state.get("lifecycle_version"),
@@ -448,10 +450,11 @@ def apply_global_hook_uninstall(home: Path, *, approve: bool = False) -> dict[st
     backup_root = paths["backups"] / _utc_transaction_id()
     snapshots = _snapshot(paths, backup_root)
     try:
-        _atomic_write(
-            paths["hooks"],
-            (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-        )
+        if removed:
+            _atomic_write(
+                paths["hooks"],
+                (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            )
         state_path = paths["state"]
         if state_path.is_file() or state_path.is_symlink():
             state_path.unlink()
