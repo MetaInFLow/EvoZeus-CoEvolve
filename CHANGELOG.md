@@ -10,18 +10,22 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Added local batch run and append-only event ledgers under `~/.evozeus/skills/` without storing raw sessions or target business content.
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
 - Added user-level `UserPromptSubmit` registration that delegates normal Chat Lesson candidate evaluation to a fixed Session Signal component; detection remains read-only and fail-open.
+- Added a target-local Contributor Branch Gate backed by a hash-bound EvoZeus Core v1 contract/planner snapshot, read-only live-evidence consumer, private resume ledger, and public-safe PR metadata.
 
 ### Changed
 
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
 - Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
 - Changed legacy instruction migration to remove only wrapper-owned sections with positive ownership signatures while preserving target business bytes and LF/CRLF newlines.
+- Required Issue-to-PR implementation to show and pass a canonical repo/base/Issue/actor/permission/worktree plan before target-file writes; Harness upgrades refresh the complete managed gate.
+- Advanced the canonical target-local Harness Skill contract to `v1.1.0` for the mandatory Contributor Branch Gate.
 
 ### Security
 
 - Added strict manifest, canonical-path, frontmatter/version, managed-identity, symlink, path-traversal, and instruction-entry agreement validation.
 - Kept raw prompts, local component paths, subprocess diagnostics, signal identifiers and routing internals out of UserPromptSubmit Hook responses.
 - Redacted credential-bearing canonical origin URLs before publication errors can enter local run ledgers.
+- Added fail-closed snapshot provenance/digest validation, partial GitHub evidence fallback, bounded planner execution, private atomic ledger permissions, full resume identity binding, and stderr/path redaction.
 
 ### Safety
 
@@ -33,6 +37,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
 - Full regression suite passes with `232 passed` and `11 subtests passed`, including the explicit Session Signal companion smoke.
+- Contributor branch tests cover clean new/resume, dirty tree, wrong base, collision, fork-only, no-PR local, missing/partial GitHub evidence, snapshot integrity, private ledger binding, planner timeout, exit/blocker consistency, and stderr/path redaction.
 - A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
 - Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
 - Legacy status, self-evolution, wrapper, and migration-note removal now stops at a type-specific terminal signature. Missing terminals block before writes; following business prose and H3-only sections remain byte-preserved even without an H1/H2 Markdown boundary.

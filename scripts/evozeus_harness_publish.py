@@ -507,17 +507,24 @@ def publish_target_upgrade(
                 branch,
             ],
         )
+        changed_file_lines = "\n".join(f"- `{path}`" for path in sorted(changed))
         pr_url = pr_creator(
             repo=repo,
             branch=branch,
             base=default_branch,
-            title=f"chore(evozeus): upgrade harness to {latest_version}",
+            title=f"chore(evozeus): upgrade Harness to {latest_version}",
             body=(
-                f"## Harness upgrade\n\n"
+                f"## Official Harness upgrade\n\n"
+                f"- Profile: `official_harness_upgrade`\n"
+                f"- Source: `MetaInFLow/EvoZeus-CoEvolve@{latest_version}`\n"
                 f"- From: `{current_version}`\n"
                 f"- To: `{latest_version}`\n"
+                f"- Branch: `{branch}`\n"
                 f"- Run: `{run_id}`\n\n"
-                "This PR updates EvoZeus-managed Harness files and preserves target Skill business content."
+                "## Changed files\n\n"
+                f"{changed_file_lines}\n\n"
+                "This PR refreshes official EvoZeus-managed Harness outputs while preserving "
+                "the target Skill changelog and business content."
             ),
         )
         cleanup_safe = True

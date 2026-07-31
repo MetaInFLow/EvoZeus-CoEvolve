@@ -1,10 +1,12 @@
-import json
+import base64
 import fcntl
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.evozeus_wrapper_bootstrap import copy_templates
 from scripts.evozeus_harness_publish import (
     plan_admin_upgrade_all,
     publish_admin_upgrade_all,
@@ -12,6 +14,20 @@ from scripts.evozeus_harness_publish import (
     resolve_github_admin_access,
     verify_canonical_github_origin,
 )
+from scripts.evozeus_wrapper_lifecycle import (
+    WRAPPER_MANAGED_FILES,
+    build_harness_activation_block,
+    build_wrapper_manifest,
+    detect_target_architecture,
+    write_wrapper_manifest,
+)
+from scripts.evozeus_wrapper_preflight import (
+    TRUSTED_CONTROL_SOURCES,
+    check_trusted_pr_checkouts,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def completed(returncode=0, stdout="", stderr=""):
@@ -562,6 +578,177 @@ class IsolatedPublishTest(unittest.TestCase):
             self.assertEqual(remote_head, second["commit"])
             self.assertFalse(Path(first["worktree"]).exists())
             self.assertFalse(Path(second["worktree"]).exists())
+
+    def test_real_publisher_output_passes_official_upgrade_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote = root / "remote.git"
+            canonical = root / "canonical"
+            candidate = root / "candidate"
+            home = root / "home"
+            repo = "MetaInFLow/example-skill"
+            canonical.mkdir()
+            replacements = {
+                "DATE": "2026-07-31",
+                "INITIAL_VERSION": "v0.1.0",
+                "CURRENT_VERSION": "v0.1.0",
+                "REPO_NAME": repo,
+                "REPO_URL": f"https://github.com/{repo}",
+                "SKILL_NAME": "example-skill",
+                "VISIBILITY": "private",
+                "WRAPPER_VERSION": "v0.14.0",
+            }
+            copy_templates(canonical, replacements, force=False)
+            (canonical / "SKILL.md").write_text(
+                "---\nname: example-skill\n---\n"
+                "# Example Skill\n\n"
+                f"{build_harness_activation_block()}\n\n"
+                "Business instructions stay byte-stable.\n",
+                encoding="utf-8",
+            )
+            hooks_path = canonical / ".codex/hooks.json"
+            hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+            hooks["hooks"]["SessionStart"].insert(
+                0,
+                {
+                    "matcher": "custom",
+                    "hooks": [{"type": "command", "command": "echo target-owned"}],
+                },
+            )
+            hooks_path.write_text(json.dumps(hooks, indent=2) + "\n", encoding="utf-8")
+            integration = detect_target_architecture(canonical)["integration"]
+            write_wrapper_manifest(
+                canonical,
+                build_wrapper_manifest(
+                    repo,
+                    "v0.14.0",
+                    WRAPPER_MANAGED_FILES,
+                    [],
+                    instruction_surface="SKILL.md",
+                    integration=integration,
+                ),
+            )
+
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(canonical)], check=True)
+            subprocess.run(["git", "-C", str(canonical), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git", "-C", str(canonical),
+                    "-c", "user.name=EvoZeus Test",
+                    "-c", "user.email=evozeus@example.invalid",
+                    "commit", "-qm", "fixture",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(canonical), "remote", "add", "origin", str(remote)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(canonical), "push", "-q", "-u", "origin", "main"],
+                check=True,
+            )
+            base_sha = subprocess.check_output(
+                ["git", "-C", str(canonical), "rev-parse", "HEAD"],
+                text=True,
+            ).strip()
+            created_pr: dict[str, str] = {}
+
+            def create_pr(**kwargs):
+                created_pr.update(kwargs)
+                return "https://github.com/MetaInFLow/example-skill/pull/7"
+
+            report = publish_target_upgrade(
+                {
+                    "repo": repo,
+                    "target": str(canonical),
+                    "wrapper_version": "v0.14.0",
+                    "github": {
+                        "viewer": "anthonyf",
+                        "permission": "ADMIN",
+                        "is_admin": True,
+                        "default_branch": "main",
+                        "url": f"https://github.com/{repo}",
+                    },
+                },
+                home=home,
+                wrapper_root=ROOT,
+                latest_version="v0.15.0",
+                run_id="upgrade_official_gate",
+                existing_pr_resolver=lambda repo, branch: None,
+                pr_creator=create_pr,
+                origin_verifier=lambda repo, checkout: repo,
+            )
+
+            self.assertEqual(report["status"], "published")
+            self.assertEqual(report["branch"], "evozeus/harness-v0.14.0-to-v0.15.0")
+            self.assertIn("official_harness_upgrade", created_pr["body"])
+            self.assertIn("MetaInFLow/EvoZeus-CoEvolve@v0.15.0", created_pr["body"])
+            self.assertIn(f"- Branch: `{report['branch']}`", created_pr["body"])
+            self.assertNotIn(".evozeus-wrapper/CHANGELOG.md", report["changed_files"])
+            for path in report["changed_files"]:
+                self.assertIn(f"- `{path}`", created_pr["body"])
+
+            subprocess.run(
+                ["git", "clone", "-q", "--branch", report["branch"], str(remote), str(candidate)],
+                check=True,
+            )
+            diff_lines = subprocess.check_output(
+                ["git", "-C", str(candidate), "diff", "--name-status", base_sha, report["commit"]],
+                text=True,
+            ).splitlines()
+            changed_entries = []
+            for line in diff_lines:
+                status, path = line.split("\t", 1)
+                changed_entries.append(
+                    {
+                        "filename": path,
+                        "status": "added" if status == "A" else "modified",
+                    }
+                )
+            self.assertEqual(
+                {entry["filename"] for entry in changed_entries},
+                set(report["changed_files"]),
+            )
+
+            def github_api(command, **kwargs):
+                endpoint = command[2]
+                if "/collaborators/" in endpoint:
+                    payload = {
+                        "permission": "admin",
+                        "user": {"permissions": {"admin": True}},
+                    }
+                elif endpoint.endswith("/releases/tags/v0.15.0"):
+                    payload = {
+                        "tag_name": "v0.15.0",
+                        "draft": False,
+                        "prerelease": False,
+                        "published_at": "2026-07-31T00:00:00Z",
+                    }
+                elif "/pulls/7/files?" in endpoint:
+                    payload = changed_entries
+                else:
+                    source_path = endpoint.split("/contents/", 1)[1].split("?ref=", 1)[0]
+                    self.assertIn(source_path, TRUSTED_CONTROL_SOURCES.values())
+                    payload = {
+                        "content": base64.b64encode((ROOT / source_path).read_bytes()).decode("ascii")
+                    }
+                return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+            mode = check_trusted_pr_checkouts(
+                candidate,
+                canonical,
+                github_head_sha=report["commit"],
+                github_base_sha=base_sha,
+                github_repository=repo,
+                github_head_repo=repo,
+                github_actor="anthonyf",
+                github_head_ref=report["branch"],
+                github_pr_number=7,
+                github_api_runner=github_api,
+            )
+            self.assertEqual(mode, "official_harness_upgrade")
 
 
 if __name__ == "__main__":

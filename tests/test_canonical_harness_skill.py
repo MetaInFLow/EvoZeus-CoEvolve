@@ -23,6 +23,10 @@ from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_SKILL_REQUIRED_TERMS,
     HARNESS_SKILL_VERSION,
     TARGET_HARNESS_SKILL,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PLANNER,
+    TARGET_BRANCH_PROVENANCE,
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_WRAPPER_MANIFEST,
     build_harness_activation_block,
@@ -143,6 +147,33 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     assert manifest["harness_skill_path"] == TARGET_HARNESS_SKILL
     assert manifest["harness_skill_version"] == HARNESS_SKILL_VERSION
     assert manifest["harness_skill_managed"] is True
+    assert manifest["contributor_branch"] == {
+        "profile": "coevolve_target_skillware_consumer",
+        "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+        "contract_path": TARGET_BRANCH_CONTRACT,
+        "provenance_path": TARGET_BRANCH_PROVENANCE,
+        "planner_path": TARGET_BRANCH_PLANNER,
+        "permission_authority": "core_planner_live_github_evidence",
+        "runtime_network_fetch": False,
+        "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+    }
+    for relative_path in (
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    ):
+        assert (target / relative_path).is_file()
+        assert relative_path in manifest["managed_files"]
+    assert (target / TARGET_BRANCH_CONTRACT).read_bytes() == (
+        ROOT / "templates/target/contracts/v1/contributor-branch-contract.json"
+    ).read_bytes()
+    assert (target / TARGET_BRANCH_PROVENANCE).read_bytes() == (
+        ROOT / "templates/target/contracts/v1/contributor-branch-provenance.json"
+    ).read_bytes()
+    assert (target / TARGET_BRANCH_PLANNER).read_bytes() == (
+        ROOT / "templates/target/scripts/evozeus-branch-preflight.mjs"
+    ).read_bytes()
     assert "MetaInFLow/example-skill" not in harness
     assert "prompt_runtime_check" in harness
     assert "SkillInvoke" in harness
@@ -722,7 +753,64 @@ def test_upgrade_plan_reports_one_entry_and_canonical_harness_skill_write(tmp_pa
     assert "SKILL.md canonical Harness Skill activation block" in plan["planned_files"]
     assert all("migration note" not in item.lower() for item in plan["planned_files"])
     assert plan["append_only"] is False
-    assert "#36" in plan["integration_policy"]
+    assert "pinned EvoZeus Core contributor branch contract" in plan["integration_policy"]
+
+
+def test_upgrade_installs_contributor_branch_gate_into_existing_harness(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    manifest.pop("contributor_branch")
+    manifest["managed_files"] = [
+        path
+        for path in manifest["managed_files"]
+        if path not in {
+            TARGET_BRANCH_CONSUMER_SCRIPT,
+            TARGET_BRANCH_CONTRACT,
+            TARGET_BRANCH_PROVENANCE,
+            TARGET_BRANCH_PLANNER,
+        }
+    ]
+    write_wrapper_manifest(target, manifest, force=True)
+    for relative_path in (
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    ):
+        (target / relative_path).unlink()
+    harness = target / TARGET_HARNESS_SKILL
+    harness.write_text(
+        harness.read_text(encoding="utf-8")
+        .replace('version: "v1.1.0"', 'version: "v1.0.0"')
+        .split("## 贡献分支门禁", 1)[0].rstrip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0", today=date(2026, 7, 31))
+    report = migrate_target_layout(target, latest_version="v0.14.0", today=date(2026, 7, 31))
+    upgraded_manifest = json.loads((target / TARGET_WRAPPER_MANIFEST).read_text(encoding="utf-8"))
+
+    assert plan["instruction_surface_migration_required"] is True
+    assert report["validation"]["structure"] == "passed"
+    assert upgraded_manifest["harness_skill_version"] == HARNESS_SKILL_VERSION
+    assert upgraded_manifest["contributor_branch"]["permission_authority"] == "core_planner_live_github_evidence"
+    for relative_path in (
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    ):
+        assert (target / relative_path).is_file()
+        assert relative_path in report["changed_files"]
+    verified = subprocess.run(
+        [sys.executable, str(target / TARGET_BRANCH_CONSUMER_SCRIPT), "verify-snapshot", "--json"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
 
 
 def test_transform_dry_run_reports_only_the_canonical_instruction_write_set(
