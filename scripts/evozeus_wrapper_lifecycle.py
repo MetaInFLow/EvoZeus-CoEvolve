@@ -2165,6 +2165,24 @@ def _harness_entry_pattern() -> re.Pattern[str]:
     )
 
 
+def _harness_entry_markers_well_formed(text: str) -> bool:
+    """Accept zero or more complete, non-nested canonical entry blocks."""
+    marker_pattern = re.compile(
+        rf"{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)}"
+    )
+    entry_open = False
+    for match in marker_pattern.finditer(text):
+        if match.group(0) == HARNESS_ENTRY_BEGIN:
+            if entry_open:
+                return False
+            entry_open = True
+        else:
+            if not entry_open:
+                return False
+            entry_open = False
+    return not entry_open
+
+
 def _consume_following_newlines(text: str, offset: int) -> int:
     """Include wrapper-owned blank-line separators after a proven terminal."""
     while offset < len(text) and text[offset] in "\r\n":
@@ -2369,15 +2387,11 @@ def validate_instruction_surface_for_harness_entry(target: Path, surface_rel: st
     if surface is None:
         raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
     text = _read_text_preserving_newlines(surface)
-    begin_count = text.count(HARNESS_ENTRY_BEGIN)
-    end_count = text.count(HARNESS_ENTRY_END)
-    markers_out_of_order = bool(
-        begin_count
-        and end_count
-        and text.index(HARNESS_ENTRY_BEGIN) > text.index(HARNESS_ENTRY_END)
-    )
-    if begin_count != end_count or markers_out_of_order:
-        raise ValueError(f"instruction surface has an unbalanced canonical Harness entry: {surface_rel}")
+    if not _harness_entry_markers_well_formed(text):
+        raise ValueError(
+            f"instruction surface has an unbalanced canonical Harness entry or invalid nesting: "
+            f"{surface_rel}"
+        )
     _, conflicts = _wrapper_owned_section_analysis(text)
     if conflicts:
         raise ValueError(
@@ -2665,17 +2679,10 @@ def plan_target_layout_migration(
                 conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
             else:
                 surface_text = _read_text_preserving_newlines(surface_file)
-                begin_count = surface_text.count(HARNESS_ENTRY_BEGIN)
-                end_count = surface_text.count(HARNESS_ENTRY_END)
-                markers_out_of_order = bool(
-                    begin_count
-                    and end_count
-                    and surface_text.index(HARNESS_ENTRY_BEGIN)
-                    > surface_text.index(HARNESS_ENTRY_END)
-                )
-                if begin_count != end_count or markers_out_of_order:
+                if not _harness_entry_markers_well_formed(surface_text):
                     conflicts.append(
-                        f"instruction surface has an unbalanced canonical Harness entry: {instruction_surface}"
+                        "instruction surface has an unbalanced canonical Harness entry "
+                        f"or invalid nesting: {instruction_surface}"
                     )
                 _, section_conflicts = _wrapper_owned_section_analysis(surface_text)
                 conflicts.extend(

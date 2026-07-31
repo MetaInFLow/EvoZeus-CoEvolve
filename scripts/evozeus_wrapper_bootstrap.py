@@ -164,8 +164,25 @@ def target_template_path(rel: Path) -> Path:
     return Path(TARGET_EVOINFRA_DIR) / rel
 
 
+def validate_template_destination(target: Path, destination: Path) -> None:
+    """Reject template writes that would traverse a symlink inside the target Repo."""
+    try:
+        relative = destination.relative_to(target)
+    except ValueError as exc:
+        raise ValueError(f"template destination escapes target repository: {destination}") from exc
+    cursor = target
+    for part in relative.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError(
+                "template destination contains a symlink component: "
+                + str(cursor.relative_to(target))
+            )
+
+
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
     existing_harness = target / TARGET_HARNESS_SKILL
+    validate_template_destination(target, existing_harness)
     if existing_harness.exists() or existing_harness.is_symlink():
         if existing_harness.is_symlink() or not existing_harness.is_file():
             raise ValueError(

@@ -188,12 +188,54 @@ def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
     harness.parent.mkdir(parents=True)
     harness.symlink_to(outside)
 
-    with pytest.raises(ValueError, match="existing canonical Harness Skill path is unsafe"):
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
         copy_templates(target, replacements(), force=True)
 
     assert harness.is_symlink()
     assert outside.read_text(encoding="utf-8") == "OWNER BYTES\n"
     assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_rejects_a_symlinked_harness_parent_without_writing_outside_repo(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / ".evozeus-wrapper").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=True)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".github").exists()
+
+
+@pytest.mark.parametrize(
+    "damaged_entry",
+    [
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}",
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_BEGIN}",
+    ],
+)
+def test_attach_preflight_rejects_nested_or_interleaved_harness_markers(
+    tmp_path: Path,
+    damaged_entry: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original = damaged_entry + "\n\n# Business Skill\n"
+    skill.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unbalanced canonical Harness entry"):
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+
+    assert skill.read_text(encoding="utf-8") == original
+    assert not (target / ".evozeus-wrapper").exists()
     assert not (target / ".github").exists()
 
 
