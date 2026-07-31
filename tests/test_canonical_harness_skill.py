@@ -399,6 +399,38 @@ def test_attach_preflight_requires_complete_contributor_branch_contract(tmp_path
         validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+        TARGET_PREFLIGHT_SCRIPT,
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+    ],
+)
+def test_fresh_attach_rejects_unknown_preexisting_gate_bytes(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text("# Business Skill\n\nRun business flow.\n", encoding="utf-8")
+    gate = target / relative_path
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    unknown_bytes = b"untrusted preexisting gate\n"
+    gate.write_bytes(unknown_bytes)
+
+    with pytest.raises(ValueError, match="unknown bytes"):
+        copy_templates(target, replacements(), force=False)
+
+    assert gate.read_bytes() == unknown_bytes
+    assert skill.read_text(encoding="utf-8") == "# Business Skill\n\nRun business flow.\n"
+    assert not (target / ".github/ISSUE_TEMPLATE/config.yml").exists()
+
+
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
     harness = (
         ROOT

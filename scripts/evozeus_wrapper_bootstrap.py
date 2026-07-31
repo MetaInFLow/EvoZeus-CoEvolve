@@ -87,6 +87,11 @@ EXACT_SNAPSHOT_TEMPLATE_PATHS = {
     Path("contracts/v1/contributor-branch-provenance.json"),
     Path("scripts/evozeus-branch-preflight.mjs"),
 }
+BYTE_EXACT_GATE_TEMPLATE_PATHS = {
+    *EXACT_SNAPSHOT_TEMPLATE_PATHS,
+    Path(".codex/hooks/evozeus_wrapper_start_check.py"),
+    Path(".github/workflows/evozeus-wrapper-preflight.yml"),
+}
 
 
 def fail(message: str) -> None:
@@ -303,6 +308,23 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         consumer_dst,
     ]:
         validate_template_destination(target, destination)
+
+    if not force:
+        byte_exact_gate_files = [
+            *(
+                (src, destination)
+                for src, destination in template_destinations
+                if src.relative_to(TARGET_TEMPLATE_DIR) in BYTE_EXACT_GATE_TEMPLATE_PATHS
+            ),
+            (PREFLIGHT_SCRIPT, script_dst),
+            (BRANCH_CONSUMER_SCRIPT, consumer_dst),
+        ]
+        for source, destination in byte_exact_gate_files:
+            if destination.exists() and destination.read_bytes() != source.read_bytes():
+                raise ValueError(
+                    "existing managed gate component has unknown bytes; "
+                    f"preserve it and use an approved repair with --force: {destination}"
+                )
 
     existing_harness = target / TARGET_HARNESS_SKILL
     if existing_harness.exists() or existing_harness.is_symlink():

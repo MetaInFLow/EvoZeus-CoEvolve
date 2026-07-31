@@ -36,6 +36,7 @@ STAGE_LABELS = {
     "loop": "[5/5] Continuous Evolution Loop",
 }
 CONTRIBUTOR_GATE_REQUIRED_CHECK = "EvoZeus Contributor Gate"
+GITHUB_ACTIONS_APP_ID = 15368
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
 GLOBAL_EVOZEUS_PROJECTS_DIR = ".projects"
@@ -718,24 +719,29 @@ def require_contributor_gate_protection(
         raise ValueError("default-branch required status check evidence is invalid") from exc
     if not isinstance(data, dict):
         raise ValueError("default-branch required status check evidence is invalid")
-    contexts = {item for item in data.get("contexts", []) if isinstance(item, str)}
     checks = data.get("checks", [])
-    if isinstance(checks, list):
-        contexts.update(
-            item.get("context")
+    trusted_check = next(
+        (
+            item
             for item in checks
-            if isinstance(item, dict) and isinstance(item.get("context"), str)
-        )
-    if CONTRIBUTOR_GATE_REQUIRED_CHECK not in contexts:
+            if isinstance(item, dict)
+            and item.get("context") == CONTRIBUTOR_GATE_REQUIRED_CHECK
+            and item.get("app_id") == GITHUB_ACTIONS_APP_ID
+        ),
+        None,
+    ) if isinstance(checks, list) else None
+    if trusted_check is None:
         raise ValueError(
-            f"default branch {default_branch} does not require {CONTRIBUTOR_GATE_REQUIRED_CHECK!r}; "
-            "configure the exact check before attaching the Harness"
+            f"default branch {default_branch} does not require {CONTRIBUTOR_GATE_REQUIRED_CHECK!r} "
+            f"from GitHub Actions app_id={GITHUB_ACTIONS_APP_ID}; configure the exact bound check "
+            "before attaching the Harness"
         )
     return {
         "schema_version": "evozeus.coevolve.required-check-evidence.v1",
         "repository": repository,
         "branch": default_branch,
         "context": CONTRIBUTOR_GATE_REQUIRED_CHECK,
+        "app_id": GITHUB_ACTIONS_APP_ID,
         "source": "github_branch_protection_api",
         "verified": True,
         "writes": False,

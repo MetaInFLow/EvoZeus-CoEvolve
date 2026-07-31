@@ -94,6 +94,7 @@
     "authority": "git remote get-url",
     "fetch_url": "effective_origin_url_must_match_canonical_github_repo",
     "push_urls": "every_effective_origin_push_url_must_match_canonical_github_repo",
+    "canonical_base_state": "live_git_ls_remote_effective_origin_required",
     "target_branch_state": "live_git_ls_remote_effective_origin_required",
     "local_remote_divergence": "block"
   },
@@ -123,7 +124,7 @@
       "ledger_refresh_requires": "--approve-save-plan"
     }
   },
-  "worktree": { "required": true, "one_participant_per_branch": true, "branch_owner": "verified_actor_in_target_branch", "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "requested_registered_worktree_status_evidence": "required", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked" },
+  "worktree": { "required": true, "one_participant_per_branch": true, "branch_owner": "verified_actor_in_target_branch", "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "requested_registered_worktree_status_evidence": "required", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked", "non_directory_ancestor": "occupied_and_blocked", "prunable_registration_with_existing_path": "occupied_and_blocked" },
   "blocking_handling": {
     "dirty_tree": "block",
     "wrong_base": "block",
@@ -134,7 +135,7 @@
     "canonical_checkout_dirty_or_unavailable": "block",
     "current_checkout_status_unavailable": "block",
     "requested_worktree_dirty_or_unavailable": "block",
-    "target_remote_status_unavailable_or_diverged": "block",
+    "base_or_target_remote_status_unavailable_or_diverged": "block",
     "actor_or_permission_expectation_mismatch": "block",
     "issue_unavailable_or_invalid": "block",
     "github_unavailable": "local_patch_only"

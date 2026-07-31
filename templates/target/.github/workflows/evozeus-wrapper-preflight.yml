@@ -101,8 +101,8 @@ jobs:
       - name: Checkout candidate as untrusted data
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.repository }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
           path: candidate
           persist-credentials: false
       - name: Write pull request body

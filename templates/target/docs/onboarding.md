@@ -41,14 +41,14 @@
 
 ## Issue-to-PR 贡献分支
 
-- Harness attach 之前，默认分支必须把 exact `EvoZeus Contributor Gate` 配置为 protected required status check；bootstrap 使用 GitHub API 只读确认，缺失或无法取证时在任何模板写入前停止。
+- Harness attach 之前，默认分支必须把 exact `EvoZeus Contributor Gate` 配置为 protected required status check，并绑定 GitHub Actions `app_id=15368`；bootstrap 使用 GitHub API 只读确认，并在任何写入前拒绝未知 preexisting gate bytes。缺失或无法取证时停止。
 - Feedback Issue 和实现授权成立后，先运行 `.evozeus-wrapper/scripts/evozeus_branch_consumer.py plan`；该步骤只读。
 - `wrapper.json` 的 `contributor_branch` 给出 consumer、Core contract/planner snapshot 与 provenance 路径。执行前用 `verify-snapshot --json` 校验摘要和来源。
 - Agent 必须先展示 canonical repo、base ref/commit、`issue_evidence`、目标 branch、verified actor、resolved permission、`permission_evidence`、隔离 worktree、next action 与 blockers。
 - blockers 清空后仍需 branch/worktree 单独授权。增加 `--approve-save-plan` 只保存 owner-only 本地 ledger；分支、worktree、commit、push 与 PR 按各自授权执行。
 - 每位参与者使用独立 branch/worktree；canonical checkout 保持 clean。后续动作通过 `--resume-plan` 重新取实时证据并核对完整身份；未重传 `--date` 时从 purpose 匹配的 validated ledger target branch 恢复原日期。Ownership 时间窗超期且身份完全匹配时，Owner 显式增加 `--reconfirm-owner`；refreshed ledger 仍须通过 `--approve-save-plan` 单独保存。
 - Issue 后续发生编辑、关闭、转移、重新打开或分类标签变化时，trusted issue job 会重跑精确关联的开放 PR gate；PR required check 以最新 live Issue evidence 为准。
-- Target branch 包含 verified actor；Direct 只对未 archived/disabled 的可写 Repo 成立。有效 origin fetch/push URL（含 Git URL rewrite）必须全部匹配声明的 exact GitHub Repo，target branch 使用 live remote 取证；本地/remote 分叉或 requested resume worktree dirty/status 不可用时阻断。无法证明 direct/fork 时权限路径进入 local patch；push 与 PR 保持禁用。Issue 无法 live 验证为同 Repo 的 OPEN Skill Feedback Issue 时，计划整体阻断。
+- Target branch 包含 verified actor；Direct 只对未 archived/disabled 的可写 Repo 成立。有效 origin fetch/push URL（含 Git URL rewrite）必须全部匹配声明的 exact GitHub Repo，canonical base 与 target branch 使用 live remote 取证；cached base 过期、本地/remote target 分叉、requested resume worktree dirty/status 不可用、prunable path 仍存在或路径祖先不可作为目录时阻断。无法证明 direct/fork 时权限路径进入 local patch；push 与 PR 保持禁用。Issue 无法 live 验证为同 Repo 的 OPEN Skill Feedback Issue 时，计划整体阻断。
 - 业务 PR 由 base-SHA `pull_request_target` validator 读取候选数据并重算 plan identity；候选脚本不执行。官方 Harness upgrade 走 direct + live ADMIN + published Stable Release + restricted diff 专用 gate，不要求业务 Contributor Plan。
 
 ## Dashboard

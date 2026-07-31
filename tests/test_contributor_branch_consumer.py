@@ -79,6 +79,7 @@ def fake_github_bin(root: Path) -> Path:
         """#!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 
 args = sys.argv[1:]
@@ -129,6 +130,7 @@ raise SystemExit(1)
     git_wrapper.write_text(
         """#!/usr/bin/env python3
 import os
+import subprocess
 import sys
 
 real_git = __REAL_GIT__
@@ -137,7 +139,20 @@ if "ls-remote" in args:
     if os.environ.get("FAKE_GIT_REMOTE_UNAVAILABLE") == "1":
         raise SystemExit(1)
     ref = args[-1]
-    commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
+    branch = ref.removeprefix("refs/heads/")
+    if branch in {"main", "master", "uat/current"}:
+        commit = os.environ.get("FAKE_GIT_BASE_HEAD")
+        if not commit:
+            repo = args[args.index("-C") + 1]
+            result = subprocess.run(
+                [real_git, "-C", repo, "rev-parse", f"origin/{branch}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            commit = result.stdout.strip() if result.returncode == 0 else None
+    else:
+        commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
     if commit:
         print(f"{commit}\\t{ref}")
         raise SystemExit(0)
@@ -648,6 +663,19 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     )
     assert live_code == 2
     assert "branch_collision" in blocker_codes(live)
+
+    base_root = tmp_path / "stale-base"
+    base_root.mkdir()
+    base_repo = create_repo(base_root)
+    stale_base, stale_base_code = execute_plan(
+        base_repo,
+        base_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GIT_BASE_HEAD="e" * 40),
+    )
+    assert stale_base_code == 2
+    assert "base_remote_mismatch" in blocker_codes(stale_base)
+    assert stale_base["base"]["remote_commit"] == "e" * 40
 
     dirty_root = tmp_path / "dirty-resume"
     dirty_root.mkdir()

@@ -48,12 +48,26 @@ function isSameOrDescendant(path, ancestor) {
 }
 
 function pathEntryExists(path) {
+  const absolute = resolve(path);
   try {
-    lstatSync(path);
+    lstatSync(absolute);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
-    return true;
+    if (error?.code === "ENOTDIR") return true;
+    if (error?.code !== "ENOENT") return true;
+  }
+  let cursor = dirname(absolute);
+  while (true) {
+    try {
+      const status = lstatSync(cursor);
+      return status.isSymbolicLink() || !status.isDirectory();
+    } catch (error) {
+      if (error?.code === "ENOTDIR") return true;
+      if (error?.code !== "ENOENT") return true;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
   }
 }
 
@@ -218,6 +232,10 @@ export function collectGitFacts(repoPath, baseRef, targetBranch, requestedWorktr
     .split(/\r?\n/)
     .filter(Boolean);
   const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false, runner);
+  const baseBranch = baseRef.startsWith("origin/") ? baseRef.slice("origin/".length) : null;
+  const baseRemote = baseBranch
+    ? liveRemoteBranch(root, baseBranch, runner)
+    : { available: false, commit: null, reason: "unsupported_base_remote" };
   const localCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false, runner)
     : null;
@@ -243,6 +261,7 @@ export function collectGitFacts(repoPath, baseRef, targetBranch, requestedWorktr
     canonical_status: canonicalStatus,
     requested_status: requestedStatus,
     base_commit: baseCommit,
+    base_remote_status: baseRemote,
     target_commit: targetCommit,
     target_local_commit: localCommit,
     target_remote_commit: remoteCommit,
@@ -448,6 +467,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
   if (isProtectedRef(branchName, contract)) addBlocker(blockers, "protected_target", "target branch is protected");
   if (!facts.base_commit) addBlocker(blockers, "missing_base", `base ref does not resolve: ${options.base}`);
+  if (!facts.base_remote_status?.available || !facts.base_remote_status.commit) {
+    addBlocker(blockers, "base_remote_status_unavailable", "canonical base cannot be verified from the effective origin");
+  } else if (facts.base_commit && facts.base_commit !== facts.base_remote_status.commit) {
+    addBlocker(blockers, "base_remote_mismatch", "local canonical base does not match the live effective origin head");
+  }
   if (!facts.current_status.available) {
     addBlocker(blockers, "current_checkout_status_unavailable", "current checkout status cannot be verified");
   } else if (facts.dirty_entries.length > 0) {
@@ -560,6 +584,9 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   const registeredForBranch = facts.worktrees.find((item) => item.branch === `refs/heads/${branchName}`);
   const registeredPathExists = pathEntryExists(requestedWorktree);
   const presentRegisteredAtPath = registeredAtPath && registeredPathExists && !registeredAtPath.prunable;
+  if (registeredAtPath?.prunable && registeredPathExists) {
+    addBlocker(blockers, "prunable_worktree_path_occupied", "prunable worktree registration still has an occupied on-disk path");
+  }
   if (presentRegisteredAtPath && !facts.requested_status?.available) {
     addBlocker(blockers, "requested_worktree_status_unavailable", "requested registered worktree status cannot be verified");
   } else if (presentRegisteredAtPath && facts.requested_status.dirty_entries.length > 0) {
@@ -595,7 +622,13 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     profile: options.profile,
     generated_at: options.now,
     repo: { canonical: options.repo, source: sourceRepo, path: facts.root },
-    base: { ref: options.base, commit: facts.base_commit },
+    base: {
+      ref: options.base,
+      commit: facts.base_commit,
+      remote_commit: facts.base_remote_status?.commit ?? null,
+      remote_status_available: Boolean(facts.base_remote_status?.available),
+      remote_status_reason: facts.base_remote_status?.reason ?? null
+    },
     branch: {
       target: branchName,
       class: profile?.branch_class ?? null,

@@ -21,11 +21,11 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 5. resume 绑定 Repo、base ref、base commit、target branch、actor、resolved permission 和稳定 resume key。
 6. ledger 只存在于本机 owner-only 目录；PR 仅携带公开安全元数据。
 7. 已接入目标可通过 Harness upgrade 获得同一门禁。
-8. 默认分支把 exact `EvoZeus Contributor Gate` 作为 protected required status check；fresh attach 在首次模板写入前通过 GitHub API 验证，无法确认则阻断。
+8. 默认分支把 exact `EvoZeus Contributor Gate` 作为 protected required status check，并绑定 GitHub Actions `app_id=15368`；fresh attach 在首次模板写入前通过 GitHub API 验证，无法确认则阻断。
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `5ccddc77a77e8dbe02dde54e4588a01a25ebce7a`：
+权威文件来自 EvoZeus Core revision `f9b633ad1f528528f6a89d89f03f8c1dbd0a43df`：
 
 - contract：`evozeus.contributor_branch` `1.3.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
@@ -57,7 +57,7 @@ Consumer 只生成计划与可选 ledger 记录，不创建 branch/worktree，�
 `--permission` 是用户看到的期望值。期望与实时解析结果不同会产生 `permission_expectation_mismatch`，避免静默改变执行路径。
 
 本地 `remote.origin` 的有效 fetch URL 与全部有效 push URL 都必须解析为声明的 exact GitHub Repo；`pushurl`、`insteadOf` 或 `pushInsteadOf` 指向其他 host/Repo 时直接阻断。
-目标 branch 固定包含 verified actor 的小写 login；相同日期和 purpose 下的不同 actor 拥有不同 branch/resume identity。目标 branch 是否存在通过有效 origin 的 live `git ls-remote` 取证；查询不可用、本地/live remote 同名分支分叉时阻断。已注册的 requested resume worktree 还必须自身 status 可用且 clean。
+目标 branch 固定包含 verified actor 的小写 login；相同日期和 purpose 下的不同 actor 拥有不同 branch/resume identity。Canonical base 与目标 branch 都通过有效 origin 的 live `git ls-remote` 取证；查询不可用、cached base 过期或本地/live remote 同名目标分支分叉时阻断。已注册的 requested resume worktree 还必须自身 status 可用且 clean；prunable registration 只有在目录已消失时才允许进入 prune-and-recreate，目录仍存在或路径祖先为文件/dangling symlink 时按占用阻断。
 
 ## Ledger 与公开元数据
 
@@ -73,7 +73,7 @@ Ledger 删除 canonical Repo、worktree 和 ledger 的绝对路径。已有记�
 
 PR 只使用 `pr_metadata`：contract revision/digest、profile、purpose、resume key、Repo、base、branch、Issue、verified actor、resolved permission 和脱敏 planning evidence 摘要。planner stderr、内部错误、ledger 路径和本地路径不得进入公开面。
 
-业务 PR 的公开字段只用于提交计划身份，不承担自证。`pull_request_target` workflow 从 event 指定的 exact base SHA checkout 执行可信 validator/consumer，再把 exact head SHA checkout 当作数据读取。Validator 以 live event/API 核验 canonical Repo、head Repo 对应的 direct/fork 路径、PR author、base、OPEN Issue/非 PR/Skill Feedback 分类，并按合同字段重算 resume key。候选分支内的 workflow、validator、consumer 与 timestamp 不参与本次信任判定。
+业务 PR 的公开字段只用于提交计划身份，不承担自证。`pull_request_target` workflow 从 event 指定的 exact base SHA checkout 执行可信 validator/consumer，再通过 base Repo 的 `refs/pull/<number>/head` 读取候选 exact head SHA，兼容 private fork 且不引入跨 Repo PAT。Validator 以 live event/API 核验 canonical Repo、head Repo 对应的 direct/fork 路径、PR author、base、OPEN Issue/非 PR/Skill Feedback 分类，并按合同字段重算 resume key。候选分支内的 workflow、validator、consumer 与 timestamp 不参与本次信任判定。
 
 Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件会由默认分支中的 trusted issue job 定位 PR body 精确引用该 Issue 的开放业务 PR，并通过 GitHub Actions API 重跑各 PR 当前 head 对应的最新 `pull_request_target` workflow run。原 PR check 在原 ref 上重新读取 live Issue evidence，required check 随之进入 pending 并更新为 success/failure；已有 run 正在执行时不重复排队，找不到当前 head 的 trusted run 时 fail closed 并要求 edit/reopen PR。
 
@@ -90,8 +90,9 @@ Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件�
 | ledger 超过 ownership 时间窗且完整身份仍匹配 | 默认停止 | Owner 显式增加 `--reconfirm-owner` 生成 refreshed plan；持久化仍需 `--approve-save-plan` |
 | ledger 完整身份变化 | 停止 | 原 ledger 不可重新确认；重新核对 owner、base、branch 与授权 |
 | permission evidence 缺失 | local permission path | 保持 push/PR 禁用，或恢复证据后重新计划 |
-| live target remote evidence 缺失或分叉 | 停止 | 恢复 effective origin 查询并对齐本地/live remote branch |
+| live base/target remote evidence 缺失或分叉 | 停止 | 恢复 effective origin 查询并对齐 cached base 或本地/live remote branch |
 | requested resume worktree dirty/status 不可用 | 停止 | 处理该 worktree 的已有改动或状态错误后重新计划 |
+| prunable path 仍存在或祖先不可作为目录 | 停止 | 显式处理遗留内容/非法路径后重新计划 |
 | Issue evidence 缺失、关闭、PR-shaped 或未分类 | 停止 | 恢复 live OPEN Skill Feedback Issue 证据 |
 | candidate PR control code 与 base 不一致 | 停止 | 普通业务 PR 撤销控制面改动 |
 | 官方 Harness upgrade provenance/ADMIN/diff 不满足 | 停止 | 使用 published Stable Release 和专用迁移分支重新生成 |
@@ -99,6 +100,8 @@ Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件�
 ## 升级与回滚
 
 Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、canonical Harness Skill、manifest `contributor_branch`、onboarding、workflow 和 PR metadata surface 作为同一受管集合刷新。升级 PR 由 base validator 通过官方 Release provenance、live ADMIN 与受限 diff 专用 gate；升级后必须通过 structure 和 snapshot verification。
+
+Fresh attach 在任何模板写入前预检所有 gate destinations；已存在的 consumer、Core snapshot、planner、preflight、workflow 与 hook gate bytes 必须逐字节等于可信 source，未知内容保持原样并阻断，只有显式 approved repair 可覆盖。
 
 升级不读取或迁移用户的本地 branch ledger。回滚通过撤销目标 Harness upgrade commit 完成；已存在 branch/worktree 保持原 Git 状态，由 Owner 决定保留或清理。
 
@@ -109,7 +112,7 @@ Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、can
 - direct、fork-only、no-PR local
 - 缺少 `gh`、partial permission evidence、archived/disabled Repo 与 invalid Issue evidence 的 fail-closed 行为
 - 有效 fetch/push URL、multi-pushurl 与 Git URL rewrite 校验
-- actor-exclusive branch、live target remote 与 requested resume worktree status 校验
+- actor-exclusive branch、live base/target remote、requested resume worktree status 与 occupied-prunable/path-ancestor 校验
 - canonical checkout 后代与 symlink alias 路径阻断
 - snapshot digest/provenance/symlink 校验
 - ledger `0700/0600`、原子写入、路径脱敏与完整身份 collision

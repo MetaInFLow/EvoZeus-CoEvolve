@@ -16,7 +16,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "8f63e1aad73ba778f4590fa864acb368cb747dc225749e571f7b707d5fe4312d",
+      "sha256": "14bf490a8d0a3552abc1b3086781cb4713c54bfedd54eac3ce5b3a07e8dff640",
       "role": "target-template-inventory"
     }
   ]
