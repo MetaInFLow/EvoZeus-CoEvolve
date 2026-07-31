@@ -25,7 +25,7 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `e51341036549ca981386c9a475ae2f64ea1030cd`：
+权威文件来自 EvoZeus Core revision `f4e522fa8e33fbd30f3545aa1dec818c6643b6a9`：
 
 - contract：`evozeus.contributor_branch` `1.2.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
@@ -37,7 +37,7 @@ CoEvolve 在目标模板中保存 byte-for-byte snapshot 和 provenance。Consum
 
 1. Feedback Issue 已存在，用户另行授权实现。
 2. Consumer 读取目标 manifest 的 canonical Repo 与受管资产路径。
-3. Core planner 实时读取 Git worktree/base/branch 状态、GitHub identity、viewer permission、fork policy 与 Issue evidence。
+3. Core planner 实时读取 Git worktree/base/branch 状态、有效 fetch/push 目标、GitHub identity、viewer permission、Repo archived/disabled 状态、fork policy 与 Issue evidence。
 4. 用户看到 repo、base ref/commit、Issue 状态/类型/分类、target branch、verified actor、resolved permission、证据来源/时间、isolated worktree、resume decision、next action 与 blockers。
 5. blockers 为空后，用户单独授权 branch/worktree 动作。
 6. `--approve-save-plan` 把脱敏计划原子写入私有 ledger；Agent 执行 planner 声明的 next action。
@@ -50,11 +50,13 @@ Consumer 只生成计划与可选 ledger 记录，不创建 branch/worktree，�
 
 | 实时证据 | 路径 | 边界 |
 | --- | --- | --- |
-| 完整证据证明 `ADMIN` / `MAINTAIN` / `WRITE` | direct branch | canonical Repo 独立分支，可在后续授权后 push/PR |
+| 完整证据证明 `ADMIN` / `MAINTAIN` / `WRITE`，且 Repo 未 archived/disabled | direct branch | canonical Repo 独立分支，可在后续授权后 push/PR |
 | 完整证据证明 `READ` / `TRIAGE` 且 fork policy 允许 | fork PR | contributor fork 独立分支，可在后续授权后 PR |
 | `gh` 缺失、API 不可用、证据不完整、fork 不允许 | local patch | push/PR 固定禁用 |
 
 `--permission` 是用户看到的期望值。期望与实时解析结果不同会产生 `permission_expectation_mismatch`，避免静默改变执行路径。
+
+本地 `remote.origin` 的有效 fetch URL 与全部有效 push URL 都必须解析为声明的 exact GitHub Repo；`pushurl`、`insteadOf` 或 `pushInsteadOf` 指向其他 host/Repo 时直接阻断。
 
 ## Ledger 与公开元数据
 
@@ -102,7 +104,8 @@ Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、can
 - clean new branch 与 matching resume
 - dirty tree、wrong base、branch collision
 - direct、fork-only、no-PR local
-- 缺少 `gh`、partial permission evidence 与 invalid Issue evidence 的 fail-closed 行为
+- 缺少 `gh`、partial permission evidence、archived/disabled Repo 与 invalid Issue evidence 的 fail-closed 行为
+- 有效 fetch/push URL、multi-pushurl 与 Git URL rewrite 校验
 - canonical checkout 后代与 symlink alias 路径阻断
 - snapshot digest/provenance/symlink 校验
 - ledger `0700/0600`、原子写入、路径脱敏与完整身份 collision

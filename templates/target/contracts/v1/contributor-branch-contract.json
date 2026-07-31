@@ -78,6 +78,8 @@
     "authority": "live_github_api_evidence",
     "actor_source": "gh api user",
     "repository_permission_source": "gh api graphql repository.viewerPermission",
+    "repository_state_source": "gh api repos/{owner}/{repo}",
+    "direct_repository_state": "not_archived_and_not_disabled",
     "fork_policy_source": "gh api repos/{owner}/{repo}",
     "direct_viewer_permissions": ["ADMIN", "MAINTAIN", "WRITE"],
     "fork_viewer_permissions": ["READ", "TRIAGE"],
@@ -85,7 +87,12 @@
     "expectation_mismatch": "block",
     "unavailable_or_incomplete_evidence": "resolve_local_patch",
     "repo_or_command_arguments_may_grant_permission": false,
-    "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "fork_allowed"]
+    "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "write_allowed", "fork_allowed"]
+  },
+  "remote_resolution": {
+    "authority": "git remote get-url",
+    "fetch_url": "effective_origin_url_must_match_canonical_github_repo",
+    "push_urls": "every_effective_origin_push_url_must_match_canonical_github_repo"
   },
   "issue_resolution": {
     "authority": "live_github_api_evidence",

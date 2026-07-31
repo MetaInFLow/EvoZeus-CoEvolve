@@ -10,7 +10,7 @@
       "target_writes": true,
       "availability": "compatibility-only",
       "source_root": "templates/target",
-      "source_tree_sha256": "sha256:a9ba7d9ce836e8de6a4d2e3e8781bdcd26889f068c851b47071bd8e57c50b843",
+      "source_tree_sha256": "sha256:fd93a6c10a31224e170d055f7622e091d01778dadf5e48c0ce8aecb5e1eae02b",
       "files": [
         ".codex/hooks.json",
         ".codex/hooks/evozeus_wrapper_start_check.py",

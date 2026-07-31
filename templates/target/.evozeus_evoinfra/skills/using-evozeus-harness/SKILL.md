@@ -65,7 +65,7 @@ python3 .evozeus-wrapper/scripts/evozeus_branch_consumer.py plan \
   --json
 ```
 
-`--actor` 与 `--permission` 只表达预期。Core planner 每次重新采集 Git 状态、GitHub identity、repository permission、fork policy 与 Issue evidence；manifest 和旧 ledger 均无权覆盖实时证据。权限证据缺失或不完整时权限路径降级为 local patch，禁止 push/PR；Issue 无法查询、已关闭、实际为 Pull Request、Repo/编号不匹配，或缺少 `skill-feedback` / `[Skill Feedback]` 分类时整个计划阻断。
+`--actor` 与 `--permission` 只表达预期。Core planner 每次重新采集 Git 状态、有效 origin fetch/push 目标、GitHub identity、repository permission、archived/disabled 状态、fork policy 与 Issue evidence；manifest 和旧 ledger 均无权覆盖实时证据。Direct 只对可写且未 archived/disabled 的 Repo 成立，全部有效 origin URL 必须解析为声明的 exact GitHub Repo。权限证据缺失或不完整时权限路径降级为 local patch，禁止 push/PR；Issue 无法查询、已关闭、实际为 Pull Request、Repo/编号不匹配，或缺少 `skill-feedback` / `[Skill Feedback]` 分类时整个计划阻断。
 
 向用户完整展示 `repo.canonical`、`base.ref`/`base.commit`、`branch.target`、`issue_evidence`、actor、`permission_path.resolved`、`permission_evidence`、隔离 worktree、resume decision、`next_write_action` 和 blockers。满足以下条件后才能进入业务写入：
 

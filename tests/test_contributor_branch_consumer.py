@@ -100,8 +100,8 @@ if args[:2] == ["api", "repos/MetaInFLow/example-skill"]:
     allow_forking = os.environ.get("FAKE_REPO_ALLOW_FORKING", "1") == "1"
     print(json.dumps({
         "private": private,
-        "archived": False,
-        "disabled": False,
+        "archived": os.environ.get("FAKE_REPO_ARCHIVED", "0") == "1",
+        "disabled": os.environ.get("FAKE_REPO_DISABLED", "0") == "1",
         "allow_forking": allow_forking,
     }))
     raise SystemExit(0)
@@ -550,6 +550,41 @@ def test_core_snapshot_rejects_lookalike_origin_and_nested_registered_worktree(t
     assert nested["worktree"]["isolated"] is False
     assert not nested_path.exists()
     assert run(["git", "status", "--porcelain=v1", "--untracked-files=all"], outer) == ""
+
+
+def test_core_snapshot_rejects_redirected_push_and_archived_direct(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    push_root = tmp_path / "redirected-push"
+    push_root.mkdir()
+    push_repo = create_repo(push_root)
+    run([
+        "git", "remote", "set-url", "--add", "--push", "origin",
+        f"https://evilgithub.com/{REPO}.git",
+    ], push_repo)
+    redirected, redirected_code = execute_plan(
+        push_repo,
+        push_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert redirected_code == 2
+    assert "missing_origin_push_identity" in blocker_codes(redirected)
+
+    archived_root = tmp_path / "archived"
+    archived_root.mkdir()
+    archived_repo = create_repo(archived_root)
+    archived, archived_code = execute_plan(
+        archived_repo,
+        archived_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_REPO_ARCHIVED="1"),
+    )
+    assert archived_code == 2
+    assert archived["permission_path"]["resolved"] == "local"
+    assert archived["permission_evidence"]["repository"]["write_allowed"] is False
+    assert "permission_expectation_mismatch" in blocker_codes(archived)
 
 
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:

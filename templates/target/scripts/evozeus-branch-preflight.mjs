@@ -185,7 +185,10 @@ export function collectGitFacts(repoPath, baseRef, targetBranch) {
   const canonicalStatus = canonicalDescriptor.path === root
     ? currentStatus
     : checkoutStatus(canonicalDescriptor.path, canonicalDescriptor);
-  const originUrl = gitText(root, ["config", "--get", "remote.origin.url"], false);
+  const originUrl = gitText(root, ["remote", "get-url", "origin"], false);
+  const originPushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", "origin"], false) || "")
+    .split(/\r?\n/)
+    .filter(Boolean);
   const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false);
   const localCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false)
@@ -203,6 +206,7 @@ export function collectGitFacts(repoPath, baseRef, targetBranch) {
     root,
     origin_url: originUrl,
     origin_repo: githubRepoFromRemote(originUrl),
+    origin_push_repos: originPushUrls.map((url) => githubRepoFromRemote(url)),
     head: gitText(root, ["rev-parse", "HEAD"]),
     current_branch: gitText(root, ["branch", "--show-current"], false),
     dirty_entries: currentStatus.dirty_entries,
@@ -241,7 +245,19 @@ export function collectGitHubPermissionEvidence(repo, checkedAt, runner = spawnS
   const viewerPermission = typeof permissionData?.data?.repository?.viewerPermission === "string"
     ? permissionData.data.repository.viewerPermission.toUpperCase()
     : null;
-  const forkPolicyAvailable = Boolean(repositoryData && typeof repositoryData.private === "boolean");
+  const repositoryStateAvailable = Boolean(
+    repositoryData
+    && typeof repositoryData.archived === "boolean"
+    && typeof repositoryData.disabled === "boolean"
+  );
+  const repositoryWriteAllowed = repositoryStateAvailable
+    ? !repositoryData.archived && !repositoryData.disabled
+    : null;
+  const forkPolicyAvailable = Boolean(
+    repositoryStateAvailable
+    && typeof repositoryData.private === "boolean"
+    && (!repositoryData.private || typeof repositoryData.allow_forking === "boolean")
+  );
   const forkAllowed = forkPolicyAvailable
     ? !repositoryData.archived
       && !repositoryData.disabled
@@ -265,6 +281,11 @@ export function collectGitHubPermissionEvidence(repo, checkedAt, runner = spawnS
       permission_source: "gh api graphql repository.viewerPermission",
       permission_available: permissionAvailable,
       viewer_permission: viewerPermission,
+      state_source: `gh api repos/${repo}`,
+      state_available: repositoryStateAvailable,
+      archived: repositoryStateAvailable ? repositoryData.archived : null,
+      disabled: repositoryStateAvailable ? repositoryData.disabled : null,
+      write_allowed: repositoryWriteAllowed,
       fork_policy_source: `gh api repos/${repo}`,
       fork_policy_available: forkPolicyAvailable,
       fork_allowed: forkAllowed
@@ -304,7 +325,10 @@ export function collectGitHubIssueEvidence(repo, issueNumber, checkedAt, runner 
 function resolvePermission(evidence) {
   if (evidence.source !== "github_api") return "local";
   if (!evidence.identity.available || !evidence.repository.permission_available) return "local";
-  if (["ADMIN", "MAINTAIN", "WRITE"].includes(evidence.repository.viewer_permission)) return "direct";
+  if (
+    ["ADMIN", "MAINTAIN", "WRITE"].includes(evidence.repository.viewer_permission)
+    && evidence.repository.write_allowed === true
+  ) return "direct";
   if (
     ["READ", "TRIAGE"].includes(evidence.repository.viewer_permission)
     && evidence.repository.fork_policy_available
@@ -405,6 +429,12 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     addBlocker(blockers, "missing_origin_identity", "remote.origin must identify a GitHub OWNER/REPO");
   } else if (facts.origin_repo.toLowerCase() !== options.repo.toLowerCase()) {
     addBlocker(blockers, "repo_remote_mismatch", "remote.origin does not match the requested canonical repo");
+  }
+  if (!Array.isArray(facts.origin_push_repos) || facts.origin_push_repos.length === 0
+      || facts.origin_push_repos.some((repo) => !repo)) {
+    addBlocker(blockers, "missing_origin_push_identity", "every effective origin push URL must identify a GitHub OWNER/REPO");
+  } else if (facts.origin_push_repos.some((repo) => repo.toLowerCase() !== options.repo.toLowerCase())) {
+    addBlocker(blockers, "repo_push_remote_mismatch", "every effective origin push URL must match the requested canonical repo");
   }
 
   const requestedWorktree = canonicalPath(options.worktree);
