@@ -2215,6 +2215,29 @@ def _consume_following_newlines(text: str, offset: int) -> int:
     return offset
 
 
+def _managed_terminal_match(
+    section: str,
+    terminal_pattern: str,
+    predecessor_sequences: tuple[tuple[str, ...], ...],
+) -> re.Match[str] | None:
+    """Accept a terminal only after a contiguous suffix from a known managed template."""
+    terminator = re.search(terminal_pattern, section)
+    if not terminator:
+        return None
+    preceding_lines = [
+        line.strip()
+        for line in section[: terminator.start()].splitlines()
+        if line.strip()
+    ]
+    for sequence in predecessor_sequences:
+        if len(preceding_lines) < len(sequence):
+            continue
+        suffix = preceding_lines[-len(sequence) :]
+        if all(re.fullmatch(pattern, line) for pattern, line in zip(sequence, suffix)):
+            return terminator
+    return None
+
+
 def _wrapper_owned_section_analysis(
     text: str,
 ) -> tuple[list[tuple[int, int]], list[str]]:
@@ -2238,6 +2261,46 @@ def _wrapper_owned_section_analysis(
         WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
         LEGACY_WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
     }
+    terminal_predecessors = {
+        STATUS_SECTION_HEADING: (
+            (
+                r"- 检查命令：`python3 .*evozeus_wrapper_preflight\.py doctor --repo [^`]+`",
+                r"- 如果 `~/.evozeus/\.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。",
+            ),
+            (
+                r"- 身份头固定以 `🧙🏻‍♂️` 开始；禁止使用 HTML、自定义图片或 shortcode 替代。",
+                r"- 同一次 invocation 的后续 commentary 和 final 不重复；下一次 invocation 再展示一次。",
+            ),
+            (
+                r"- Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。",
+                r"- Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。",
+            ),
+        ),
+        LEGACY_STATUS_SECTION_HEADING: (
+            (
+                r"- 检查命令：`python3 .*evozeus_wrapper_preflight\.py doctor --repo [^`]+`",
+                r"- 如果 `~/.evozeus/\.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。",
+            ),
+        ),
+        EVOLUTION_SECTION_HEADING: (
+            (
+                r"Visibility: `(public|private)`",
+                r"Current Skill version: `v\d+\.\d+\.\d+`",
+            ),
+        ),
+        WRAPPER_SECTION_HEADING: (
+            (
+                r"- `bootstrap_skill`：[^\r\n]+",
+                r"- `prompt_runtime_check`：[^\r\n]+",
+            ),
+        ),
+        LEGACY_WRAPPER_SECTION_HEADING: (
+            (
+                r"- `bootstrap_skill`：[^\r\n]+",
+                r"- `prompt_runtime_check`：[^\r\n]+",
+            ),
+        ),
+    }
     headings = _markdown_headings(text)
     for index, (start, level, heading) in enumerate(headings):
         end = next(
@@ -2256,10 +2319,14 @@ def _wrapper_owned_section_analysis(
                 all(term in section for term in required_terms)
                 for required_terms in accepted_signatures
             ):
-                terminator = re.search(terminal_patterns[heading], section)
+                terminator = _managed_terminal_match(
+                    section,
+                    terminal_patterns[heading],
+                    terminal_predecessors[heading],
+                )
                 if not terminator:
                     conflicts.append(
-                        f"{heading} has a wrapper ownership signature but no terminal signature; "
+                        f"{heading} has a wrapper ownership signature but no proven managed terminal signature; "
                         "restore the managed section or use an approved manual repair"
                     )
                     continue
@@ -2280,13 +2347,19 @@ def _wrapper_owned_section_analysis(
         section = text[start:end]
         if "Wrapper harness:" not in section or "- Layout:" not in section:
             continue
-        terminator = re.search(
-            r"(?m)^- Target business rules were preserved\.[ \t]*(?:\r?\n|$)",
+        terminator = _managed_terminal_match(
             section,
+            r"(?m)^- Target business rules were preserved\.[ \t]*(?:\r?\n|$)",
+            (
+                (
+                    r"- Wrapper harness: `v\d+\.\d+\.\d+ -> v\d+\.\d+\.\d+`",
+                    r"- Layout: `[^`]+ -> [^`]+`",
+                ),
+            ),
         )
         if not terminator:
             conflicts.append(
-                f"{heading} has a wrapper ownership signature but no terminal signature; "
+                f"{heading} has a wrapper ownership signature but no proven managed terminal signature; "
                 "restore the managed note or use an approved manual repair"
             )
             continue
