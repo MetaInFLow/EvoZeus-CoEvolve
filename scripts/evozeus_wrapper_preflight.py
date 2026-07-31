@@ -447,6 +447,24 @@ def _mask_markdown_fenced_code(text: str) -> str:
     def mask_line(line: str) -> str:
         return "".join(character if character in "\r\n" else " " for character in line)
 
+    def is_complete_html_tag(line: str) -> bool:
+        match = re.match(r"^[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*", line)
+        if not match:
+            return False
+        quote: str | None = None
+        for index in range(match.end(), len(line)):
+            character = line[index]
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ">":
+                return not line[index + 1 :].strip()
+        return False
+
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         if fence:
@@ -505,10 +523,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             r"^[ ]{0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)",
             content,
             re.IGNORECASE,
-        ) or re.fullmatch(
-            r"[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?/?>[ \t]*",
-            content,
-        ):
+        ) or is_complete_html_tag(content):
             html_block = ("blank", None)
             masked.append(mask_line(line))
         elif re.match(r"^(?: {4,}|\t)", content):
@@ -856,6 +871,14 @@ def _frontmatter_end(text: str) -> int:
         stripped = line.strip()
         if not stripped or line.lstrip().startswith("#"):
             continue
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                flow_value = json.loads(stripped)
+            except json.JSONDecodeError:
+                flow_value = None
+            if isinstance(flow_value, dict):
+                saw_mapping_key = True
+                continue
         if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
             saw_mapping_key = True
             continue

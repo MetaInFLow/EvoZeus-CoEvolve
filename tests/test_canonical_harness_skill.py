@@ -1142,6 +1142,7 @@ def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path:
         "123: Demo",
         "显示名称: Demo",
         "{}",
+        '{"name":"Demo"}',
         "tags:\n- alpha",
         "!!map\n? complex key\n: Demo",
     ],
@@ -1231,6 +1232,13 @@ def test_migration_preserves_harness_entry_examples_inside_markdown_containers(
             "EXAMPLE BUSINESS BYTES\n"
             f"{HARNESS_ENTRY_END}\n"
             "</div>\n\n"
+        ),
+        (
+            '<widget title="a > b">\n'
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</widget>\n\n"
         ),
     ],
 )
