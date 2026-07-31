@@ -24,7 +24,7 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `363a579693dd236bef5ecef9eb45309de15625f7`：
+权威文件来自 EvoZeus Core revision `58029dea8867c9503452536f0b335663fc388b3d`：
 
 - contract：`evozeus.contributor_branch` `1.2.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
@@ -73,7 +73,7 @@ PR 只使用 `pr_metadata`：contract revision/digest、profile、purpose、resu
 
 Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件会由默认分支中的 trusted issue job 定位 PR body 精确引用该 Issue 的开放业务 PR，并通过 GitHub Actions API 重跑各 PR 当前 head 对应的最新 `pull_request_target` workflow run。原 PR check 在原 ref 上重新读取 live Issue evidence，required check 随之进入 pending 并更新为 success/failure；已有 run 正在执行时不重复排队，找不到当前 head 的 trusted run 时 fail closed 并要求 edit/reopen PR。
 
-官方 Harness upgrade 使用独立 profile，直接消费 [CoEvolve PR #31](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 admin publisher 合同：branch 为 `evozeus/harness-vX-to-vY`，head 来自 canonical Repo，PR author 由 live API 证明为 `ADMIN`。除 target-owned `.evozeus-wrapper/CHANGELOG.md` 外，全部 wrapper-managed files 都与 base 绑定；upgrade 时从同版本、已发布且非 prerelease 的 CoEvolve Release 取得每一份官方 source，完成目标占位符渲染后逐字节核对。`.codex/hooks.json` 只替换 wrapper-owned entry并保持其他 target hooks。API diff 只允许官方 managed controls、canonical manifest、所有权 marker 内 activation 内容和明确版本迁移记录。Marker 外业务字节、额外业务文件、rename source、fork copy 或 manifest target/source identity 变化均阻断。该 profile 跳过业务 Contributor Plan metadata。
+官方 Harness upgrade 使用独立 profile，直接消费 [CoEvolve PR #31](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 admin publisher 合同：branch 为 `evozeus/harness-vX-to-vY`，head 来自 canonical Repo，PR author 由 live API 证明为 `ADMIN`。除 target-owned `.evozeus-wrapper/CHANGELOG.md` 外，全部 wrapper-managed files 都与 base 绑定；upgrade 时从同版本、已发布且非 prerelease 的 CoEvolve Release 取得每一份官方 source，完成目标占位符渲染后逐字节核对。`.codex/hooks.json` 只替换 wrapper-owned entry并保持其他 target hooks。PR template 仅在内容命中已知完整受管基线时整体刷新；其他模板保留 target-owned bytes，只确定性注入或替换 `evozeus-contributor-branch-plan:v1` marker block，marker 或未标记同名 section 无法安全归属时在 plan 阶段阻断。API diff 只允许官方 managed controls、canonical manifest、所有权 marker 内 activation 内容和明确版本迁移记录。Marker 外业务字节、额外业务文件、rename source、fork copy 或 manifest target/source identity 变化均阻断。该 profile 跳过业务 Contributor Plan metadata。
 
 ## 失败与恢复
 

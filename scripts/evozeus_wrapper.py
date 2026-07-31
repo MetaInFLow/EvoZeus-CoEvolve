@@ -170,6 +170,7 @@ def main() -> int:
     issue_to_pr.add_argument("--worktree", required=True, help="Absolute isolated contribution worktree path.")
     issue_to_pr.add_argument("--date")
     issue_to_pr.add_argument("--resume-plan")
+    issue_to_pr.add_argument("--reconfirm-owner", action="store_true")
     issue_to_pr.add_argument("--approve-save-plan", action="store_true")
     issue_to_pr.add_argument("--json", action="store_true")
 
@@ -394,6 +395,7 @@ def main() -> int:
             "worktree": args.worktree,
             "date": args.date,
             "resume_plan": args.resume_plan,
+            "reconfirm_owner": args.reconfirm_owner,
         }
         ledger_root = Path.home() / DEFAULT_LEDGER_RELATIVE_PATH
         try:

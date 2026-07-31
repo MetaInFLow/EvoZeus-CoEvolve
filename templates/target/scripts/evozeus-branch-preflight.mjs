@@ -80,8 +80,22 @@ function checkoutStatus(path, { bare = false } = {}) {
 
 function githubRepoFromRemote(remoteUrl) {
   const value = String(remoteUrl ?? "").trim();
-  const match = value.match(/github\.com(?::|\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i);
-  return match?.[1] ?? null;
+  const scpLike = value.match(/^git@github\.com:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i);
+  if (scpLike) return scpLike[1];
+  try {
+    const url = new URL(value);
+    if (
+      url.hostname.toLowerCase() !== "github.com"
+      || !["https:", "ssh:"].includes(url.protocol)
+      || url.search
+      || url.hash
+      || (url.protocol === "ssh:" && url.username !== "git")
+    ) return null;
+    const path = url.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
+    return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path) ? path : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseIssue(rawIssue, repo) {
@@ -353,11 +367,16 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   const requestedWorktree = canonicalPath(options.worktree);
   const canonicalCheckout = facts.worktrees[0]?.path ?? facts.root;
   const insideCanonicalCheckout = isSameOrDescendant(requestedWorktree, canonicalCheckout);
+  const nestedRegisteredWorktree = facts.worktrees.find(
+    (item) => requestedWorktree !== item.path && isSameOrDescendant(requestedWorktree, item.path)
+  );
   const currentProtected = isProtectedRef(facts.current_branch, contract);
   if (currentProtected && requestedWorktree === facts.root) {
     addBlocker(blockers, "protected_checkout_write", "protected checkout cannot be the contribution worktree");
   } else if (insideCanonicalCheckout) {
     addBlocker(blockers, "canonical_checkout_write", "canonical checkout and its descendants cannot be the contribution worktree");
+  } else if (nestedRegisteredWorktree) {
+    addBlocker(blockers, "registered_worktree_descendant", "contribution worktree cannot be nested inside any registered worktree");
   }
 
   const resumeKey = resumeKeyFor([
@@ -465,7 +484,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       path: requestedWorktree,
       current_repo_path: facts.root,
       canonical_checkout_path: canonicalCheckout,
-      isolated: !insideCanonicalCheckout,
+      isolated: !insideCanonicalCheckout && !nestedRegisteredWorktree,
       registered: Boolean(registeredAtPath),
       current_checkout: {
         status_available: facts.current_status.available,
@@ -481,7 +500,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     ownership: { actor: resolvedActor, checked_at: options.now },
     resume: { key: resumeKey, decision, owner_reconfirmed: ownerReconfirmed },
     next_write_action: blockers.length === 0
-      ? (decision === "resume" ? "resume_existing_branch_in_isolated_worktree" : permission.next_write_action)
+      ? (decision === "resume"
+        ? (registeredAtPath
+          ? "resume_existing_branch_in_isolated_worktree"
+          : "recreate_resume_worktree_for_existing_branch")
+        : permission.next_write_action)
       : "blocked",
     approval_boundaries: contract.approval_boundaries,
     blockers,

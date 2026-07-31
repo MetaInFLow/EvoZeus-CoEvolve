@@ -72,6 +72,20 @@ TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKIL
 HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+PR_TEMPLATE_PATH = ".github/pull_request_template.md"
+PR_PLAN_BEGIN = "<!-- evozeus-contributor-branch-plan:v1 -->"
+PR_PLAN_END = "<!-- /evozeus-contributor-branch-plan -->"
+PR_PLAN_HEADING = "## Contributor Branch Plan"
+PR_TEMPLATE_MANAGED_BASELINE_SHA256 = frozenset(
+    {
+        "665b9f164a9174aef97a2a664de1a1f5bb8616069833e86f6fe7a4d62fbd8926",
+        "1b236cfb74c7c02d66aefa301f0a6ca264120587dd8f0a5e22efb152e6973de4",
+        "b0764492f1d39035f7cb4ec8f82b3e66f42b032a5607f14390011d9a0fbc6bd0",
+        "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+        "639527014104f356b03d6dc659a692113e33dfd2662728e05f0c9c0030e8c52f",
+        "82abdbe67712bf623c128184f94f0f43eeee7c35e1a9e7051e0ec9b3b13344e5",
+    }
+)
 HARNESS_SKILL_REQUIRED_TERMS = (
     TARGET_WRAPPER_MANIFEST,
     TARGET_NOTICE_POLICY,
@@ -2046,6 +2060,107 @@ def _same_file_contents(left: Path, right: Path) -> bool:
     return left.is_file() and right.is_file() and file_sha256(left) == file_sha256(right)
 
 
+def _pr_template_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text and text.count("\r\n") == text.count("\n") else "\n"
+
+
+def _canonical_pr_plan_block(official_text: str) -> tuple[str, str]:
+    if official_text.count(PR_PLAN_BEGIN) != 1 or official_text.count(PR_PLAN_END) != 1:
+        raise ValueError("official Pull Request template must contain one managed Contributor Branch Plan block")
+    start = official_text.index(PR_PLAN_BEGIN)
+    end_marker = official_text.index(PR_PLAN_END)
+    if end_marker <= start:
+        raise ValueError("official Pull Request template managed block markers are out of order")
+    end = end_marker + len(PR_PLAN_END)
+    block = official_text[start:end]
+    inner = official_text[start + len(PR_PLAN_BEGIN) : end_marker].strip("\r\n")
+    if len(re.findall(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", inner)) != 1:
+        raise ValueError("official Pull Request template managed block has an invalid heading")
+    return block, inner
+
+
+def merge_pull_request_template(current_text: str, official_text: str) -> tuple[str, str]:
+    """Refresh only proven wrapper-owned PR-template bytes and preserve target-owned bytes."""
+    official_block, official_inner = _canonical_pr_plan_block(official_text)
+    digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+    if current_text == official_text or digest in PR_TEMPLATE_MANAGED_BASELINE_SHA256:
+        return official_text, "refresh_managed_baseline"
+
+    newline = _pr_template_newline(current_text)
+    block = official_block.replace("\r\n", "\n").replace("\n", newline)
+    begin_count = current_text.count(PR_PLAN_BEGIN)
+    end_count = current_text.count(PR_PLAN_END)
+    if begin_count or end_count:
+        if begin_count != 1 or end_count != 1:
+            raise ValueError("target Pull Request template has ambiguous managed block markers")
+        start = current_text.index(PR_PLAN_BEGIN)
+        end_marker = current_text.index(PR_PLAN_END)
+        if end_marker <= start:
+            raise ValueError("target Pull Request template managed block markers are out of order")
+        end = end_marker + len(PR_PLAN_END)
+        return current_text[:start] + block + current_text[end:], "refresh_managed_block"
+
+    headings = list(re.finditer(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", current_text))
+    if len(headings) > 1:
+        raise ValueError("target Pull Request template has multiple Contributor Branch Plan headings")
+    if headings:
+        start = headings[0].start()
+        following = re.search(r"(?m)^#{1,2}[ \t]+", current_text[headings[0].end() :])
+        end = headings[0].end() + following.start() if following else len(current_text)
+        section = current_text[start:end].strip(" \t\r\n").replace("\r\n", "\n")
+        if section != official_inner.replace("\r\n", "\n"):
+            raise ValueError("target Pull Request template has an unowned Contributor Branch Plan section")
+        suffix = current_text[end:].lstrip("\r\n")
+        separator = newline * (2 if suffix else 1)
+        return current_text[:start] + block + separator + suffix, "adopt_legacy_managed_block"
+
+    anchors = list(re.finditer(r"(?m)^## What Changed[ \t]*\r?$", current_text))
+    offset = anchors[0].start() if len(anchors) == 1 else len(current_text)
+    prefix = current_text[:offset]
+    suffix = current_text[offset:]
+    if not prefix:
+        before = ""
+    elif prefix.endswith(newline * 2):
+        before = ""
+    elif prefix.endswith(newline):
+        before = newline
+    else:
+        before = newline * 2
+    after = newline * (2 if suffix else 1)
+    return prefix + before + block + after + suffix, "inject_managed_block"
+
+
+def plan_pull_request_template_update(
+    target: Path,
+    wrapper_root: Path,
+) -> dict[str, Any]:
+    source = wrapper_root / "templates" / "target" / PR_TEMPLATE_PATH
+    destination = target / PR_TEMPLATE_PATH
+    if not source.is_file():
+        raise ValueError(f"wrapper Pull Request template source is missing: {source}")
+    if destination.is_symlink():
+        raise ValueError(f"migration write path contains a symlink: {PR_TEMPLATE_PATH}")
+    official_text = source.read_text(encoding="utf-8")
+    if not destination.exists():
+        _canonical_pr_plan_block(official_text)
+        return {
+            "path": PR_TEMPLATE_PATH,
+            "mode": "create_managed_template",
+            "changed": True,
+            "target_owned_bytes_preserved": True,
+        }
+    if not destination.is_file():
+        raise ValueError(f"target Pull Request template is not a regular file: {PR_TEMPLATE_PATH}")
+    current_text = _read_text_preserving_newlines(destination)
+    merged, mode = merge_pull_request_template(current_text, official_text)
+    return {
+        "path": PR_TEMPLATE_PATH,
+        "mode": mode,
+        "changed": merged != current_text,
+        "target_owned_bytes_preserved": mode not in {"refresh_managed_baseline"},
+    }
+
+
 def _codex_hook_template_data() -> dict[str, Any]:
     template = Path(__file__).resolve().parents[1] / "templates" / "target" / CODEX_HOOKS_CONFIG
     if not template.is_file():
@@ -2596,14 +2711,20 @@ def plan_target_layout_migration(
     today: date | None = None,
     *,
     require_clean_git: bool = False,
+    wrapper_root: Path | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
+    wrapper_root = (
+        Path(__file__).resolve().parents[1]
+        if wrapper_root is None
+        else wrapper_root.expanduser().resolve()
+    )
     manifest_status = wrapper_manifest_status(target)
     conflicts: list[str] = []
     if manifest_status["conflict"]:
         conflicts.append("legacy wrapper manifests contain different data")
     try:
-        verify_managed_snapshot(Path(__file__).resolve().parents[1] / "templates" / "target")
+        verify_managed_snapshot(wrapper_root / "templates" / "target")
     except BranchConsumerError as exc:
         conflicts.append(f"wrapper contributor branch snapshot is invalid: {exc}")
     git_status = run_command(
@@ -2689,7 +2810,12 @@ def plan_target_layout_migration(
         or version_refresh_required
         or instruction_surface_migration_required
     )
+    pull_request_template_update = None
     if requires_migration:
+        try:
+            pull_request_template_update = plan_pull_request_template_update(target, wrapper_root)
+        except ValueError as exc:
+            conflicts.append(str(exc))
         try:
             _, codex_hooks_update = _merge_codex_hooks_config(target)
         except ValueError as exc:
@@ -2836,6 +2962,7 @@ def plan_target_layout_migration(
         "migration_record": migration_record if requires_migration else None,
         "moves": moves,
         "managed_file_refreshes": managed_file_refreshes,
+        "pull_request_template_update": pull_request_template_update,
         "codex_hooks_update": codex_hooks_update,
         "instruction_surface": instruction_surface,
         "preserved_host_entrypoints": [
@@ -2990,7 +3117,12 @@ def _refresh_migrated_managed_files(
             text = source.read_text(encoding="utf-8")
             if source.name == "evozeus_wrapper_start_check.py":
                 text = text.replace("{{WRAPPER_VERSION}}", wrapper_version or "")
-            destination.write_text(text, encoding="utf-8")
+            if destination == target / PR_TEMPLATE_PATH and destination.exists():
+                current = _read_text_preserving_newlines(destination)
+                text, _ = merge_pull_request_template(current, text)
+                _write_text_preserving_newlines(destination, text)
+            else:
+                destination.write_text(text, encoding="utf-8")
         if destination.suffix == ".py":
             destination.chmod(0o755)
         refreshed.append(str(destination.relative_to(target)))
@@ -3011,6 +3143,7 @@ def migrate_target_layout(
         latest_version,
         today,
         require_clean_git=require_clean_git,
+        wrapper_root=wrapper_root,
     )
     if plan["conflicts"]:
         raise ValueError("cannot migrate wrapper layout:\n- " + "\n- ".join(plan["conflicts"]))
@@ -3044,7 +3177,12 @@ def migrate_target_layout(
         wrapper_root,
     )
     changed_files.extend(refreshed_files)
-    actions.extend(f"refresh managed file {path}" for path in refreshed_files)
+    for path in refreshed_files:
+        if path == PR_TEMPLATE_PATH and plan.get("pull_request_template_update"):
+            mode = plan["pull_request_template_update"]["mode"]
+            actions.append(f"{mode} {path}")
+        else:
+            actions.append(f"refresh managed file {path}")
 
     merged_hooks, hooks_action = _merge_codex_hooks_config(target)
     hooks_path = target / CODEX_HOOKS_CONFIG
