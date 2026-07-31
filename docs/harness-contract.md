@@ -190,7 +190,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.0.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
 - 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
 - `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。
-- 存量迁移只删除具备 wrapper 所有权签名的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。目标业务文字和 LF/CRLF 字节保持原样；迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
+- 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
 - 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 

@@ -2165,9 +2165,19 @@ def _harness_entry_pattern() -> re.Pattern[str]:
     )
 
 
-def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
-    """Find legacy wrapper sections only when their ownership signature is present."""
+def _consume_following_newlines(text: str, offset: int) -> int:
+    """Include wrapper-owned blank-line separators after a proven terminal."""
+    while offset < len(text) and text[offset] in "\r\n":
+        offset += 1
+    return offset
+
+
+def _wrapper_owned_section_analysis(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[str]]:
+    """Find proven wrapper spans and report owned sections with unproven endings."""
     spans: list[tuple[int, int]] = []
+    conflicts: list[str] = []
     signatures = {
         STATUS_SECTION_HEADING: (("Skill 入口 preflight", TARGET_WRAPPER_MANIFEST),),
         LEGACY_STATUS_SECTION_HEADING: (("Skill 入口 preflight", "wrapper"),),
@@ -2177,6 +2187,13 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
         ),
         WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-CoEvolve 追加",),),
         LEGACY_WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-wrapper 追加",),),
+    }
+    terminal_patterns = {
+        STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        LEGACY_STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        EVOLUTION_SECTION_HEADING: r"(?m)^Wrapper harness version:[^\r\n]*(?:\r?\n|$)",
+        WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
+        LEGACY_WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
     }
     headings = _markdown_headings(text)
     for index, (start, level, heading) in enumerate(headings):
@@ -2196,14 +2213,18 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
                 all(term in section for term in required_terms)
                 for required_terms in accepted_signatures
             ):
-                if heading in {STATUS_SECTION_HEADING, LEGACY_STATUS_SECTION_HEADING}:
-                    terminator = re.search(
-                        r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
-                        section,
+                terminator = re.search(terminal_patterns[heading], section)
+                if not terminator:
+                    conflicts.append(
+                        f"{heading} has a wrapper ownership signature but no terminal signature; "
+                        "restore the managed section or use an approved manual repair"
                     )
-                    if not terminator:
-                        continue
-                    span = (start, start + terminator.end())
+                    continue
+                span_end = _consume_following_newlines(
+                    text,
+                    start + terminator.end(),
+                )
+                span = (start, span_end)
                 spans.append(span)
             continue
         if not (
@@ -2214,13 +2235,33 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
         ):
             continue
         section = text[start:end]
-        if "Wrapper harness:" in section and "Target business rules were preserved" in section:
-            spans.append(span)
-    return sorted(set(spans))
+        if "Wrapper harness:" not in section or "- Layout:" not in section:
+            continue
+        terminator = re.search(
+            r"(?m)^- Target business rules were preserved\.[ \t]*(?:\r?\n|$)",
+            section,
+        )
+        if not terminator:
+            conflicts.append(
+                f"{heading} has a wrapper ownership signature but no terminal signature; "
+                "restore the managed note or use an approved manual repair"
+            )
+            continue
+        span_end = _consume_following_newlines(
+            text,
+            start + terminator.end(),
+        )
+        spans.append((start, span_end))
+    return sorted(set(spans)), list(dict.fromkeys(conflicts))
+
+
+def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
+    return _wrapper_owned_section_analysis(text)[0]
 
 
 def _has_canonical_harness_entry(text: str) -> bool:
     normalized = text.replace("\r\n", "\n")
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
     precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
@@ -2233,7 +2274,8 @@ def _has_canonical_harness_entry(text: str) -> bool:
         and normalized.count(HARNESS_ENTRY_END) == 1
         and build_harness_activation_block() in normalized
         and precedes_business
-        and not _wrapper_owned_section_spans(text)
+        and not owned_spans
+        and not owned_conflicts
     )
 
 
@@ -2258,7 +2300,10 @@ def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str)
         return False
 
     updated = _harness_entry_pattern().sub("", original)
-    for start, end in sorted(_wrapper_owned_section_spans(updated), reverse=True):
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(updated)
+    if owned_conflicts:
+        raise ValueError("cannot safely migrate instruction surface:\n- " + "\n- ".join(owned_conflicts))
+    for start, end in sorted(owned_spans, reverse=True):
         updated = updated[:start] + updated[end:]
 
     newline = "\r\n" if "\r\n" in original else "\n"
@@ -2520,6 +2565,11 @@ def plan_target_layout_migration(
                     conflicts.append(
                         f"instruction surface has an unbalanced canonical Harness entry: {instruction_surface}"
                     )
+                _, section_conflicts = _wrapper_owned_section_analysis(surface_text)
+                conflicts.extend(
+                    f"instruction surface {instruction_surface}: {conflict}"
+                    for conflict in section_conflicts
+                )
         harness_identity_fields = {
             "harness_skill_path",
             "harness_skill_version",

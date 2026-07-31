@@ -34,7 +34,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Record every wrapper migration under `.evozeus-wrapper/docs/migrations/` with from/to wrapper version, file moves, validation, and rollback.
 - Update `.evozeus-wrapper/wrapper.json` to `layout_version=2` only after all destination conflicts are cleared.
 - Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.
-- During legacy migration, remove only sections with a proven wrapper ownership signature and preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
+- During legacy migration, remove only sections with proven wrapper heading, ownership signature, and terminal signature; preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
 - Refresh the canonical Harness Skill, compact activation block, and manifest integration; require structure post-validation before reporting success.
 - Keep workflow validation active independently of optional Pages deployment; Pages requires `EVOZEUS_PAGES_ENABLED=true`.
 - Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.

@@ -532,6 +532,86 @@ def test_legacy_status_migration_preserves_business_without_h1_or_h2_boundary(
 
 
 @pytest.mark.parametrize(
+    ("owned_section", "owned_marker"),
+    [
+        (
+            build_evolution_section(replacements()),
+            "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环",
+        ),
+        (
+            build_wrapper_section(replacements()),
+            "本区由 EvoZeus-CoEvolve 追加",
+        ),
+        (
+            "## EvoZeus-CoEvolve Version Refresh Note: v0.13.0 -> v0.14.0\n\n"
+            "- Wrapper harness: `v0.13.0 -> v0.14.0`\n"
+            "- Layout: `consolidated-v2 -> consolidated-v2`\n"
+            "- Target business rules were preserved.\n",
+            "Version Refresh Note",
+        ),
+    ],
+    ids=["evolution", "wrapper", "migration-note"],
+)
+def test_wrapper_sections_stop_at_terminal_before_plain_or_h3_business(
+    tmp_path: Path,
+    owned_section: str,
+    owned_marker: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = "Owner paragraph after managed section.  \n\n### Owner Details\n\nKeep owner bytes.\n"
+    (target / "SKILL.md").write_text(
+        '---\nname: "example"\n---\n\n' + owned_section.rstrip() + "\n\n" + business,
+        encoding="utf-8",
+    )
+
+    migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
+    updated = (target / "SKILL.md").read_text(encoding="utf-8")
+
+    assert business in updated
+    assert owned_marker not in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+
+
+@pytest.mark.parametrize(
+    "truncated_section",
+    [
+        "## 自进化方法\n\n本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。\n",
+        "## EvoZeus-CoEvolve\n\n本区由 EvoZeus-CoEvolve 追加，用来说明 wrapper harness。\n",
+        (
+            "## EvoZeus-CoEvolve Version Refresh Note: v0.13.0 -> v0.14.0\n\n"
+            "- Wrapper harness: `v0.13.0 -> v0.14.0`\n"
+            "- Layout: `consolidated-v2 -> consolidated-v2`\n"
+        ),
+    ],
+    ids=["evolution", "wrapper", "migration-note"],
+)
+def test_owned_section_without_terminal_blocks_before_writing(
+    tmp_path: Path,
+    truncated_section: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    source = (
+        '---\nname: "example"\n---\n\n'
+        + truncated_section
+        + "\nOwner paragraph must not be guessed into the managed span.\n"
+    )
+    (target / "SKILL.md").write_text(source, encoding="utf-8")
+    copy_templates(target, replacements(), force=False)
+    write_manifest(target, legacy=True)
+    before = (target / "SKILL.md").read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="terminal signature"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert any("terminal signature" in conflict for conflict in plan["conflicts"])
+    assert plan["can_apply"] is False
+    assert (target / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize(
     ("field", "value", "message"),
     [
         ("harness_skill_path", "/tmp/evil/SKILL.md", "canonical"),

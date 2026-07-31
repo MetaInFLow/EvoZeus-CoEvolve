@@ -95,7 +95,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path
 python3 scripts/evozeus_wrapper.py harness upgrade --target /absolute/path/to/this-skill --latest-version <wrapper-version> --dry-run --json
 ```
 
-The migration plan must state the from/to wrapper version, canonical Harness Skill action, compact entry action, planned files, validation commands, and rollback plan. Legacy instruction sections are removable only when their wrapper ownership signature is proven; migration notes stay in `.evozeus-wrapper/docs/migrations/`.
+The migration plan must state the from/to wrapper version, canonical Harness Skill action, compact entry action, planned files, validation commands, and rollback plan. Legacy instruction sections are removable only when their wrapper heading, ownership signature, and terminal signature are all proven; migration notes stay in `.evozeus-wrapper/docs/migrations/`.
 
 ## Release Version Standard
 

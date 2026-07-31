@@ -105,16 +105,17 @@ Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / front
 
 ## 存量迁移算法
 
-1. 解析 instruction surface 的 Markdown heading 边界，跳过 frontmatter 与 fenced code。
+1. 解析 instruction surface 的 Markdown heading 候选边界，跳过 frontmatter 与 fenced code；Markdown EOF 不构成 wrapper 所有权证据。
 2. 仅当区块同时命中 wrapper heading 与 wrapper-owned signature 时，标记为可删除：
    - `EvoZeus-CoEvolve 状态检查` / legacy brand；
    - `自进化方法`；
    - `EvoZeus-CoEvolve` / legacy brand；
    - EvoZeus-owned Migration / Version Refresh Note。
-3. 从后向前删除已证明归属的区块，不改写边界外文本。
-4. 删除旧 managed activation block 后，在 frontmatter 或 H1 后插入 canonical 四行块。
-5. 写入 Harness Skill，刷新 manifest identity，生成 `.evozeus-wrapper/docs/migrations/` 记录。
-6. 运行 structure；失败时由现有 upgrade-all snapshot 事务恢复全部目标。
+3. 每类区块必须命中已知 terminal signature：状态段结束于“解决顺序/处理顺序/解决方法”，自进化段结束于 `Wrapper harness version:`，wrapper 段结束于 `manual_only`，migration note 结束于 `Target business rules were preserved.`。
+4. 从后向前删除 heading、ownership signature 与 terminal signature 共同证明的区块，不改写边界外文本。缺少 terminal signature 时迁移预检失败并提示 approved repair。
+5. 删除旧 managed activation block 后，在 frontmatter 或 H1 后插入 canonical 四行块。
+6. 写入 Harness Skill，刷新 manifest identity，生成 `.evozeus-wrapper/docs/migrations/` 记录。
+7. 运行 structure；失败时由现有 upgrade-all snapshot 事务恢复全部目标。
 
 无法证明归属的同名业务区块保持不动；迁移只围绕已证明的 wrapper 写集执行，禁止猜测删除。
 

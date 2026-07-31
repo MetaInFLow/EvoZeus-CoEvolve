@@ -366,8 +366,10 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "Target-owned content.\n\n"
                 "## 自进化方法\n\n"
                 "本 Skill 已由 EvoZeus-wrapper 接入自进化闭环。\n\n"
+                "Wrapper harness version: `v0.10.1`\n\n"
                 "## EvoZeus-wrapper\n\n"
-                "本区由 EvoZeus-wrapper 追加，用来说明 wrapper harness。\n",
+                "本区由 EvoZeus-wrapper 追加，用来说明 wrapper harness。\n\n"
+                "- `manual_only`：只能手动运行 wrapper 命令。\n",
                 encoding="utf-8",
             )
 
