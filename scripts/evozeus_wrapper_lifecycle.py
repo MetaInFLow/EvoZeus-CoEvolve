@@ -2295,20 +2295,59 @@ def _frontmatter_end(text: str) -> int:
     else:
         return 0
 
+    def mapping_key_separator(line: str) -> int | None:
+        quote: str | None = None
+        escaped = False
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ":" and (index + 1 == len(line) or line[index + 1] in " \t"):
+                return index if line[:index].strip() else None
+        return None
+
     saw_mapping_key = False
-    key_pattern = re.compile(
-        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
-    )
+    explicit_key = False
+    mapping_tag = False
+    allows_indentless_sequence = False
     for line in body_lines:
-        if not line.strip() or line.lstrip().startswith("#"):
+        stripped = line.strip()
+        if not stripped or line.lstrip().startswith("#"):
             continue
-        if line.startswith((" ", "\t")) and saw_mapping_key:
-            continue
-        if key_pattern.match(line):
+        if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
             saw_mapping_key = True
             continue
+        if stripped == "!!map" and not saw_mapping_key:
+            mapping_tag = True
+            continue
+        if line.startswith((" ", "\t")) and (saw_mapping_key or mapping_tag):
+            continue
+        if allows_indentless_sequence and (line == "-" or line.startswith("- ")):
+            continue
+        if line.startswith("? "):
+            explicit_key = True
+            continue
+        if explicit_key and (line == ":" or line.startswith(": ")):
+            saw_mapping_key = True
+            explicit_key = False
+            continue
+        separator = mapping_key_separator(line)
+        if separator is not None:
+            saw_mapping_key = True
+            allows_indentless_sequence = not line[separator + 1 :].strip()
+            continue
         return 0
-    if saw_mapping_key:
+    if saw_mapping_key and not explicit_key:
         return offset
     return 0
 
@@ -2405,19 +2444,14 @@ def _harness_entry_pattern() -> re.Pattern[str]:
 def _mask_markdown_fenced_code(text: str) -> str:
     """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
-    offset = 0
-    frontmatter_end = _frontmatter_end(text)
     fence: tuple[str, int] | None = None
+    html_block: tuple[str, re.Pattern[str] | None] | None = None
 
     def mask_line(line: str) -> str:
         return "".join(character if character in "\r\n" else " " for character in line)
 
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
-        if offset < frontmatter_end:
-            masked.append(mask_line(line))
-            offset += len(line)
-            continue
         if fence:
             fence_char, minimum_length = fence
             if re.match(
@@ -2426,18 +2460,64 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 fence = None
             masked.append(mask_line(line))
-            offset += len(line)
+            continue
+        if html_block:
+            mode, end_pattern = html_block
+            if (mode == "blank" and not content.strip()) or (
+                end_pattern is not None and end_pattern.search(content)
+            ):
+                html_block = None
+            masked.append(mask_line(line))
             continue
         fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
         if fence_match:
             marker = fence_match.group(1)
             fence = (marker[0], len(marker))
             masked.append(mask_line(line))
+        elif re.fullmatch(
+            rf"(?:{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*",
+            content,
+        ):
+            masked.append(line)
+        elif html_match := re.match(
+            r"^[ ]{0,3}<(script|pre|style|textarea)(?:[ \t>]|$)",
+            content,
+            re.IGNORECASE,
+        ):
+            end_pattern = re.compile(rf"</{html_match.group(1)}[ \t]*>", re.IGNORECASE)
+            if not end_pattern.search(content[html_match.end() :]):
+                html_block = ("pattern", end_pattern)
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!--", content):
+            if "-->" not in content[content.find("<!--") + 4 :]:
+                html_block = ("pattern", re.compile(r"-->"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<\?", content):
+            if "?>" not in content[content.find("<?") + 2 :]:
+                html_block = ("pattern", re.compile(r"\?>"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<![A-Z]", content):
+            if ">" not in content[content.find("<!") + 2 :]:
+                html_block = ("pattern", re.compile(r">"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!\[CDATA\[", content):
+            if "]]>" not in content[content.find("<![CDATA[") + 9 :]:
+                html_block = ("pattern", re.compile(r"\]\]>"))
+            masked.append(mask_line(line))
+        elif re.match(
+            r"^[ ]{0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)",
+            content,
+            re.IGNORECASE,
+        ) or re.fullmatch(
+            r"[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[^<>]*)?/?>[ \t]*",
+            content,
+        ):
+            html_block = ("blank", None)
+            masked.append(mask_line(line))
         elif re.match(r"^(?: {4,}|\t)", content):
             masked.append(mask_line(line))
         else:
             masked.append(line)
-        offset += len(line)
     return "".join(masked)
 
 
