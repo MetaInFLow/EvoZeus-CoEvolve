@@ -2321,10 +2321,12 @@ def _refresh_migration_instruction_surface(
 def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     manifest_status = wrapper_manifest_status(target)
-    if manifest_status["current_manifest_detected"] and not manifest_status["legacy_manifest_detected"]:
-        current_manifest = _read_manifest_json(wrapper_manifest_path(target))
-        if current_manifest.get("layout_version") == 2:
-            return grouped
+    if (
+        manifest_status["current_manifest_detected"]
+        and not manifest_status["legacy_manifest_detected"]
+        and _read_manifest_json(wrapper_manifest_path(target)).get("layout_version") == 2
+    ):
+        return grouped
 
     def add(source: Path, destination: str) -> None:
         if source.is_file():
@@ -2782,10 +2784,11 @@ def migrate_target_layout(
             destination.parent.mkdir(parents=True, exist_ok=True)
             source.replace(destination)
             actions.append(f"move {move['source']} -> {move['destination']}")
-            changed_files.append(move["destination"])
+            changed_files.extend([move["source"], move["destination"]])
         else:
             source.unlink()
             actions.append(f"remove duplicate {move['source']}")
+            changed_files.append(move["source"])
 
     for path in target_infra_text_files(target):
         if rewrite_target_infra_text_file(path):

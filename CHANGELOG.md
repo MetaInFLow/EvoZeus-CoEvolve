@@ -21,8 +21,9 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Verification
 
 - Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
-- Full regression suite passes with `187 passed` and `8 subtests passed`.
-- A disposable copy of `MetaInFLow/diagnose-enterprise-ai-scenarios` migrated from the three legacy blocks to one canonical activation block, passed structure validation, and preserved the complete business section byte-for-byte.
+- Full regression suite passes with `189 passed` and `8 subtests passed`.
+- A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
+- Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
 
 ## [v0.14.0] - 2026-07-30
 

@@ -1115,6 +1115,8 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "move .evozeus/wrapper.json -> .evozeus-wrapper/wrapper.json",
                 report["actions"],
             )
+            self.assertIn(".evozeus/wrapper.json", report["changed_files"])
+            self.assertIn(TARGET_WRAPPER_MANIFEST, report["changed_files"])
             self.assertFalse((target / ".evozeus").exists())
             self.assertTrue((target / TARGET_WRAPPER_MANIFEST).is_file())
             self.assertEqual(manifest["wrapper_version"], "v0.9.1")
@@ -1140,6 +1142,59 @@ class LifecycleBasicsTest(unittest.TestCase):
                 (target / ".github/workflows/evozeus-wrapper-preflight.yml").read_text(encoding="utf-8"),
             )
             self.assertFalse(wrapper_manifest_status(target)["migration_required"])
+
+    def test_migration_changed_files_include_removed_duplicate_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            legacy_manifest = target / LEGACY_TARGET_WRAPPER_MANIFEST
+            current_manifest = target / TARGET_WRAPPER_MANIFEST
+            current_manifest.parent.mkdir(parents=True)
+            current_manifest.write_bytes(legacy_manifest.read_bytes())
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target),
+                    "-c",
+                    "user.name=EvoZeus Test",
+                    "-c",
+                    "user.email=evozeus@example.invalid",
+                    "commit",
+                    "-qm",
+                    "legacy fixture",
+                ],
+                check=True,
+            )
+
+            report = migrate_target_layout(
+                target,
+                latest_version="v0.14.0",
+                today=date(2026, 7, 31),
+            )
+
+            self.assertIn(
+                f"remove duplicate {LEGACY_TARGET_WRAPPER_MANIFEST}",
+                report["actions"],
+            )
+            self.assertIn(LEGACY_TARGET_WRAPPER_MANIFEST, report["changed_files"])
+            self.assertIn(TARGET_WRAPPER_MANIFEST, report["changed_files"])
+            self.assertFalse(legacy_manifest.exists())
+            changed_in_git = {
+                line[3:]
+                for line in subprocess.run(
+                    ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all"],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.splitlines()
+                if line
+            }
+            self.assertTrue(changed_in_git)
+            self.assertLessEqual(changed_in_git, set(report["changed_files"]))
 
     def test_migrate_target_layout_seeds_policies_when_oldest_layout_lacks_them(self):
         with tempfile.TemporaryDirectory() as tmp:

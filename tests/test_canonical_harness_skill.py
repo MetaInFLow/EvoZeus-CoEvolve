@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -399,6 +400,69 @@ def test_legacy_three_block_migration_preserves_business_bytes_and_stops_note_gr
     assert b"Version Refresh Note" not in updated
     second = plan_target_layout_migration(target, latest_version="v0.14.0", today=date(2026, 8, 1))
     assert second["migration_required"] is False
+
+
+def test_public_232_line_golden_fixture_preserves_business_contract_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    fixture_dir = ROOT / "tests/fixtures/diagnose-enterprise-ai-scenarios"
+    provenance = json.loads((fixture_dir / "source.json").read_text(encoding="utf-8"))
+    original = (fixture_dir / "SKILL.md").read_bytes()
+    assert provenance == {
+        "schema_version": "evozeus.coevolve.public-golden-fixture.v1",
+        "source_repo": "MetaInFLow/diagnose-enterprise-ai-scenarios",
+        "source_url": "https://github.com/MetaInFLow/diagnose-enterprise-ai-scenarios",
+        "source_commit": "ee2bd6e8232d14ad9070b4ee7875595e9e8e4a4f",
+        "source_path": "SKILL.md",
+        "sha256": "22b519a18fa4ec9b5ed1a892cd1895c1b68b84366c1286af8f8a403f35d79a04",
+        "line_count": 232,
+        "captured_at": "2026-07-31",
+        "purpose": "Issue #38 canonical Harness Skill migration golden fixture",
+    }
+    assert hashlib.sha256(original).hexdigest() == provenance["sha256"]
+    assert len(original.splitlines()) == provenance["line_count"]
+
+    business_start = original.index("# 企业 AI 场景诊断".encode())
+    business_end = original.index("## 自进化方法".encode(), business_start)
+    business_contract = original[business_start:business_end]
+    target = tmp_path / "diagnose-enterprise-ai-scenarios"
+    target.mkdir()
+    (target / "SKILL.md").write_bytes(original)
+    values = {
+        **replacements(),
+        "REPO_NAME": "MetaInFLow/diagnose-enterprise-ai-scenarios",
+        "REPO_URL": "https://github.com/MetaInFLow/diagnose-enterprise-ai-scenarios",
+        "SKILL_NAME": "diagnose-enterprise-ai-scenarios",
+    }
+    copy_templates(target, values, force=False)
+    manifest = build_wrapper_manifest(
+        values["REPO_NAME"],
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+    for field in ("harness_skill_path", "harness_skill_version", "harness_skill_managed"):
+        manifest.pop(field)
+    write_wrapper_manifest(target, manifest, force=True)
+
+    report = migrate_target_layout(
+        target,
+        latest_version="v0.14.0",
+        today=date(2026, 7, 31),
+    )
+    updated = (target / "SKILL.md").read_bytes()
+
+    assert report["validation"]["structure"] == "passed"
+    assert updated.count(business_contract) == 1
+    for contract_heading in ["## 输入", "## 工作流", "## 输出合同", "## 质量门禁", "## 示例调用"]:
+        assert contract_heading.encode() in business_contract
+        assert contract_heading.encode() in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN.encode()) == 1
+    assert "## EvoZeus-CoEvolve 状态检查".encode() not in updated
+    assert "## 自进化方法".encode() not in updated
+    assert "## EvoZeus-CoEvolve\n".encode() not in updated
+    assert run_structure(target).returncode == 0
 
 
 def test_target_owned_self_evolution_heading_is_not_deleted(tmp_path: Path) -> None:
