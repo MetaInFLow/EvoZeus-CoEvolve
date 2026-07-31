@@ -361,14 +361,21 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "## EvoZeus-wrapper 状态检查\n\n"
                 "Skill 入口 preflight for the wrapper contract.\n"
                 ".evozeus-wrapper/wrapper.json\n\n"
+                "3. Source contract 状态\n"
+                "   - 检查命令：`python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/example`\n"
+                "   - 如果 `~/.evozeus/.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。\n\n"
                 "解决顺序：完成只读检查后进入业务主链路。\n\n"
                 "# Target Skill Title\n\n"
                 "Target-owned content.\n\n"
                 "## 自进化方法\n\n"
                 "本 Skill 已由 EvoZeus-wrapper 接入自进化闭环。\n\n"
+                "Visibility: `public`\n"
+                "Current Skill version: `v0.1.0`\n"
                 "Wrapper harness version: `v0.10.1`\n\n"
                 "## EvoZeus-wrapper\n\n"
                 "本区由 EvoZeus-wrapper 追加，用来说明 wrapper harness。\n\n"
+                "- `bootstrap_skill`：插件 Skill 基础设施可加载控制 Skill，但没有检测到宿主 lifecycle hook。\n"
+                "- `prompt_runtime_check`：说明入口要求 agent 执行检查，依赖 prompt compliance。\n"
                 "- `manual_only`：只能手动运行 wrapper 命令。\n",
                 encoding="utf-8",
             )

@@ -612,6 +612,61 @@ def test_owned_section_without_terminal_blocks_before_writing(
 
 
 @pytest.mark.parametrize(
+    "ambiguous_section",
+    [
+        (
+            "## EvoZeus-CoEvolve 状态检查\n\n"
+            "本段是 Skill 入口 preflight，事实源为 "
+            ".evozeus-wrapper/wrapper.json。\n\n"
+            "Owner business guidance must survive.\n"
+            "解决方法：按客户规则处理。\n"
+        ),
+        (
+            "## 自进化方法\n\n"
+            "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。\n\n"
+            "Owner business version example must survive.\n"
+            "Wrapper harness version: `v0.14.0`\n"
+        ),
+        (
+            "## EvoZeus-CoEvolve\n\n"
+            "本区由 EvoZeus-CoEvolve 追加，用来说明 wrapper harness。\n\n"
+            "Owner business mode example must survive.\n"
+            "- `manual_only`：客户流程只能人工执行。\n"
+        ),
+        (
+            "## EvoZeus-CoEvolve Version Refresh Note: v0.13.0 -> v0.14.0\n\n"
+            "- Wrapper harness: `v0.13.0 -> v0.14.0`\n"
+            "- Layout: `consolidated-v2 -> consolidated-v2`\n"
+            "Owner business migration note must survive.\n"
+            "- Target business rules were preserved.\n"
+        ),
+    ],
+    ids=["status", "evolution", "wrapper", "migration-note"],
+)
+def test_business_terminal_text_cannot_complete_a_truncated_managed_section(
+    tmp_path: Path,
+    ambiguous_section: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text(
+        '---\nname: "example"\n---\n\n' + ambiguous_section,
+        encoding="utf-8",
+    )
+    copy_templates(target, replacements(), force=False)
+    write_manifest(target, legacy=True)
+    before = (target / "SKILL.md").read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="terminal signature"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert any("terminal signature" in conflict for conflict in plan["conflicts"])
+    assert plan["can_apply"] is False
+    assert (target / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize(
     ("field", "value", "message"),
     [
         ("harness_skill_path", "/tmp/evil/SKILL.md", "canonical"),
