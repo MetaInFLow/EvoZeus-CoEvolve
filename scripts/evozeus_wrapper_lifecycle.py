@@ -2070,10 +2070,30 @@ def _frontmatter_end(text: str) -> int:
     if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
         return 0
     offset = len(lines[0])
+    body_lines: list[str] = []
     for line in lines[1:]:
         offset += len(line)
         if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
-            return offset
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    saw_mapping_key = False
+    key_pattern = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
+    )
+    for line in body_lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith((" ", "\t")) and saw_mapping_key:
+            continue
+        if key_pattern.match(line):
+            saw_mapping_key = True
+            continue
+        return 0
+    if saw_mapping_key:
+        return offset
     return 0
 
 

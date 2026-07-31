@@ -772,13 +772,38 @@ def check_terms(text: str, term_groups: list[list[str]], label: str) -> None:
         fail(f"{label} missing required concepts: {', '.join(missing)}")
 
 
+def _frontmatter_end(text: str) -> int:
+    lines = text.splitlines(keepends=True)
+    if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
+        return 0
+    offset = len(lines[0])
+    body_lines: list[str] = []
+    for line in lines[1:]:
+        offset += len(line)
+        if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    saw_mapping_key = False
+    key_pattern = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
+    )
+    for line in body_lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith((" ", "\t")) and saw_mapping_key:
+            continue
+        if key_pattern.match(line):
+            saw_mapping_key = True
+            continue
+        return 0
+    return offset if saw_mapping_key else 0
+
+
 def content_after_frontmatter(text: str) -> str:
-    if not re.match(r"\A---[ \t]*\r?\n", text):
-        return text
-    match = re.match(r"\A---[ \t]*\r?\n.*?\r?\n(?:---|\.\.\.)[ \t]*\r?\n", text, re.DOTALL)
-    if not match:
-        return text
-    return text[match.end() :]
+    return text[_frontmatter_end(text) :]
 
 
 def check_status_prelude(skill_text: str, label: str = "SKILL.md") -> None:
