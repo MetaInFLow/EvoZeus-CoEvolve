@@ -247,6 +247,38 @@ function liveRemoteBranch(root, remote, targetBranch, runner) {
   return { available: true, commit: matches[0][0].toLowerCase(), reason: null };
 }
 
+function liveRemoteTargetBranch(root, remote, targetBranch, runner) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const parts = targetBranch.split("/");
+  const prefixRefs = parts.slice(0, -1).map((_, index) => `refs/heads/${parts.slice(0, index + 1).join("/")}`);
+  const patterns = [...prefixRefs, targetRef, `${targetRef}/*`];
+  const result = git(root, ["ls-remote", "--exit-code", "--heads", remote, ...patterns], runner);
+  if (result.status === 2) return { available: true, commit: null, namespace_conflicts: [], reason: null };
+  if (result.status !== 0) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_failed" };
+  }
+  const matches = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split(/\s+/));
+  if (
+    matches.length === 0
+    || matches.some(([commit, ref]) => !/^[0-9a-f]{40,64}$/i.test(commit) || !ref?.startsWith("refs/heads/"))
+  ) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_invalid" };
+  }
+  const exact = matches.filter(([, ref]) => ref === targetRef);
+  const conflicts = matches
+    .map(([, ref]) => ref)
+    .filter((ref) => ref !== targetRef && (targetRef.startsWith(`${ref}/`) || ref.startsWith(`${targetRef}/`)));
+  if (exact.length > 1 || conflicts.length !== matches.length - exact.length) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_invalid" };
+  }
+  return {
+    available: true,
+    commit: exact[0]?.[0].toLowerCase() ?? null,
+    namespace_conflicts: [...new Set(conflicts)].sort(),
+    reason: null
+  };
+}
+
 function remoteForRepository(root, repository, runner) {
   if (typeof repository !== "string" || !repository) {
     return { available: false, name: null, repository: null, reason: "target_repository_missing" };
@@ -275,6 +307,7 @@ export function collectGitFacts(
   baseRef,
   targetBranch,
   requestedWorktree,
+  canonicalRepository,
   targetRepository,
   runner = spawnSync
 ) {
@@ -301,11 +334,19 @@ export function collectGitFacts(
   const originPushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", "origin"], false, runner) || "")
     .split(/\r?\n/)
     .filter(Boolean);
+  const originRepo = githubRepoFromRemote(originUrl);
+  const originPushRepos = originPushUrls.map((url) => githubRepoFromRemote(url));
+  const originIdentityValid = typeof canonicalRepository === "string"
+    && originRepo?.toLowerCase() === canonicalRepository.toLowerCase();
   const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false, runner);
   const baseBranch = baseRef.startsWith("origin/") ? baseRef.slice("origin/".length) : null;
-  const baseRemote = baseBranch
+  const baseRemote = baseBranch && originIdentityValid
     ? liveRemoteBranch(root, "origin", baseBranch, runner)
-    : { available: false, commit: null, reason: "unsupported_base_remote" };
+    : {
+      available: false,
+      commit: null,
+      reason: baseBranch ? "origin_identity_invalid" : "unsupported_base_remote"
+    };
   const localCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false, runner)
     : null;
@@ -313,15 +354,19 @@ export function collectGitFacts(
   const localBranchRefs = localBranchRefsText === null
     ? null
     : localBranchRefsText.split(/\r?\n/).filter(Boolean);
-  const originRepo = githubRepoFromRemote(originUrl);
-  const targetRemote = targetRepository?.toLowerCase() === originRepo?.toLowerCase()
-    ? { available: true, name: "origin", repository: targetRepository, reason: null }
+  const targetIsCanonical = typeof targetRepository === "string"
+    && typeof canonicalRepository === "string"
+    && targetRepository.toLowerCase() === canonicalRepository.toLowerCase();
+  const targetRemote = targetIsCanonical
+    ? (originIdentityValid
+      ? { available: true, name: "origin", repository: targetRepository, reason: null }
+      : { available: false, name: null, repository: targetRepository, reason: "origin_identity_invalid" })
     : remoteForRepository(root, targetRepository, runner);
   const remoteBranch = targetBranch && targetRemote.available
-    ? { ...liveRemoteBranch(root, targetRemote.name, targetBranch, runner), remote: targetRemote.name }
+    ? { ...liveRemoteTargetBranch(root, targetRemote.name, targetBranch, runner), remote: targetRemote.name }
     : targetBranch
-      ? { available: false, commit: null, reason: targetRemote.reason, remote: null }
-    : { available: true, commit: null, reason: null };
+      ? { available: false, commit: null, namespace_conflicts: [], reason: targetRemote.reason, remote: null }
+      : { available: true, commit: null, namespace_conflicts: [], reason: null };
   const remoteCommit = remoteBranch.commit;
   const targetCommit = localCommit || remoteCommit;
   const targetDescendsFromBase = Boolean(
@@ -333,7 +378,7 @@ export function collectGitFacts(
     root,
     origin_url: originUrl,
     origin_repo: originRepo,
-    origin_push_repos: originPushUrls.map((url) => githubRepoFromRemote(url)),
+    origin_push_repos: originPushRepos,
     head: gitText(root, ["rev-parse", "HEAD"], true, runner),
     current_branch: gitText(root, ["branch", "--show-current"], false, runner),
     dirty_entries: currentStatus.dirty_entries,
@@ -590,6 +635,8 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   }
   if (!facts.target_remote_status?.available) {
     addBlocker(blockers, "target_remote_status_unavailable", "target branch state cannot be verified from the effective origin");
+  } else if (facts.target_remote_status.namespace_conflicts?.length > 0) {
+    addBlocker(blockers, "target_remote_namespace_collision", "a live remote branch occupies a prefix or descendant of the generated target");
   }
   if (
     facts.target_local_commit
@@ -735,6 +782,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       remote_name: facts.target_remote?.name ?? null,
       remote_repository: facts.target_remote?.repository ?? null,
       remote_commit: facts.target_remote_commit,
+      remote_namespace_conflicts: facts.target_remote_status?.namespace_conflicts ?? [],
       remote_status_available: Boolean(facts.target_remote_status?.available),
       remote_status_reason: facts.target_remote_status?.reason ?? null
     },
@@ -860,6 +908,7 @@ function main() {
       options.base,
       provisionalBranch,
       options.worktree,
+      options.repo,
       provisionalRepository
     );
     const parsedIssue = parseIssue(options.issue, options.repo);

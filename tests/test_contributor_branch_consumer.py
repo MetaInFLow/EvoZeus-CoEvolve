@@ -138,9 +138,16 @@ args = sys.argv[1:]
 if "ls-remote" in args:
     if os.environ.get("FAKE_GIT_REMOTE_UNAVAILABLE") == "1":
         raise SystemExit(1)
-    ref = args[-1]
-    branch = ref.removeprefix("refs/heads/")
-    if branch in {"main", "master", "uat/current"}:
+    command_index = args.index("ls-remote")
+    remote_index = command_index + 1
+    while args[remote_index].startswith("--"):
+        remote_index += 1
+    patterns = args[remote_index + 1:]
+    refs = {}
+    for branch in {"main", "master", "uat/current"}:
+        ref = f"refs/heads/{branch}"
+        if ref not in patterns:
+            continue
         commit = os.environ.get("FAKE_GIT_BASE_HEAD")
         if not commit:
             repo = args[args.index("-C") + 1]
@@ -151,10 +158,26 @@ if "ls-remote" in args:
                 check=False,
             )
             commit = result.stdout.strip() if result.returncode == 0 else None
-    else:
-        commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
-    if commit:
-        print(f"{commit}\\t{ref}")
+        if commit:
+            refs[ref] = commit
+    remote_commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
+    if remote_commit and not refs:
+        remote_branch = os.environ.get("FAKE_GIT_REMOTE_BRANCH")
+        if remote_branch:
+            remote_ref = f"refs/heads/{remote_branch}"
+        else:
+            exact_patterns = [pattern for pattern in patterns if not pattern.endswith("/*")]
+            remote_ref = exact_patterns[-1]
+        refs[remote_ref] = remote_commit
+    matches = []
+    for ref, commit in refs.items():
+        if any(
+            ref.startswith(pattern[:-1]) if pattern.endswith("/*") else ref == pattern
+            for pattern in patterns
+        ):
+            matches.append(f"{commit}\\t{ref}")
+    if matches:
+        print("\\n".join(sorted(matches)))
         raise SystemExit(0)
     raise SystemExit(2)
 os.execv(real_git, [real_git, *args])
@@ -677,6 +700,22 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     )
     assert live_code == 2
     assert "branch_collision" in blocker_codes(live)
+
+    remote_namespace_root = tmp_path / "remote-namespace-conflict"
+    remote_namespace_root.mkdir()
+    remote_namespace_repo = create_repo(remote_namespace_root)
+    remote_namespace, remote_namespace_code = execute_plan(
+        remote_namespace_repo,
+        remote_namespace_root / "worktree",
+        ledger_root,
+        planner_env(
+            binary_dir,
+            FAKE_GIT_REMOTE_BRANCH="codex/bug",
+            FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_namespace_repo),
+        ),
+    )
+    assert remote_namespace_code == 2
+    assert "target_remote_namespace_collision" in blocker_codes(remote_namespace)
 
     remote_only_root = tmp_path / "remote-only-resume"
     remote_only_root.mkdir()
