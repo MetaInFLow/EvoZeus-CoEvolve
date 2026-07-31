@@ -20,10 +20,10 @@ from typing import Any
 PROFILE = "coevolve_target_skillware_consumer"
 PROVENANCE_SCHEMA = "evozeus.coevolve.contributor-branch-snapshot-provenance.v1"
 CONTRACT_ID = "evozeus.contributor_branch"
-CONTRACT_VERSION = "1.2.0"
-CORE_REVISION = "f4e522fa8e33fbd30f3545aa1dec818c6643b6a9"
-CONTRACT_SHA256 = "84afd24e48394197e19d2f8bed761fd2fbbd8b349e649e220334cd85ff399f86"
-PLANNER_SHA256 = "be8970fb8098fc5cde5520270e7bacc5391d724d2d4691f7900f245aafdbdd12"
+CONTRACT_VERSION = "1.3.0"
+CORE_REVISION = "5ccddc77a77e8dbe02dde54e4588a01a25ebce7a"
+CONTRACT_SHA256 = "1d7a1b3221d59541475940a786e441bca5e56a33e8126c71b9e4c849218aaa7b"
+PLANNER_SHA256 = "90cda1a05f98f15d861d73b5bcb2d1939817950f3378bae56871db402464795e"
 CONTRACT_RELATIVE_PATH = Path("contracts/v1/contributor-branch-contract.json")
 PROVENANCE_RELATIVE_PATH = Path("contracts/v1/contributor-branch-provenance.json")
 PLANNER_RELATIVE_PATH = Path("scripts/evozeus-branch-preflight.mjs")

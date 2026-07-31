@@ -48,7 +48,7 @@
 - blockers 清空后仍需 branch/worktree 单独授权。增加 `--approve-save-plan` 只保存 owner-only 本地 ledger；分支、worktree、commit、push 与 PR 按各自授权执行。
 - 每位参与者使用独立 branch/worktree；canonical checkout 保持 clean。后续动作通过 `--resume-plan` 重新取实时证据并核对完整身份；未重传 `--date` 时从 purpose 匹配的 validated ledger target branch 恢复原日期。Ownership 时间窗超期且身份完全匹配时，Owner 显式增加 `--reconfirm-owner`；refreshed ledger 仍须通过 `--approve-save-plan` 单独保存。
 - Issue 后续发生编辑、关闭、转移、重新打开或分类标签变化时，trusted issue job 会重跑精确关联的开放 PR gate；PR required check 以最新 live Issue evidence 为准。
-- Direct 只对未 archived/disabled 的可写 Repo 成立；有效 origin fetch/push URL（含 Git URL rewrite）必须全部匹配声明的 exact GitHub Repo。无法证明 direct/fork 时权限路径进入 local patch；push 与 PR 保持禁用。Issue 无法 live 验证为同 Repo 的 OPEN Skill Feedback Issue 时，计划整体阻断。
+- Target branch 包含 verified actor；Direct 只对未 archived/disabled 的可写 Repo 成立。有效 origin fetch/push URL（含 Git URL rewrite）必须全部匹配声明的 exact GitHub Repo，target branch 使用 live remote 取证；本地/remote 分叉或 requested resume worktree dirty/status 不可用时阻断。无法证明 direct/fork 时权限路径进入 local patch；push 与 PR 保持禁用。Issue 无法 live 验证为同 Repo 的 OPEN Skill Feedback Issue 时，计划整体阻断。
 - 业务 PR 由 base-SHA `pull_request_target` validator 读取候选数据并重算 plan identity；候选脚本不执行。官方 Harness upgrade 走 direct + live ADMIN + published Stable Release + restricted diff 专用 gate，不要求业务 Contributor Plan。
 
 ## Dashboard

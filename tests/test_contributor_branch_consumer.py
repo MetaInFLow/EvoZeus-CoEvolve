@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "templates" / "target"
 REPO = "MetaInFLow/example-skill"
 FIXED_DATE = "20260731"
-TARGET_BRANCH = "codex/bug/20260731-skill-fix-feedback-flow"
+TARGET_BRANCH = "codex/bug/20260731-alice-skill-fix-feedback-flow"
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:
@@ -123,6 +123,30 @@ raise SystemExit(1)
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git_wrapper = binary_dir / "git"
+    git_wrapper.write_text(
+        """#!/usr/bin/env python3
+import os
+import sys
+
+real_git = __REAL_GIT__
+args = sys.argv[1:]
+if "ls-remote" in args:
+    if os.environ.get("FAKE_GIT_REMOTE_UNAVAILABLE") == "1":
+        raise SystemExit(1)
+    ref = args[-1]
+    commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
+    if commit:
+        print(f"{commit}\\t{ref}")
+        raise SystemExit(0)
+    raise SystemExit(2)
+os.execv(real_git, [real_git, *args])
+""".replace("__REAL_GIT__", repr(real_git)),
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o755)
     return binary_dir
 
 
@@ -328,7 +352,7 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
         (("actor", "id"), "mallory"),
         (("base", "ref"), "origin/master"),
         (("base", "commit"), "0" * 40),
-        (("branch", "target"), "codex/bug/20260731-skill-other"),
+        (("branch", "target"), "codex/bug/20260731-alice-skill-other"),
         (("permission_path", "resolved"), "fork"),
     ]
     for keys, value in identity_mutations:
@@ -587,16 +611,86 @@ def test_core_snapshot_rejects_redirected_push_and_archived_direct(tmp_path: Pat
     assert "permission_expectation_mismatch" in blocker_codes(archived)
 
 
+def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    actor_root = tmp_path / "actor"
+    actor_root.mkdir()
+    actor_repo = create_repo(actor_root)
+    alice, alice_code = execute_plan(
+        actor_repo,
+        actor_root / "alice-worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    bob, bob_code = execute_plan(
+        actor_repo,
+        actor_root / "bob-worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GH_LOGIN="bob"),
+        actor="bob",
+    )
+    assert alice_code == 0
+    assert bob_code == 0
+    assert alice["branch"]["target"] != bob["branch"]["target"]
+    assert "-alice-skill-" in alice["branch"]["target"]
+    assert "-bob-skill-" in bob["branch"]["target"]
+
+    remote_root = tmp_path / "live-remote"
+    remote_root.mkdir()
+    remote_repo = create_repo(remote_root)
+    live, live_code = execute_plan(
+        remote_repo,
+        remote_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_repo)),
+    )
+    assert live_code == 2
+    assert "branch_collision" in blocker_codes(live)
+
+    dirty_root = tmp_path / "dirty-resume"
+    dirty_root.mkdir()
+    dirty_repo = create_repo(dirty_root)
+    dirty_worktree = dirty_root / "worktree"
+    initial, initial_code = execute_plan(
+        dirty_repo,
+        dirty_worktree,
+        ledger_root,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert initial_code == 0
+    run(["git", "worktree", "add", "-b", initial["branch"]["target"], str(dirty_worktree), "origin/main"], dirty_repo)
+    (dirty_worktree / "untracked.txt").write_text("unknown edits\n", encoding="utf-8")
+    resumed, resumed_code = execute_plan(
+        dirty_repo,
+        dirty_worktree,
+        ledger_root,
+        planner_env(binary_dir),
+        resume_plan=initial["ledger"]["path"],
+    )
+    assert resumed_code == 2
+    assert "requested_worktree_dirty" in blocker_codes(resumed)
+    assert resumed["worktree"]["registered"] is False
+
+
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:
     missing_root = tmp_path / "missing-gh"
     missing_root.mkdir()
     missing_repo = create_repo(missing_root)
     isolated_bin = missing_root / "isolated-bin"
     isolated_bin.mkdir()
-    for command in ("git", "node"):
-        executable = shutil.which(command)
-        assert executable
-        (isolated_bin / command).symlink_to(executable)
+    fake_tools_root = missing_root / "fake-tools"
+    fake_tools_root.mkdir()
+    fake_tools = fake_github_bin(fake_tools_root)
+    (isolated_bin / "git").symlink_to(fake_tools / "git")
+    node = shutil.which("node")
+    assert node
+    (isolated_bin / "node").symlink_to(node)
+    python = shutil.which("python3")
+    assert python
+    (isolated_bin / "python3").symlink_to(python)
     missing_env = {**os.environ, "PATH": str(isolated_bin)}
     missing, missing_code = execute_plan(
         missing_repo,
@@ -921,7 +1015,7 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
 
     mismatches = (
         {"github_repository": "MetaInFLow/other-skill"},
-        {"github_head_ref": "codex/bug/20260731-skill-other"},
+        {"github_head_ref": "codex/bug/20260731-alice-skill-other"},
         {"github_head_repo": "mallory/example-skill"},
         {"github_actor": "mallory"},
         {"github_base_ref": "master"},

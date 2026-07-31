@@ -25,9 +25,9 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `f4e522fa8e33fbd30f3545aa1dec818c6643b6a9`：
+权威文件来自 EvoZeus Core revision `5ccddc77a77e8dbe02dde54e4588a01a25ebce7a`：
 
-- contract：`evozeus.contributor_branch` `1.2.0`
+- contract：`evozeus.contributor_branch` `1.3.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
 - canonical contract `$id`：`https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json`
 
@@ -37,7 +37,7 @@ CoEvolve 在目标模板中保存 byte-for-byte snapshot 和 provenance。Consum
 
 1. Feedback Issue 已存在，用户另行授权实现。
 2. Consumer 读取目标 manifest 的 canonical Repo 与受管资产路径。
-3. Core planner 实时读取 Git worktree/base/branch 状态、有效 fetch/push 目标、GitHub identity、viewer permission、Repo archived/disabled 状态、fork policy 与 Issue evidence。
+3. Core planner 实时读取 Git worktree/base/branch 状态、有效 fetch/push 目标、live remote target branch、GitHub identity、viewer permission、Repo archived/disabled 状态、fork policy 与 Issue evidence。
 4. 用户看到 repo、base ref/commit、Issue 状态/类型/分类、target branch、verified actor、resolved permission、证据来源/时间、isolated worktree、resume decision、next action 与 blockers。
 5. blockers 为空后，用户单独授权 branch/worktree 动作。
 6. `--approve-save-plan` 把脱敏计划原子写入私有 ledger；Agent 执行 planner 声明的 next action。
@@ -57,6 +57,7 @@ Consumer 只生成计划与可选 ledger 记录，不创建 branch/worktree，�
 `--permission` 是用户看到的期望值。期望与实时解析结果不同会产生 `permission_expectation_mismatch`，避免静默改变执行路径。
 
 本地 `remote.origin` 的有效 fetch URL 与全部有效 push URL 都必须解析为声明的 exact GitHub Repo；`pushurl`、`insteadOf` 或 `pushInsteadOf` 指向其他 host/Repo 时直接阻断。
+目标 branch 固定包含 verified actor 的小写 login；相同日期和 purpose 下的不同 actor 拥有不同 branch/resume identity。目标 branch 是否存在通过有效 origin 的 live `git ls-remote` 取证；查询不可用、本地/live remote 同名分支分叉时阻断。已注册的 requested resume worktree 还必须自身 status 可用且 clean。
 
 ## Ledger 与公开元数据
 
@@ -89,6 +90,8 @@ Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件�
 | ledger 超过 ownership 时间窗且完整身份仍匹配 | 默认停止 | Owner 显式增加 `--reconfirm-owner` 生成 refreshed plan；持久化仍需 `--approve-save-plan` |
 | ledger 完整身份变化 | 停止 | 原 ledger 不可重新确认；重新核对 owner、base、branch 与授权 |
 | permission evidence 缺失 | local permission path | 保持 push/PR 禁用，或恢复证据后重新计划 |
+| live target remote evidence 缺失或分叉 | 停止 | 恢复 effective origin 查询并对齐本地/live remote branch |
+| requested resume worktree dirty/status 不可用 | 停止 | 处理该 worktree 的已有改动或状态错误后重新计划 |
 | Issue evidence 缺失、关闭、PR-shaped 或未分类 | 停止 | 恢复 live OPEN Skill Feedback Issue 证据 |
 | candidate PR control code 与 base 不一致 | 停止 | 普通业务 PR 撤销控制面改动 |
 | 官方 Harness upgrade provenance/ADMIN/diff 不满足 | 停止 | 使用 published Stable Release 和专用迁移分支重新生成 |
@@ -106,6 +109,7 @@ Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、can
 - direct、fork-only、no-PR local
 - 缺少 `gh`、partial permission evidence、archived/disabled Repo 与 invalid Issue evidence 的 fail-closed 行为
 - 有效 fetch/push URL、multi-pushurl 与 Git URL rewrite 校验
+- actor-exclusive branch、live target remote 与 requested resume worktree status 校验
 - canonical checkout 后代与 symlink alias 路径阻断
 - snapshot digest/provenance/symlink 校验
 - ledger `0700/0600`、原子写入、路径脱敏与完整身份 collision

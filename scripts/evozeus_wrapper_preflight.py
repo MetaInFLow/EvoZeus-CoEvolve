@@ -2048,8 +2048,11 @@ def check_branch_pr_metadata(
     base_match = re.fullmatch(r"origin/(main|master)[ \t]*/[ \t]*([0-9a-f]{40})", values["Base ref / commit"])
     if not base_match:
         fail("PR base must include canonical origin/main or origin/master and a full commit")
+    verified_actor = values["Verified actor"]
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", verified_actor):
+        fail("PR verified actor must use a GitHub login")
     branch_match = re.fullmatch(
-        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(component)}-{re.escape(summary)}",
+        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(verified_actor.lower())}-{re.escape(component)}-{re.escape(summary)}",
         values["Target branch"],
     )
     if not branch_match:
@@ -2057,8 +2060,6 @@ def check_branch_pr_metadata(
     issue_match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)", values["Issue"])
     if not issue_match or issue_match.group(1).lower() != repo.lower():
         fail("PR Issue must belong to the canonical repo")
-    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", values["Verified actor"]):
-        fail("PR verified actor must use a GitHub login")
     if values["Permission path"] not in {"direct", "fork"}:
         fail("PR permission path must allow a remote Pull Request")
     if not all((github_repository, github_head_ref, github_head_repo, github_actor, github_base_ref, github_base_sha)):
