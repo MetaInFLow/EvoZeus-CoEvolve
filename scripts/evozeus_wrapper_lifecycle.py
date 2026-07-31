@@ -2553,14 +2553,7 @@ def _harness_contract_needs_migration(
     instruction_surface: object,
 ) -> bool:
     manifest = manifest or {}
-    managed_files = manifest.get("managed_files")
-    if (
-        manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL
-        or manifest.get("harness_skill_version") != HARNESS_SKILL_VERSION
-        or manifest.get("harness_skill_managed") is not True
-        or not isinstance(managed_files, list)
-        or TARGET_HARNESS_SKILL not in managed_files
-    ):
+    if not _manifest_proves_canonical_harness_ownership(manifest):
         return True
     harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
     if harness is None:
@@ -2574,6 +2567,29 @@ def _harness_contract_needs_migration(
     if surface is None:
         return True
     return not _has_canonical_harness_entry(_read_text_preserving_newlines(surface))
+
+
+def _manifest_proves_canonical_harness_ownership(manifest: dict[str, Any]) -> bool:
+    managed_files = manifest.get("managed_files")
+    return (
+        manifest.get("harness_skill_path") == TARGET_HARNESS_SKILL
+        and manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION
+        and manifest.get("harness_skill_managed") is True
+        and isinstance(managed_files, list)
+        and TARGET_HARNESS_SKILL in managed_files
+    )
+
+
+def _canonical_harness_path_is_proven_owned(
+    target: Path,
+    manifest: dict[str, Any],
+) -> bool:
+    if _manifest_proves_canonical_harness_ownership(manifest):
+        return True
+    harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
+    if harness is None:
+        return False
+    return canonical_harness_skill_text_valid(_read_text_preserving_newlines(harness))
 
 
 def canonical_harness_skill_text_valid(harness_text: str) -> bool:
@@ -2701,6 +2717,15 @@ def plan_target_layout_migration(
         or instruction_surface_migration_required
     )
     if requires_migration:
+        harness_destination = target / TARGET_HARNESS_SKILL
+        if (
+            (harness_destination.exists() or harness_destination.is_symlink())
+            and not _canonical_harness_path_is_proven_owned(target, current_manifest or {})
+        ):
+            conflicts.append(
+                "existing canonical Harness Skill is not proven wrapper-managed; "
+                "preserve it and use an approved Harness repair"
+            )
         try:
             _, codex_hooks_update = _merge_codex_hooks_config(target)
         except ValueError as exc:

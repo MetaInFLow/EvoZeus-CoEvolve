@@ -307,6 +307,20 @@ def test_attach_preflight_allows_an_idempotent_canonical_manifest(tmp_path: Path
     validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
 
 
+def test_attach_preflight_requires_harness_in_managed_files(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    manifest["managed_files"].remove(TARGET_HARNESS_SKILL)
+    (target / TARGET_WRAPPER_MANIFEST).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="managed_files"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
     harness = (
         ROOT
@@ -909,6 +923,27 @@ def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
     assert report["writes"] is True
     assert harness.read_text(encoding="utf-8").startswith("---\n")
     assert run_structure(target).returncode == 0
+
+
+def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text(legacy_skill_text(), encoding="utf-8")
+    write_manifest(target, legacy=True)
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True, exist_ok=True)
+    owner_bytes = b"# Owner file at reserved path\n"
+    harness.write_bytes(owner_bytes)
+    skill_bytes = (target / "SKILL.md").read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="not proven wrapper-managed"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert plan["can_apply"] is False
+    assert any("not proven wrapper-managed" in item for item in plan["conflicts"])
+    assert harness.read_bytes() == owner_bytes
+    assert (target / "SKILL.md").read_bytes() == skill_bytes
 
 
 def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
