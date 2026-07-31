@@ -180,6 +180,31 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     assert run_structure(target).returncode == 0
 
 
+def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original_skill = '# Business Skill\n\nOwner content.\n'
+    skill.write_text(original_skill, encoding="utf-8")
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True)
+    original_harness = "# Owner file at the reserved Harness path\n"
+    harness.write_text(original_harness, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="existing canonical Harness Skill is incompatible"):
+        copy_templates(target, replacements(), force=False)
+
+    assert skill.read_text(encoding="utf-8") == original_skill
+    assert harness.read_text(encoding="utf-8") == original_harness
+    assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+    copy_templates(target, replacements(), force=True)
+    assert "name: using-evozeus-harness" in harness.read_text(encoding="utf-8")
+
+
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
     harness = (
         ROOT
@@ -643,6 +668,61 @@ def test_owned_section_without_terminal_blocks_before_writing(
 
 
 @pytest.mark.parametrize(
+    "ambiguous_section",
+    [
+        (
+            "## EvoZeus-CoEvolve 状态检查\n\n"
+            "本段是 Skill 入口 preflight，事实源为 "
+            ".evozeus-wrapper/wrapper.json。\n\n"
+            "Owner business guidance must survive.\n"
+            "解决方法：按客户规则处理。\n"
+        ),
+        (
+            "## 自进化方法\n\n"
+            "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。\n\n"
+            "Owner business version example must survive.\n"
+            "Wrapper harness version: `v0.14.0`\n"
+        ),
+        (
+            "## EvoZeus-CoEvolve\n\n"
+            "本区由 EvoZeus-CoEvolve 追加，用来说明 wrapper harness。\n\n"
+            "Owner business mode example must survive.\n"
+            "- `manual_only`：客户流程只能人工执行。\n"
+        ),
+        (
+            "## EvoZeus-CoEvolve Version Refresh Note: v0.13.0 -> v0.14.0\n\n"
+            "- Wrapper harness: `v0.13.0 -> v0.14.0`\n"
+            "- Layout: `consolidated-v2 -> consolidated-v2`\n"
+            "Owner business migration note must survive.\n"
+            "- Target business rules were preserved.\n"
+        ),
+    ],
+    ids=["status", "evolution", "wrapper", "migration-note"],
+)
+def test_business_terminal_text_cannot_complete_a_truncated_managed_section(
+    tmp_path: Path,
+    ambiguous_section: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text(
+        '---\nname: "example"\n---\n\n' + ambiguous_section,
+        encoding="utf-8",
+    )
+    copy_templates(target, replacements(), force=False)
+    write_manifest(target, legacy=True)
+    before = (target / "SKILL.md").read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="terminal signature"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert any("terminal signature" in conflict for conflict in plan["conflicts"])
+    assert plan["can_apply"] is False
+    assert (target / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize(
     ("field", "value", "message"),
     [
         ("harness_skill_path", "/tmp/evil/SKILL.md", "canonical"),
@@ -706,6 +786,27 @@ def test_missing_damaged_mismatch_and_symlink_escape_are_deterministic(tmp_path:
     with contextlib.redirect_stderr(io.StringIO()) as stderr, pytest.raises(SystemExit):
         check_harness_entry_contract(target, manifest)
     assert "does not match" in stderr.getvalue()
+
+
+def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    prepare_fresh_target(target)
+    harness = target / TARGET_HARNESS_SKILL
+    valid = harness.read_text(encoding="utf-8")
+    assert valid.startswith("---\n")
+    harness.write_text(valid.removeprefix("---\n"), encoding="utf-8")
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    assert plan["instruction_surface_migration_required"] is True
+    assert plan["migration_required"] is True
+
+    report = migrate_target_layout(target, latest_version="v0.14.0")
+    assert report["writes"] is True
+    assert harness.read_text(encoding="utf-8").startswith("---\n")
+    assert run_structure(target).returncode == 0
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:

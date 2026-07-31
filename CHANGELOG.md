@@ -20,6 +20,11 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Required Issue-to-PR implementation to show and pass a canonical repo/base/Issue/actor/permission/worktree plan before target-file writes; Harness upgrades refresh the complete managed gate.
 - Advanced the canonical target-local Harness Skill contract to `v1.1.0` for the mandatory Contributor Branch Gate.
 
+### Fixed
+
+- Converted malformed non-list `SessionStart` and `UserPromptSubmit` event values into read-only global Hook status errors instead of raising during diagnostics or `upgrade-all`.
+- Kept canonical project inventory under `~/.evozeus/.projects` when `EVOZEUS_HOME` points component discovery at a custom product directory.
+
 ### Security
 
 - Added strict manifest, canonical-path, frontmatter/version, managed-identity, symlink, path-traversal, and instruction-entry agreement validation.

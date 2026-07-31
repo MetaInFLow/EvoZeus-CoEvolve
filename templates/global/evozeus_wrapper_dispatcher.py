@@ -33,7 +33,7 @@ SESSION_SIGNAL_ATTACHMENT = {
     "component_version": "v0.1.1",
     "availability": "unreleased",
     "component_manifest": "contracts/lesson-candidate-v1.json",
-    "component_manifest_sha256": "6b9548c02797b2baa62a0eaa64bf165702239b843490a7cf49c001b7e932bba8",
+    "component_manifest_sha256": "d9a80f46875cbd290d2686387aa5862aa21c86a0fbbcccae8940ef9110169682",
     "api": "evozeus.session-signal.lesson-candidate.v1",
     "entrypoint": "scripts/evaluate_lesson_candidate.py",
 }
@@ -332,16 +332,8 @@ def resolve_latest_version(
     }
 
 
-def discover_wrapped_targets(
-    home: Path,
-    *,
-    evozeus_home: Path | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    projects_root = (
-        evozeus_home.expanduser().resolve() / ".projects"
-        if evozeus_home is not None
-        else home.expanduser().resolve() / PROJECTS_DIR
-    )
+def discover_wrapped_targets(home: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    projects_root = home.expanduser().resolve() / PROJECTS_DIR
     targets: list[dict[str, Any]] = []
     errors: list[str] = []
     if not projects_root.is_dir():
@@ -515,7 +507,7 @@ def evaluate_user_prompt_submit(
         component = resolve_session_signal_component(product_home, attachment=attachment)
         if component is None:
             return {"continue": True}
-        targets, _ = discover_wrapped_targets(home, evozeus_home=product_home)
+        targets, _ = discover_wrapped_targets(home)
         request = _lesson_component_request(hook_input, targets, api=component["api"])
         response = _invoke_lesson_component(component, request, runner=runner)
     except Exception:
