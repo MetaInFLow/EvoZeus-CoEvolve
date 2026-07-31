@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 
 try:
+    from .evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from .evozeus_branch_consumer import verify_managed_snapshot
     from .evozeus_wrapper_lifecycle import (
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
@@ -23,6 +25,8 @@ try:
         write_wrapper_manifest,
     )
 except ImportError:
+    from evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from evozeus_branch_consumer import verify_managed_snapshot
     from evozeus_wrapper_lifecycle import (
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
@@ -41,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
+BRANCH_CONSUMER_SCRIPT = ROOT / "scripts" / "evozeus_branch_consumer.py"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
@@ -55,6 +60,12 @@ TARGET_DESIGNS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/designs"
 TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+EXACT_SNAPSHOT_TEMPLATE_PATHS = {
+    Path("contracts/v1/contributor-branch-contract.json"),
+    Path("contracts/v1/contributor-branch-provenance.json"),
+    Path("scripts/evozeus-branch-preflight.mjs"),
+}
 
 
 def fail(message: str) -> None:
@@ -158,15 +169,37 @@ def target_template_path(rel: Path) -> Path:
     return Path(TARGET_EVOINFRA_DIR) / rel
 
 
+def checked_target_write_path(target: Path, relative_path: Path) -> Path:
+    target = target.expanduser().resolve()
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        fail(f"wrapper target path escapes the repository: {relative_path}")
+    destination = target / relative_path
+    cursor = destination
+    while cursor != target:
+        if cursor.is_symlink():
+            fail(f"wrapper target path cannot contain symlinks: {cursor.relative_to(target)}")
+        cursor = cursor.parent
+    return destination
+
+
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
     actions: list[str] = []
     for src in sorted(TARGET_TEMPLATE_DIR.rglob("*")):
         if src.is_dir() or "__pycache__" in src.parts or src.suffix in {".pyc", ".pyo"}:
             continue
         rel = src.relative_to(TARGET_TEMPLATE_DIR)
-        actions.append(copy_template_file(src, target / target_template_path(rel), replacements, force))
+        destination = checked_target_write_path(target, target_template_path(rel))
+        if rel in EXACT_SNAPSHOT_TEMPLATE_PATHS:
+            if destination.exists() and not force:
+                actions.append(f"skip existing {destination}")
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, destination)
+                actions.append(f"write {destination}")
+        else:
+            actions.append(copy_template_file(src, destination, replacements, force))
 
-    script_dst = target / TARGET_PREFLIGHT_SCRIPT
+    script_dst = checked_target_write_path(target, Path(TARGET_PREFLIGHT_SCRIPT))
     if script_dst.exists() and not force:
         actions.append(f"skip existing {script_dst}")
     else:
@@ -174,7 +207,7 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
         script_dst.chmod(0o755)
         actions.append(f"write {script_dst}")
-    notice_dst = target / TARGET_NOTICE_SCRIPT
+    notice_dst = checked_target_write_path(target, Path(TARGET_NOTICE_SCRIPT))
     if notice_dst.exists() and not force:
         actions.append(f"skip existing {notice_dst}")
     else:
@@ -182,6 +215,14 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(NOTICE_SCRIPT, notice_dst)
         notice_dst.chmod(0o755)
         actions.append(f"write {notice_dst}")
+    consumer_dst = checked_target_write_path(target, Path(TARGET_BRANCH_CONSUMER_SCRIPT))
+    if consumer_dst.exists() and not force:
+        actions.append(f"skip existing {consumer_dst}")
+    else:
+        consumer_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(BRANCH_CONSUMER_SCRIPT, consumer_dst)
+        consumer_dst.chmod(0o755)
+        actions.append(f"write {consumer_dst}")
     return actions
 
 
@@ -352,6 +393,12 @@ def main() -> int:
         fail(f"preflight script missing: {PREFLIGHT_SCRIPT}")
     if not NOTICE_SCRIPT.exists():
         fail(f"notice script missing: {NOTICE_SCRIPT}")
+    if not BRANCH_CONSUMER_SCRIPT.exists():
+        fail(f"contributor branch consumer missing: {BRANCH_CONSUMER_SCRIPT}")
+    try:
+        verify_managed_snapshot(TARGET_TEMPLATE_DIR)
+    except BranchConsumerError as exc:
+        fail(f"contributor branch snapshot is invalid: {exc}")
     require_github_cli()
     try:
         authority = require_repo_admin(target, args.repo)

@@ -45,19 +45,34 @@ Authorization is staged:
 ## Issue-to-PR
 
 ```bash
-python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
+python3 scripts/evozeus_wrapper.py loop issue-to-pr \
+  --target /absolute/path/to/target-repo \
+  --base origin/main \
+  --issue OWNER/REPO#NUMBER \
+  --actor <expected-github-login> \
+  --type bug \
+  --component skill \
+  --summary fix-feedback-flow \
+  --permission <direct|fork|local> \
+  --worktree /absolute/path/outside/canonical-checkout \
+  --json
 ```
 
 Run this stage only after the feedback Issue exists and the user separately authorized implementation.
 
-Before creating a PR, check GitHub permissions:
+The command reads the target manifest, verifies the pinned EvoZeus Core contract/planner snapshot, collects live Git/GitHub evidence, and returns a zero-write branch plan. Display canonical repo, base ref/commit, Issue, target branch, verified actor, resolved permission, evidence timestamp/source, isolated worktree, resume decision, next action, and blockers before any target-file write.
 
-- write access: branch and PR in canonical repo.
-- fork access only: fork and PR.
-- no PR permission: local patch/design doc only.
+- Empty blockers plus separate branch/worktree approval: rerun with `--approve-save-plan`, execute the declared next action, then resume from the private ledger.
+- Direct evidence: create the isolated contribution branch in the canonical repo.
+- Fork evidence: create the isolated fork branch and later open the fork PR.
+- Local evidence: create a local-only patch/design context; push and PR remain forbidden.
+
+`--actor` and `--permission` are expectations. Live Core evidence controls the result. Missing `gh`, partial API evidence, a dirty checkout, wrong base, branch/worktree collision, stale ledger ownership, or a canonical-checkout path returns blockers. Do not modify business files while any blocker remains.
+
+The ledger defaults to `~/.evozeus/coevolve/branch-plans/OWNER/REPO/<resume-key>.json`. Before commit, push, and PR, rerun with `--resume-plan <ledger-file>` and require the same repo, base ref, base commit, target branch, actor, and resolved permission. Copy only `pr_metadata` into the PR; local paths and ledger contents remain private.
 
 ## Stop Conditions
 
 - Lesson contains raw private session, secret, customer data, or unredacted commercial context.
-- `gh auth` fails.
-- Private repo access is missing.
+- Core snapshot provenance/digest verification fails.
+- The branch plan has any blocker or the isolated worktree has not been created/resumed under separate authorization.

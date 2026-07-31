@@ -24,6 +24,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 | 安装与接入 | [`.evozeus-wrapper/docs/onboarding.md`](onboarding.html) |
 | Changelog | [`.evozeus-wrapper/CHANGELOG.md`]({{REPO_URL}}/blob/main/.evozeus-wrapper/CHANGELOG.md) |
 | Design docs | [`.evozeus-wrapper/docs/designs/`](designs/) |
+| Contributor branch gate | `.evozeus-wrapper/scripts/evozeus_branch_consumer.py` + pinned Core v1 snapshot |
 
 ## 反馈入口
 
@@ -42,6 +43,8 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 - 影响程度。
 
 创建 Issue 不授权修改 Skill、创建分支、设计文档或 PR；实现修复需要新的明确授权。
+
+实现授权成立后，任何业务文件写入前必须通过 contributor branch gate。分支计划以 Core v1 contract 为唯一规则源，先展示 repo、base commit、Issue、branch、actor、permission evidence、隔离 worktree 和下一动作；blockers 未清空时保持零写入。计划可在明确批准后进入私有 ledger，PR 只公开脱敏的 `pr_metadata`。
 
 ## 进化规则
 

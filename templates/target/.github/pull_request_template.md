@@ -8,6 +8,20 @@
 
 - Path:
 
+## Contributor Branch Plan
+
+- Resume key:
+- Core source revision:
+- Contract SHA-256:
+- Canonical repo:
+- Base ref / commit:
+- Target branch:
+- Issue:
+- Verified actor:
+- Resolved permission / evidence source / checked time:
+
+Copy these values from `pr_metadata`. Keep ledger paths, local Repo/worktree paths, internal errors, secrets, and private context out of the PR.
+
 ## What Changed
 
 -
@@ -18,6 +32,8 @@
 - [ ] `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py structure`
 - [ ] `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr --design-doc <path>`
 - [ ] Manual Skill behavior check completed
+- [ ] Branch plan was resumed from the private ledger and revalidated before commit/push/PR
+- [ ] Current repo, base commit, target branch, actor, and permission still match the saved plan
 
 ## Release Readiness
 

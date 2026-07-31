@@ -223,6 +223,8 @@ Use the returned route, severity, evidence boundary, and Issue draft before crea
 
 If the result has `should_capture=true`, finish the original business correction and then show `user_notice.display_text` as a separate Lesson block. Wait for explicit feedback-submission confirmation. The audit does not persist a signal or return an executable Issue command. Creating an Issue requires explicit confirmation; implementing a fix, creating a branch/design doc, or opening a PR requires a later separate authorization.
 
+After that separate implementation authorization, run `loop issue-to-pr` with the target Repo, Issue, expected actor/permission, purpose, and an absolute isolated worktree. Show the complete Core-derived branch plan before any target-file write. Empty blockers do not expand authorization: save the private ledger only with `--approve-save-plan`, create/resume branch/worktree after explicit approval, and revalidate the same repo/base commit/branch/actor/permission before commit, push, and PR.
+
 ### 8. Harness Upgrade
 
 Use `skills/harness-upgrade/SKILL.md`.

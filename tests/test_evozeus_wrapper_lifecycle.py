@@ -23,6 +23,10 @@ from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_ENTRY_BEGIN,
     LEGACY_TARGET_WRAPPER_MANIFEST,
     TARGET_CHANGELOG,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PLANNER,
+    TARGET_BRANCH_PROVENANCE,
     TARGET_FEEDBACK_POLICY,
     TARGET_HARNESS_SKILL,
     TARGET_MIGRATIONS_README,
@@ -557,6 +561,9 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("needs: validation", workflow)
         self.assertIn("vars.EVOZEUS_PAGES_ENABLED == 'true'", workflow)
         self.assertIn('\".evozeus-wrapper/**\"', workflow)
+        self.assertIn("actions/setup-node@v4", workflow)
+        self.assertIn("evozeus_branch_consumer.py verify-snapshot --json", workflow)
+        self.assertIn("--pr-body /tmp/skill-evolution-pr.md", workflow)
 
     def test_copy_templates_consolidates_wrapper_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2057,7 +2064,15 @@ class WrapperManifestTest(unittest.TestCase):
             self.assertEqual(loaded["canonical_repo"], "MetaInFLow/resume-screening")
             self.assertEqual(
                 loaded["managed_files"],
-                ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py", TARGET_HARNESS_SKILL],
+                [
+                    "WRAPPER.md",
+                    "scripts/evozeus_wrapper_preflight.py",
+                    TARGET_HARNESS_SKILL,
+                    TARGET_BRANCH_CONSUMER_SCRIPT,
+                    TARGET_BRANCH_CONTRACT,
+                    TARGET_BRANCH_PROVENANCE,
+                    TARGET_BRANCH_PLANNER,
+                ],
             )
             self.assertEqual(loaded["install_links"], ["/Users/anthonyf/.codex/skills/resume-screening"])
             self.assertEqual(loaded["integration"]["mode"], "prompt_runtime_check")

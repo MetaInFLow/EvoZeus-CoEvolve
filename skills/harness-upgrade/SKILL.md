@@ -36,6 +36,8 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.
 - During legacy migration, remove only sections with proven wrapper heading, ownership signature, and terminal signature; preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
 - Refresh the canonical Harness Skill, compact activation block, and manifest integration; require structure post-validation before reporting success.
+- Refresh the contributor branch consumer, pinned Core contract/planner snapshots, provenance, manifest `contributor_branch` paths, and Issue-to-PR instructions as one managed set.
+- Run target `evozeus_branch_consumer.py verify-snapshot --json` during structure validation; digest, provenance, symlink, or compatibility failure blocks the upgrade.
 - Keep workflow validation active independently of optional Pages deployment; Pages requires `EVOZEUS_PAGES_ENABLED=true`.
 - Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.
 - Major wrapper upgrades require explicit user confirmation.
@@ -45,6 +47,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.
 - A target harness manifest declares global capability ownership and scope, but live user-level dispatcher installation/trust comes from `hook global status` or the diagnosis overlay.
 - The global dispatcher is a native `SessionStart` aggregate gate, not a native per-Skill invocation hook.
+- Existing branch ledgers remain local runtime state and never enter the upgrade write set; upgraded plans still collect live GitHub evidence.
 
 ## Stop Conditions
 

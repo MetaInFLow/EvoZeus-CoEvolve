@@ -1,0 +1,109 @@
+{
+  "$id": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
+  "contract": "evozeus.contributor_branch",
+  "version": "1.0.0",
+  "schema_version": "v1",
+  "compatibility": { "evozeus": ">=0.4.1", "coevolve_consumer": ">=0.14.0", "unknown_fields": "ignore", "unknown_profile_or_major_version": "fail_closed" },
+  "protected_refs": { "exact": ["main", "master", "uat/current", "stable"], "prefixes": ["release/"], "direct_business_write": "deny" },
+  "host_compatibility": { "supported_hosts": ["codex", "claude"], "plan_semantics": "identical", "host_input_to_planner": false },
+  "branch_naming": {
+    "template": "codex/{type}/{yyyymmdd}-{component}-{summary}",
+    "types": ["dev", "bug", "refactor", "docs", "test", "chore"],
+    "component_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    "summary_pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,6}$",
+    "metadata_required": ["issue", "actor", "profile", "component", "purpose", "permission_path", "permission_evidence", "resume_key"]
+  },
+  "profiles": {
+    "evozeus_core_direct": {
+      "consumer": "EvoZeus core maintainer",
+      "repo_pattern": "^MetaInFLow/EvoZeus$",
+      "canonical_bases": ["origin/main"],
+      "allowed_types": ["dev", "bug", "refactor", "docs", "test", "chore"],
+      "allowed_components": ["runtime", "factor", "verdict-card", "doctor", "tui", "companion", "workspace", "docs", "governance", "skill", "registry", "infra", "template"],
+      "allowed_permissions": ["direct"],
+      "branch_class": "development",
+      "user_channel_claim": "none"
+    },
+    "uat_repair_development": {
+      "consumer": "EvoZeus UAT repair maintainer",
+      "repo_pattern": "^MetaInFLow/EvoZeus$",
+      "canonical_bases": ["origin/uat/current"],
+      "allowed_types": ["dev", "bug", "test"],
+      "allowed_components": ["runtime", "factor", "doctor", "governance", "skill", "infra", "template"],
+      "allowed_permissions": ["direct"],
+      "branch_class": "development",
+      "user_channel_claim": "forbidden"
+    },
+    "community_contribution": {
+      "consumer": "EvoZeus community contributor",
+      "repo_pattern": "^MetaInFLow/EvoZeus$",
+      "canonical_bases": ["origin/main"],
+      "allowed_types": ["dev", "bug", "refactor", "docs", "test", "chore"],
+      "allowed_permissions": ["direct", "fork", "local"],
+      "branch_class": "development",
+      "user_channel_claim": "none"
+    },
+    "coevolve_target_skillware_consumer": {
+      "consumer": "EvoZeus-CoEvolve target Skillware Repo",
+      "repo_pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "canonical_bases": ["origin/main", "origin/master"],
+      "allowed_types": ["dev", "bug", "refactor", "docs", "test", "chore"],
+      "allowed_permissions": ["direct", "fork", "local"],
+      "branch_class": "development",
+      "user_channel_claim": "none"
+    }
+  },
+  "permission_paths": {
+    "direct": {
+      "mode": "direct_branch",
+      "requires": "repository_write_permission",
+      "next_write_action": "create_direct_branch_in_isolated_worktree"
+    },
+    "fork": {
+      "mode": "fork_pull_request",
+      "requires": "fork_and_pull_request_permission",
+      "source_repo_template": "{actor}/{repo_name}",
+      "next_write_action": "create_fork_branch_in_isolated_worktree"
+    },
+    "local": {
+      "mode": "local_patch",
+      "requires": "local_filesystem_only",
+      "push_allowed": false,
+      "pull_request_allowed": false,
+      "next_write_action": "create_local_patch_branch_in_isolated_worktree"
+    }
+  },
+  "permission_resolution": {
+    "authority": "live_github_api_evidence",
+    "actor_source": "gh api user",
+    "repository_permission_source": "gh api graphql repository.viewerPermission",
+    "fork_policy_source": "gh api repos/{owner}/{repo}",
+    "direct_viewer_permissions": ["ADMIN", "MAINTAIN", "WRITE"],
+    "fork_viewer_permissions": ["READ", "TRIAGE"],
+    "explicit_actor_and_permission": "expectations_only",
+    "expectation_mismatch": "block",
+    "unavailable_or_incomplete_evidence": "resolve_local_patch",
+    "repo_or_command_arguments_may_grant_permission": false,
+    "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "fork_allowed"]
+  },
+  "resume": { "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "component", "purpose"], "owner_field": "actor", "base_match": ["ref", "commit"], "stale_after_days": 14, "mismatch_or_stale": "block_and_require_owner_reconfirmation" },
+  "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block" },
+  "blocking_handling": {
+    "dirty_tree": "block",
+    "wrong_base": "block",
+    "protected_ref_write": "block",
+    "branch_collision": "block_without_matching_resume_plan",
+    "stale_ownership": "block_and_require_owner_reconfirmation",
+    "canonical_checkout_dirty_or_unavailable": "block",
+    "actor_or_permission_expectation_mismatch": "block",
+    "github_unavailable": "local_patch_only"
+  },
+  "approval_boundaries": {
+    "read_only_preflight": "may_run_without_write_approval",
+    "issue_authorization": "does_not_authorize_branch_commit_push_or_pull_request",
+    "branch_and_worktree_creation": "separate_explicit_authorization_required",
+    "commit": "separate_explicit_authorization_required",
+    "push": "separate_explicit_authorization_required",
+    "pull_request": "separate_explicit_authorization_required"
+  }
+}

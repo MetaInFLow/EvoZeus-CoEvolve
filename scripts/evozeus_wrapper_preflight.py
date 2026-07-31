@@ -42,8 +42,12 @@ TARGET_MIGRATIONS_README = f"{TARGET_MIGRATIONS_DIR}/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
 TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
-HARNESS_SKILL_VERSION = "v1.0.0"
+HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
 
@@ -68,6 +72,10 @@ REQUIRED_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PROVENANCE,
+    TARGET_BRANCH_PLANNER,
     TARGET_HARNESS_SKILL,
 ]
 MAINTAINER_REQUIRED_FILES = REQUIRED_FILES
@@ -106,6 +114,10 @@ HARNESS_SKILL_TERMS = [
     "Release",
     "rollback",
     "普通 Skill 调用不授权",
+    "evozeus_branch_consumer.py",
+    "--approve-save-plan",
+    "permission_evidence",
+    "隔离 worktree",
 ]
 
 PLACEHOLDER_PATTERNS = [
@@ -130,6 +142,7 @@ NOTICE_REQUIRED_STATES = {
 
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+RESUME_KEY_RE = re.compile(r"^branch_v1_[0-9a-f]{24}$")
 RUNTIME_REFERENCE_RE = re.compile(
     r"(?P<path>(?:references|scripts|assets|templates|agents)/[A-Za-z0-9_.@()/+=,~-]+)",
 )
@@ -627,6 +640,46 @@ def check_dashboard_contract(manifest: dict | None) -> None:
     ok("dashboard deployment contract is complete")
 
 
+def check_contributor_branch_contract(target: Path, manifest: dict | None) -> None:
+    expected = {
+        "profile": "coevolve_target_skillware_consumer",
+        "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+        "contract_path": TARGET_BRANCH_CONTRACT,
+        "provenance_path": TARGET_BRANCH_PROVENANCE,
+        "planner_path": TARGET_BRANCH_PLANNER,
+        "permission_authority": "core_planner_live_github_evidence",
+        "runtime_network_fetch": False,
+        "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+    }
+    if (manifest or {}).get("contributor_branch") != expected:
+        fail("wrapper manifest contributor_branch contract is missing or incompatible")
+    managed_files = (manifest or {}).get("managed_files")
+    managed_branch_files = {
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    }
+    if not isinstance(managed_files, list) or not managed_branch_files.issubset(managed_files):
+        fail("wrapper manifest must keep every contributor branch asset wrapper-managed")
+    for relative_path in managed_branch_files:
+        _manifest_relative_file(target, relative_path, "contributor branch asset")
+    result = run_command(
+        [sys.executable, str(target / TARGET_BRANCH_CONSUMER_SCRIPT), "verify-snapshot", "--json"],
+        cwd=target,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        fail(f"contributor branch snapshot verification failed: {detail}")
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail("contributor branch snapshot verification returned invalid JSON")
+    if report.get("status") != "verified" or report.get("writes") is not False:
+        fail("contributor branch snapshot verification did not produce a read-only verified result")
+    ok("contributor branch contract and offline snapshot are verified")
+
+
 def skill_name_from_skill_md(path: Path) -> str | None:
     if not path.exists():
         return None
@@ -957,6 +1010,7 @@ def check_maintainer(args: argparse.Namespace) -> None:
     check_notice_policy(target)
     check_onboarding_contract(manifest)
     check_dashboard_contract(manifest)
+    check_contributor_branch_contract(target, manifest)
     check_integration_contract(target, manifest)
     check_runtime(args)
     ok("maintainer bundle contains required wrapper files")
@@ -1130,6 +1184,77 @@ def check_design_doc(path: Path) -> None:
     ok(f"design doc has required concepts: {path}")
 
 
+def check_branch_pr_metadata(
+    target: Path,
+    body: str,
+    *,
+    github_repository: str | None,
+    github_head_ref: str | None,
+    github_base_ref: str | None,
+    github_base_sha: str | None,
+) -> None:
+    labels = (
+        "Resume key",
+        "Core source revision",
+        "Contract SHA-256",
+        "Canonical repo",
+        "Base ref / commit",
+        "Target branch",
+        "Issue",
+        "Verified actor",
+        "Resolved permission / evidence source / checked time",
+    )
+    values: dict[str, str] = {}
+    for label in labels:
+        match = re.search(rf"(?m)^-[ \t]+{re.escape(label)}:[ \t]*(?P<value>[^\r\n]+)$", body)
+        if not match or not match.group("value").strip():
+            fail(f"PR body must contain a populated Contributor Branch Plan field: {label}")
+        value = match.group("value").strip().strip("`").strip()
+        if value.startswith(("/", "~", "\\")) or re.match(r"^[A-Za-z]:[\\/]", value):
+            fail(f"PR Contributor Branch Plan cannot expose a local path: {label}")
+        values[label] = value
+
+    provenance = read_json_object(target / TARGET_BRANCH_PROVENANCE)
+    if values["Core source revision"] != provenance.get("source_revision"):
+        fail("PR Core source revision must match the managed contributor branch provenance")
+    if values["Contract SHA-256"] != provenance.get("contract", {}).get("sha256"):
+        fail("PR contract digest must match the managed contributor branch provenance")
+    repo = values["Canonical repo"]
+    if (
+        not GITHUB_REPO_RE.fullmatch(repo)
+        or any(component in {".", ".."} for component in repo.split("/", 1))
+    ):
+        fail("PR canonical repo must use OWNER/REPO")
+    if not RESUME_KEY_RE.fullmatch(values["Resume key"]):
+        fail("PR resume key must use the contributor branch v1 format")
+    base_match = re.fullmatch(r"origin/(main|master)[ \t]*/[ \t]*([0-9a-f]{40})", values["Base ref / commit"])
+    if not base_match:
+        fail("PR base must include canonical origin/main or origin/master and a full commit")
+    if not re.fullmatch(r"codex/[a-z]+/[a-z0-9-]+", values["Target branch"]):
+        fail("PR target branch does not match the contributor branch namespace")
+    issue_match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#[1-9][0-9]*", values["Issue"])
+    if not issue_match or issue_match.group(1).lower() != repo.lower():
+        fail("PR Issue must belong to the canonical repo")
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", values["Verified actor"]):
+        fail("PR verified actor must use a GitHub login")
+    if not re.fullmatch(
+        r"(direct|fork)[ \t]*/[ \t]*github_api[ \t]*/[ \t]*20[0-9]{2}-[0-9]{2}-[0-9]{2}T.+",
+        values["Resolved permission / evidence source / checked time"],
+    ):
+        fail("PR permission metadata requires direct/fork with complete github_api evidence and timestamp")
+    if not all((github_repository, github_head_ref, github_base_ref, github_base_sha)):
+        fail("PR metadata validation requires the trusted GitHub repository, head, and base context")
+    if repo != github_repository:
+        fail("PR canonical repo does not match github.repository")
+    if values["Target branch"] != github_head_ref:
+        fail("PR target branch does not match github.head_ref")
+    if base_match.group(1) != github_base_ref:
+        fail("PR base ref does not match github.base_ref")
+    if base_match.group(2) != github_base_sha:
+        fail("PR base commit does not match github.event.pull_request.base.sha")
+    ok("PR body contains public-safe contributor branch metadata")
+
+
 def check_pr(args: argparse.Namespace) -> None:
     target = Path(args.target).resolve()
     design_doc = Path(args.design_doc).resolve() if args.design_doc else find_design_doc(target)
@@ -1146,6 +1271,14 @@ def check_pr(args: argparse.Namespace) -> None:
             fail("PR body should reference the design doc")
         if TARGET_CHANGELOG not in body:
             fail(f"PR body should confirm {TARGET_CHANGELOG} was updated")
+        check_branch_pr_metadata(
+            target,
+            body,
+            github_repository=args.github_repository,
+            github_head_ref=args.github_head_ref,
+            github_base_ref=args.github_base_ref,
+            github_base_sha=args.github_base_sha,
+        )
         ok("PR body references design doc and changelog")
 
 
@@ -1447,6 +1580,10 @@ def main() -> int:
     pr.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     pr.add_argument("--design-doc", help="Path to the design doc for this PR.")
     pr.add_argument("--pr-body", help="Optional PR body markdown file.")
+    pr.add_argument("--github-repository", help="Trusted github.repository value for PR metadata binding.")
+    pr.add_argument("--github-head-ref", help="Trusted github.head_ref value for PR metadata binding.")
+    pr.add_argument("--github-base-ref", help="Trusted github.base_ref value for PR metadata binding.")
+    pr.add_argument("--github-base-sha", help="Trusted pull_request.base.sha value for PR metadata binding.")
 
     release = sub.add_parser("release", help="Check release readiness.")
     release.add_argument("--target", default=".", help="Target wrapped Skill repo path.")

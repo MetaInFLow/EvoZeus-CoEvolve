@@ -30,6 +30,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify pinned contributor branch snapshot
+        run: |
+          python3 .evozeus-wrapper/scripts/evozeus_branch_consumer.py verify-snapshot --json
+          node --check .evozeus-wrapper/scripts/evozeus-branch-preflight.mjs
       - name: Validate wrapper maintainer structure
         run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py maintainer
       - name: Report Pages deployment mode
@@ -64,8 +71,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify pinned contributor branch snapshot
+        run: |
+          python3 .evozeus-wrapper/scripts/evozeus_branch_consumer.py verify-snapshot --json
+          node --check .evozeus-wrapper/scripts/evozeus-branch-preflight.mjs
+      - name: Write pull request body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path("/tmp/skill-evolution-pr.md").write_text(os.environ.get("PR_BODY", ""), encoding="utf-8")
+          PY
       - name: Validate Skill evolution PR
-        run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_HEAD_REF: ${{ github.head_ref }}
+          GH_BASE_REF: ${{ github.base_ref }}
+          GH_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr
+          --pr-body /tmp/skill-evolution-pr.md
+          --github-repository "$GH_REPOSITORY"
+          --github-head-ref "$GH_HEAD_REF"
+          --github-base-ref "$GH_BASE_REF"
+          --github-base-sha "$GH_BASE_SHA"
 
   release:
     if: github.event_name == 'release'

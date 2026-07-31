@@ -10,7 +10,7 @@
       "target_writes": true,
       "availability": "compatibility-only",
       "source_root": "templates/target",
-      "source_tree_sha256": "sha256:12ce26a96ab7b927014c295f178ff9e244d72869343084dec33ee3c5f4db05f2",
+      "source_tree_sha256": "sha256:3f491d37a0b98cf4d3ed4c7d4129d55e6ac21b163957633bcaf054bca4d01eb9",
       "files": [
         ".codex/hooks.json",
         ".codex/hooks/evozeus_wrapper_start_check.py",
@@ -24,12 +24,15 @@
         ".github/workflows/evozeus-wrapper-preflight.yml",
         "CHANGELOG.md",
         "WRAPPER.md",
+        "contracts/v1/contributor-branch-contract.json",
+        "contracts/v1/contributor-branch-provenance.json",
         "docs/_config.yml",
         "docs/design-doc-template.md",
         "docs/designs/README.md",
         "docs/index.md",
         "docs/onboarding.md",
-        "docs/wrapper-migrations/README.md"
+        "docs/wrapper-migrations/README.md",
+        "scripts/evozeus-branch-preflight.mjs"
       ]
     }
   }

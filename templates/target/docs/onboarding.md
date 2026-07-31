@@ -39,6 +39,15 @@
 - Repo 级 host adapter 由父 Repo 统一审核和维护。
 - 子 Skill 只有在成为具备独立 Owner、Issue、PR、UAT 与 Release 边界的 Git Repo 后，才可以接入自己的 Harness。
 
+## Issue-to-PR 贡献分支
+
+- Feedback Issue 和实现授权成立后，先运行 `.evozeus-wrapper/scripts/evozeus_branch_consumer.py plan`；该步骤只读。
+- `wrapper.json` 的 `contributor_branch` 给出 consumer、Core contract/planner snapshot 与 provenance 路径。执行前用 `verify-snapshot --json` 校验摘要和来源。
+- Agent 必须先展示 canonical repo、base ref/commit、Issue、目标 branch、verified actor、resolved permission、`permission_evidence`、隔离 worktree、next action 与 blockers。
+- blockers 清空后仍需 branch/worktree 单独授权。增加 `--approve-save-plan` 只保存 owner-only 本地 ledger；分支、worktree、commit、push 与 PR 按各自授权执行。
+- 每位参与者使用独立 branch/worktree；canonical checkout 保持 clean。后续动作通过 `--resume-plan` 重新取实时证据并核对完整身份。
+- 无法证明 direct/fork 时进入 local patch；push 与 PR 保持禁用。
+
 ## Dashboard
 
 - repo-local dashboard 始终保留在 `.evozeus-wrapper/docs/`。

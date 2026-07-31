@@ -18,11 +18,18 @@ from evozeus_wrapper_lifecycle import (
     migrate_target_layout,
     plan_target_layout_migration,
     plan_feedback_audit,
-    classify_pr_permission,
+    load_wrapper_manifest,
     require_repo_admin,
     resolve_harness_target,
     run_command,
     stage_label,
+)
+from evozeus_branch_consumer import (
+    ConsumerError,
+    DEFAULT_LEDGER_RELATIVE_PATH,
+    PROFILE as CONTRIBUTOR_BRANCH_PROFILE,
+    error_report as contributor_branch_error_report,
+    run_core_planner,
 )
 from evozeus_wrapper_global_hook import (
     apply_upgrade_all,
@@ -152,9 +159,18 @@ def main() -> int:
     audit.add_argument("--context", help="Optional redacted context summary.")
     audit.add_argument("--json", action="store_true")
     issue_to_pr = loop_sub.add_parser("issue-to-pr", help="Plan Issue-to-PR flow.")
-    issue_to_pr.add_argument("--write-permission", action="store_true")
-    issue_to_pr.add_argument("--fork-permission", action="store_true")
-    issue_to_pr.add_argument("--dry-run", action="store_true", help="Only print next action.")
+    issue_to_pr.add_argument("--target", required=True, help="Path inside the target Skillware repository.")
+    issue_to_pr.add_argument("--base", default="origin/main")
+    issue_to_pr.add_argument("--issue", required=True)
+    issue_to_pr.add_argument("--actor", required=True, help="Expected GitHub actor; live evidence remains authoritative.")
+    issue_to_pr.add_argument("--type", required=True, choices=["dev", "bug", "refactor", "docs", "test", "chore"])
+    issue_to_pr.add_argument("--component", required=True)
+    issue_to_pr.add_argument("--summary", required=True)
+    issue_to_pr.add_argument("--permission", required=True, choices=["direct", "fork", "local"])
+    issue_to_pr.add_argument("--worktree", required=True, help="Absolute isolated contribution worktree path.")
+    issue_to_pr.add_argument("--date")
+    issue_to_pr.add_argument("--resume-plan")
+    issue_to_pr.add_argument("--approve-save-plan", action="store_true")
     issue_to_pr.add_argument("--json", action="store_true")
 
     harness = sub.add_parser("harness", help="Wrapper harness maintenance commands.")
@@ -345,17 +361,53 @@ def main() -> int:
         print_report(report, args.json, "loop")
         return 0
     if args.group == "loop" and args.command == "issue-to-pr":
-        if not args.dry_run:
-            print("Issue-to-PR writes require explicit confirmation and are not implemented yet", file=sys.stderr)
-            return 1
-        report = {
-            "stage": "continuous_evolution_loop",
-            "flow": "issue_to_pr",
-            "writes": False,
-            "permission_mode": classify_pr_permission(args.write_permission, args.fork_permission),
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 2
+        try:
+            manifest = load_wrapper_manifest(target)
+        except ValueError:
+            report = contributor_branch_error_report(
+                ConsumerError("manifest_invalid", "target Harness manifest is invalid or requires migration")
+            )
+            print_report(report, args.json, "loop")
+            return 2
+        canonical_repo = (manifest or {}).get("canonical_repo")
+        if not isinstance(canonical_repo, str):
+            report = contributor_branch_error_report(
+                ConsumerError("manifest_invalid", "target Harness manifest has no canonical repo")
+            )
+            print_report(report, args.json, "loop")
+            return 2
+        options = {
+            "profile": CONTRIBUTOR_BRANCH_PROFILE,
+            "repo": canonical_repo,
+            "repo_path": str(target),
+            "base": args.base,
+            "issue": args.issue,
+            "actor": args.actor,
+            "type": args.type,
+            "component": args.component,
+            "summary": args.summary,
+            "permission": args.permission,
+            "worktree": args.worktree,
+            "date": args.date,
+            "resume_plan": args.resume_plan,
         }
+        ledger_root = Path.home() / DEFAULT_LEDGER_RELATIVE_PATH
+        try:
+            report, returncode = run_core_planner(
+                options,
+                ledger_root=ledger_root,
+                approve_save_plan=args.approve_save_plan,
+                asset_root=target / ".evozeus-wrapper",
+            )
+        except ConsumerError as error:
+            report, returncode = contributor_branch_error_report(error), 2
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
-        return 0
+        return returncode
     if args.group == "harness" and args.command == "upgrade-check":
         target, boundary = repository_target(args.target)
         if target is None:
