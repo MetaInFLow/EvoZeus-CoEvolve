@@ -2286,10 +2286,30 @@ def _frontmatter_end(text: str) -> int:
     if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
         return 0
     offset = len(lines[0])
+    body_lines: list[str] = []
     for line in lines[1:]:
         offset += len(line)
         if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
-            return offset
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    saw_mapping_key = False
+    key_pattern = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
+    )
+    for line in body_lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith((" ", "\t")) and saw_mapping_key:
+            continue
+        if key_pattern.match(line):
+            saw_mapping_key = True
+            continue
+        return 0
+    if saw_mapping_key:
+        return offset
     return 0
 
 
@@ -2376,13 +2396,14 @@ def build_harness_activation_block(newline: str = "\n") -> str:
 
 def _harness_entry_pattern() -> re.Pattern[str]:
     return re.compile(
-        rf"{re.escape(HARNESS_ENTRY_BEGIN)}.*?{re.escape(HARNESS_ENTRY_END)}(?:\r?\n)*",
-        re.DOTALL,
+        rf"^{re.escape(HARNESS_ENTRY_BEGIN)}[ \t]*\r?\n"
+        rf".*?^{re.escape(HARNESS_ENTRY_END)}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
+        re.DOTALL | re.MULTILINE,
     )
 
 
 def _mask_markdown_fenced_code(text: str) -> str:
-    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
     offset = 0
     frontmatter_end = _frontmatter_end(text)
@@ -2394,7 +2415,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         if offset < frontmatter_end:
-            masked.append(line)
+            masked.append(mask_line(line))
             offset += len(line)
             continue
         if fence:
@@ -2421,14 +2442,16 @@ def _mask_markdown_fenced_code(text: str) -> str:
 
 
 def _harness_entry_markers_well_formed(text: str) -> bool:
-    """Accept zero or more complete, non-nested canonical entry blocks."""
+    """Accept zero or more complete, non-nested top-level canonical entry blocks."""
     text = _mask_markdown_fenced_code(text)
     marker_pattern = re.compile(
-        rf"{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)}"
+        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*\r?$",
+        re.MULTILINE,
     )
     entry_open = False
     for match in marker_pattern.finditer(text):
-        if match.group(0) == HARNESS_ENTRY_BEGIN:
+        if match.group("begin"):
             if entry_open:
                 return False
             entry_open = True
@@ -2612,14 +2635,19 @@ def _has_canonical_harness_entry(text: str) -> bool:
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
+    visible_markers = re.findall(
+        rf"^({re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*$",
+        visible,
+        re.MULTILINE,
+    )
     precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
         lines
         and lines[0].startswith("# ")
         and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
     )
     return (
-        visible.count(HARNESS_ENTRY_BEGIN) == 1
-        and visible.count(HARNESS_ENTRY_END) == 1
+        visible_markers.count(HARNESS_ENTRY_BEGIN) == 1
+        and visible_markers.count(HARNESS_ENTRY_END) == 1
         and build_harness_activation_block() in visible
         and precedes_business
         and not owned_spans
