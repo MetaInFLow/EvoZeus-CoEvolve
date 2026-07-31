@@ -1019,6 +1019,18 @@ def add_tree_files(target: Path, dirname: str, files: list[str]) -> None:
 
 def discover_runtime_bundle(target: Path) -> dict:
     manifest = load_wrapper_manifest(target)
+    harness_runtime_path = None
+    if manifest and any(
+        field in manifest
+        for field in ("harness_skill_path", "harness_skill_version", "harness_skill_managed")
+    ):
+        if (
+            manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL
+            or manifest.get("harness_skill_version") != HARNESS_SKILL_VERSION
+            or manifest.get("harness_skill_managed") is not True
+        ):
+            fail("runtime bundle has an invalid canonical Harness Skill identity")
+        harness_runtime_path = TARGET_HARNESS_SKILL
     runtime_bundle = manifest.get("runtime_bundle") if manifest else None
     if isinstance(runtime_bundle, dict):
         instruction_surface = str(runtime_bundle.get("instruction_surface") or "SKILL.md")
@@ -1029,6 +1041,8 @@ def discover_runtime_bundle(target: Path) -> dict:
         ]
         if instruction_surface not in required:
             required.insert(0, instruction_surface)
+        if harness_runtime_path and harness_runtime_path not in required:
+            required.append(harness_runtime_path)
         optional = [
             normalize_relative_path(path)
             for path in runtime_bundle.get("optional_files", [])
@@ -1046,6 +1060,10 @@ def discover_runtime_bundle(target: Path) -> dict:
     instruction_surface = str(entry.relative_to(target))
     required_files = [instruction_surface]
     text = entry.read_text(encoding="utf-8", errors="ignore")
+    if TARGET_HARNESS_SKILL in text:
+        harness_runtime_path = TARGET_HARNESS_SKILL
+    if harness_runtime_path and harness_runtime_path not in required_files:
+        required_files.append(harness_runtime_path)
     business_text = strip_wrapper_runtime_sections(text)
     for rel in referenced_runtime_files(business_text):
         if rel not in required_files:
