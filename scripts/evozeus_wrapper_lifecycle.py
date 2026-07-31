@@ -2160,8 +2160,9 @@ def build_harness_activation_block(newline: str = "\n") -> str:
 
 def _harness_entry_pattern() -> re.Pattern[str]:
     return re.compile(
-        rf"{re.escape(HARNESS_ENTRY_BEGIN)}.*?{re.escape(HARNESS_ENTRY_END)}(?:\r?\n)*",
-        re.DOTALL,
+        rf"^{re.escape(HARNESS_ENTRY_BEGIN)}[ \t]*\r?\n"
+        rf".*?^{re.escape(HARNESS_ENTRY_END)}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
+        re.DOTALL | re.MULTILINE,
     )
 
 
@@ -2205,14 +2206,16 @@ def _mask_markdown_fenced_code(text: str) -> str:
 
 
 def _harness_entry_markers_well_formed(text: str) -> bool:
-    """Accept zero or more complete, non-nested canonical entry blocks."""
+    """Accept zero or more complete, non-nested top-level canonical entry blocks."""
     text = _mask_markdown_fenced_code(text)
     marker_pattern = re.compile(
-        rf"{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)}"
+        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*\r?$",
+        re.MULTILINE,
     )
     entry_open = False
     for match in marker_pattern.finditer(text):
-        if match.group(0) == HARNESS_ENTRY_BEGIN:
+        if match.group("begin"):
             if entry_open:
                 return False
             entry_open = True
@@ -2396,14 +2399,19 @@ def _has_canonical_harness_entry(text: str) -> bool:
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
+    visible_markers = re.findall(
+        rf"^({re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*$",
+        visible,
+        re.MULTILINE,
+    )
     precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
         lines
         and lines[0].startswith("# ")
         and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
     )
     return (
-        visible.count(HARNESS_ENTRY_BEGIN) == 1
-        and visible.count(HARNESS_ENTRY_END) == 1
+        visible_markers.count(HARNESS_ENTRY_BEGIN) == 1
+        and visible_markers.count(HARNESS_ENTRY_END) == 1
         and build_harness_activation_block() in visible
         and precedes_business
         and not owned_spans
