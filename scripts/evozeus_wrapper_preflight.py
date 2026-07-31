@@ -699,22 +699,33 @@ def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
     visible = _mask_markdown_fenced_code(text)
-    marker_pattern = re.compile(
-        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
-        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+    canonical_block = _canonical_harness_entry_block()
+    entry_pattern = re.compile(
+        "^"
+        + r"\n".join(re.escape(line) for line in canonical_block.splitlines())
+        + r"[ \t]*$",
         re.MULTILINE,
     )
-    markers = list(marker_pattern.finditer(visible))
-    begins = [match for match in markers if match.group("begin")]
-    ends = [match for match in markers if match.group("end")]
-    if (
-        len(begins) != 1
-        or len(ends) != 1
-        or begins[0].start() > ends[0].start()
-    ):
+    entries = list(entry_pattern.finditer(visible))
+    if len(entries) != 1:
+        marker_pattern = re.compile(
+            rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+            rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+            re.MULTILINE,
+        )
+        markers = list(marker_pattern.finditer(visible))
+        begins = [match for match in markers if match.group("begin")]
+        ends = [match for match in markers if match.group("end")]
+        if (
+            not entries
+            and len(begins) == 1
+            and len(ends) == 1
+            and begins[0].start() < ends[0].start()
+        ):
+            fail("instruction surface Harness Skill link does not match the canonical manifest path")
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
-    start = begins[0].start()
-    end = ends[0].start() + len(HARNESS_ENTRY_END)
+    start = entries[0].start()
+    end = start + len(canonical_block)
     block = text[start:end]
     if block != _canonical_harness_entry_block():
         fail("instruction surface Harness Skill link does not match the canonical manifest path")
@@ -1030,11 +1041,16 @@ def _frontmatter_end(text: str) -> int:
 
     flow_candidate = "\n".join(body_lines).strip()
     if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        inner = flow_candidate[1:-1]
         quote: str | None = None
         escaped = False
         comment = False
-        has_separator = False
-        for character in flow_candidate[1:-1]:
+        stack: list[str] = []
+        segment_has_content = False
+        segment_has_separator = False
+        saw_pair = False
+        valid_flow = True
+        for index, character in enumerate(inner):
             if comment:
                 if character in "\r\n":
                     comment = False
@@ -1051,12 +1067,42 @@ def _frontmatter_end(text: str) -> int:
                 continue
             if character in {"'", '"'}:
                 quote = character
+                segment_has_content = True
             elif character == "#":
                 comment = True
-            elif character == ":":
-                has_separator = True
-                break
-        if not flow_candidate[1:-1].strip() or has_separator:
+            elif character in "[{":
+                stack.append(character)
+                segment_has_content = True
+            elif character in "]}":
+                expected = "[" if character == "]" else "{"
+                if not stack or stack.pop() != expected:
+                    valid_flow = False
+                    break
+            elif not stack and character == ",":
+                if not segment_has_content or not segment_has_separator:
+                    valid_flow = False
+                    break
+                saw_pair = True
+                segment_has_content = False
+                segment_has_separator = False
+            elif not stack and character == ":":
+                if not segment_has_content:
+                    valid_flow = False
+                    break
+                if segment_has_separator:
+                    next_character = inner[index + 1 : index + 2]
+                    if not next_character or next_character.isspace():
+                        valid_flow = False
+                        break
+                else:
+                    segment_has_separator = True
+            elif not character.isspace():
+                segment_has_content = True
+        valid_flow = valid_flow and quote is None and not stack
+        if segment_has_content:
+            valid_flow = valid_flow and segment_has_separator
+            saw_pair = saw_pair or segment_has_separator
+        if valid_flow and (not inner.strip() or saw_pair):
             return offset
 
     def mapping_key_separator(line: str) -> int | None:

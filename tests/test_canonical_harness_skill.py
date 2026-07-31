@@ -1228,6 +1228,38 @@ def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path:
     check_harness_entry_contract(target, manifest)
 
 
+def test_invalid_flow_markdown_does_not_own_a_harness_entry_example(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    invalid_flow_example = (
+        "---\n"
+        "{key: [broken\n"
+        f"{HARNESS_ENTRY_BEGIN}\n"
+        "EXAMPLE BUSINESS BYTES\n"
+        f"{HARNESS_ENTRY_END}\n"
+        "}\n"
+        "---\n"
+        "\n# Business Skill\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(invalid_flow_example, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert invalid_flow_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 @pytest.mark.parametrize(
     "mapping_body",
     [

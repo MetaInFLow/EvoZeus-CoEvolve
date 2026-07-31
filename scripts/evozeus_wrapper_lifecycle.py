@@ -2297,11 +2297,16 @@ def _frontmatter_end(text: str) -> int:
 
     flow_candidate = "\n".join(body_lines).strip()
     if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        inner = flow_candidate[1:-1]
         quote: str | None = None
         escaped = False
         comment = False
-        has_separator = False
-        for character in flow_candidate[1:-1]:
+        stack: list[str] = []
+        segment_has_content = False
+        segment_has_separator = False
+        saw_pair = False
+        valid_flow = True
+        for index, character in enumerate(inner):
             if comment:
                 if character in "\r\n":
                     comment = False
@@ -2318,12 +2323,42 @@ def _frontmatter_end(text: str) -> int:
                 continue
             if character in {"'", '"'}:
                 quote = character
+                segment_has_content = True
             elif character == "#":
                 comment = True
-            elif character == ":":
-                has_separator = True
-                break
-        if not flow_candidate[1:-1].strip() or has_separator:
+            elif character in "[{":
+                stack.append(character)
+                segment_has_content = True
+            elif character in "]}":
+                expected = "[" if character == "]" else "{"
+                if not stack or stack.pop() != expected:
+                    valid_flow = False
+                    break
+            elif not stack and character == ",":
+                if not segment_has_content or not segment_has_separator:
+                    valid_flow = False
+                    break
+                saw_pair = True
+                segment_has_content = False
+                segment_has_separator = False
+            elif not stack and character == ":":
+                if not segment_has_content:
+                    valid_flow = False
+                    break
+                if segment_has_separator:
+                    next_character = inner[index + 1 : index + 2]
+                    if not next_character or next_character.isspace():
+                        valid_flow = False
+                        break
+                else:
+                    segment_has_separator = True
+            elif not character.isspace():
+                segment_has_content = True
+        valid_flow = valid_flow and quote is None and not stack
+        if segment_has_content:
+            valid_flow = valid_flow and segment_has_separator
+            saw_pair = saw_pair or segment_has_separator
+        if valid_flow and (not inner.strip() or saw_pair):
             return offset
 
     def mapping_key_separator(line: str) -> int | None:
@@ -2465,10 +2500,12 @@ def build_harness_activation_block(newline: str = "\n") -> str:
 
 
 def _harness_entry_pattern() -> re.Pattern[str]:
+    block = r"\r?\n".join(
+        re.escape(line) for line in build_harness_activation_block().splitlines()
+    )
     return re.compile(
-        rf"^{re.escape(HARNESS_ENTRY_BEGIN)}[ \t]*\r?\n"
-        rf".*?^{re.escape(HARNESS_ENTRY_END)}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
-        re.DOTALL | re.MULTILINE,
+        rf"^{block}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
+        re.MULTILINE,
     )
 
 
@@ -2761,20 +2798,14 @@ def _has_canonical_harness_entry(text: str) -> bool:
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
-    visible_markers = re.findall(
-        rf"^({re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*$",
-        visible,
-        re.MULTILINE,
-    )
+    entries = list(_harness_entry_pattern().finditer(visible))
     precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
         lines
         and lines[0].startswith("# ")
         and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
     )
     return (
-        visible_markers.count(HARNESS_ENTRY_BEGIN) == 1
-        and visible_markers.count(HARNESS_ENTRY_END) == 1
-        and build_harness_activation_block() in visible
+        len(entries) == 1
         and precedes_business
         and not owned_spans
         and not owned_conflicts
