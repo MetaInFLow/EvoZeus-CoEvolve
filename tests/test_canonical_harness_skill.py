@@ -1345,6 +1345,8 @@ def test_flow_frontmatter_preserves_an_exact_harness_entry_example(tmp_path: Pat
         '{"name":"Demo"}',
         "{name:'Demo'}",
         '{\n"name":"Demo"\n}',
+        "{a: b,# comment: ignored\nc: d}",
+        "{key: [http://example.com: 80]}",
         "tags:\n- alpha",
         "!!map\n? complex key\n: Demo",
     ],
