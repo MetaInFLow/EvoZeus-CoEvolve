@@ -2555,7 +2555,16 @@ def _canonical_harness_path_is_proven_owned(
     harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
     if harness is None:
         return False
-    return canonical_harness_skill_text_valid(_read_text_preserving_newlines(harness))
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "target"
+        / LEGACY_TARGET_EVOINFRA_DIR
+        / "skills"
+        / "using-evozeus-harness"
+        / "SKILL.md"
+    )
+    return template.is_file() and harness.read_bytes() == template.read_bytes()
 
 
 def canonical_harness_skill_text_valid(harness_text: str) -> bool:
