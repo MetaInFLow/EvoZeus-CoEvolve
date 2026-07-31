@@ -11,6 +11,9 @@ from pathlib import Path
 
 try:
     from .evozeus_wrapper_lifecycle import (
+        HARNESS_SKILL_VERSION,
+        LEGACY_TARGET_WRAPPER_MANIFEST,
+        OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
@@ -19,14 +22,19 @@ try:
         canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
+        load_wrapper_manifest,
         migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
         write_wrapper_manifest,
+        wrapper_manifest_status,
     )
 except ImportError:
     from evozeus_wrapper_lifecycle import (
+        HARNESS_SKILL_VERSION,
+        LEGACY_TARGET_WRAPPER_MANIFEST,
+        OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
@@ -35,11 +43,13 @@ except ImportError:
         canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
+        load_wrapper_manifest,
         migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
         write_wrapper_manifest,
+        wrapper_manifest_status,
     )
 
 
@@ -180,9 +190,70 @@ def validate_template_destination(target: Path, destination: Path) -> None:
             )
 
 
+def validate_existing_manifest_for_attach(
+    target: Path,
+    repo: str,
+    instruction_surface: str = "SKILL.md",
+) -> None:
+    """Allow an idempotent attach only for an already canonical wrapper manifest."""
+    try:
+        for relative in (
+            TARGET_WRAPPER_MANIFEST,
+            LEGACY_TARGET_WRAPPER_MANIFEST,
+            OLDEST_TARGET_WRAPPER_MANIFEST,
+        ):
+            validate_template_destination(target, target / relative)
+        status = wrapper_manifest_status(target)
+        if not status["active_manifest_path"]:
+            return
+        manifest = load_wrapper_manifest(target)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(
+            "existing wrapper manifest cannot be reused safely; run migrate-layout or an "
+            "approved Harness repair before attach"
+        ) from exc
+    expected = {
+        "layout_version": 2,
+        "canonical_repo": repo,
+        "instruction_surface": instruction_surface,
+        "harness_skill_path": TARGET_HARNESS_SKILL,
+        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_managed": True,
+    }
+    mismatches = [
+        field
+        for field, value in expected.items()
+        if not isinstance(manifest, dict) or manifest.get(field) != value
+    ]
+    if mismatches:
+        raise ValueError(
+            "existing wrapper manifest requires migrate-layout before attach; incompatible fields: "
+            + ", ".join(mismatches)
+        )
+
+
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
+    template_files = [
+        src
+        for src in sorted(TARGET_TEMPLATE_DIR.rglob("*"))
+        if not src.is_dir()
+        and "__pycache__" not in src.parts
+        and src.suffix not in {".pyc", ".pyo"}
+    ]
+    template_destinations = [
+        (src, target / target_template_path(src.relative_to(TARGET_TEMPLATE_DIR)))
+        for src in template_files
+    ]
+    script_dst = target / TARGET_PREFLIGHT_SCRIPT
+    notice_dst = target / TARGET_NOTICE_SCRIPT
+    for destination in [
+        *(destination for _, destination in template_destinations),
+        script_dst,
+        notice_dst,
+    ]:
+        validate_template_destination(target, destination)
+
     existing_harness = target / TARGET_HARNESS_SKILL
-    validate_template_destination(target, existing_harness)
     if existing_harness.exists() or existing_harness.is_symlink():
         if existing_harness.is_symlink() or not existing_harness.is_file():
             raise ValueError(
@@ -204,13 +275,9 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
                 )
 
     actions: list[str] = []
-    for src in sorted(TARGET_TEMPLATE_DIR.rglob("*")):
-        if src.is_dir() or "__pycache__" in src.parts or src.suffix in {".pyc", ".pyo"}:
-            continue
-        rel = src.relative_to(TARGET_TEMPLATE_DIR)
-        actions.append(copy_template_file(src, target / target_template_path(rel), replacements, force))
+    for src, destination in template_destinations:
+        actions.append(copy_template_file(src, destination, replacements, force))
 
-    script_dst = target / TARGET_PREFLIGHT_SCRIPT
     if script_dst.exists() and not force:
         actions.append(f"skip existing {script_dst}")
     else:
@@ -218,7 +285,6 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
         script_dst.chmod(0o755)
         actions.append(f"write {script_dst}")
-    notice_dst = target / TARGET_NOTICE_SCRIPT
     if notice_dst.exists() and not force:
         actions.append(f"skip existing {notice_dst}")
     else:
@@ -394,6 +460,10 @@ def main() -> int:
     except ValueError as exc:
         fail(str(exc))
     validate_repo(args.repo)
+    try:
+        validate_existing_manifest_for_attach(target, args.repo)
+    except ValueError as exc:
+        fail(str(exc))
     if not TARGET_TEMPLATE_DIR.exists():
         fail(f"template folder missing: {TARGET_TEMPLATE_DIR}")
     if not PREFLIGHT_SCRIPT.exists():

@@ -16,6 +16,7 @@ from scripts.evozeus_wrapper_bootstrap import (
     build_wrapper_section,
     copy_templates,
     inject_evolution_method,
+    validate_existing_manifest_for_attach,
 )
 from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_ENTRY_BEGIN,
@@ -215,6 +216,22 @@ def test_attach_rejects_a_symlinked_harness_parent_without_writing_outside_repo(
     assert not (target / ".github").exists()
 
 
+def test_attach_preflights_every_template_destination_before_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside-github"
+    outside.mkdir()
+    (target / ".github").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=False)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".codex").exists()
+
+
 @pytest.mark.parametrize(
     "damaged_entry",
     [
@@ -259,6 +276,35 @@ def test_attach_preflight_rejects_a_truncated_owned_surface_before_template_writ
     assert skill.read_text(encoding="utf-8") == original
     assert not (target / ".evozeus-wrapper").exists()
     assert not (target / ".github").exists()
+
+
+def test_attach_preflight_routes_an_existing_legacy_manifest_to_migration(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original_skill = legacy_skill_text()
+    skill.write_text(original_skill, encoding="utf-8")
+    manifest = write_manifest(target, legacy=True)
+    manifest_path = target / TARGET_WRAPPER_MANIFEST
+    original_manifest = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="requires migrate-layout before attach"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+    assert skill.read_text(encoding="utf-8") == original_skill
+    assert manifest_path.read_bytes() == original_manifest
+    assert not (target / TARGET_HARNESS_SKILL).exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_allows_an_idempotent_canonical_manifest(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+
+    validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
 
 
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
