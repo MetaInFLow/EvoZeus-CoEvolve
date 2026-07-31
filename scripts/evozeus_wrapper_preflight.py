@@ -439,15 +439,21 @@ def _canonical_harness_entry_block() -> str:
 
 
 def _mask_markdown_fenced_code(text: str) -> str:
-    """Replace fenced code bytes with spaces while preserving offsets and newlines."""
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
+    frontmatter_end = len(text) - len(content_after_frontmatter(text))
     fence: tuple[str, int] | None = None
+    offset = 0
 
     def mask_line(line: str) -> str:
         return "".join(character if character in "\r\n" else " " for character in line)
 
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
         if fence:
             fence_char, minimum_length = fence
             if re.match(
@@ -456,6 +462,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 fence = None
             masked.append(mask_line(line))
+            offset += len(line)
             continue
         fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
         if fence_match:
@@ -466,6 +473,7 @@ def _mask_markdown_fenced_code(text: str) -> str:
             masked.append(mask_line(line))
         else:
             masked.append(line)
+        offset += len(line)
     return "".join(masked)
 
 
@@ -476,15 +484,22 @@ def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
     visible = _mask_markdown_fenced_code(text)
-    start = visible.find(HARNESS_ENTRY_BEGIN)
-    end = visible.find(HARNESS_ENTRY_END)
+    marker_pattern = re.compile(
+        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+        re.MULTILINE,
+    )
+    markers = list(marker_pattern.finditer(visible))
+    begins = [match for match in markers if match.group("begin")]
+    ends = [match for match in markers if match.group("end")]
     if (
-        visible.count(HARNESS_ENTRY_BEGIN) != 1
-        or visible.count(HARNESS_ENTRY_END) != 1
-        or start > end
+        len(begins) != 1
+        or len(ends) != 1
+        or begins[0].start() > ends[0].start()
     ):
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
-    end += len(HARNESS_ENTRY_END)
+    start = begins[0].start()
+    end = ends[0].start() + len(HARNESS_ENTRY_END)
     block = text[start:end]
     if block != _canonical_harness_entry_block():
         fail("instruction surface Harness Skill link does not match the canonical manifest path")
@@ -766,13 +781,38 @@ def check_terms(text: str, term_groups: list[list[str]], label: str) -> None:
         fail(f"{label} missing required concepts: {', '.join(missing)}")
 
 
+def _frontmatter_end(text: str) -> int:
+    lines = text.splitlines(keepends=True)
+    if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
+        return 0
+    offset = len(lines[0])
+    body_lines: list[str] = []
+    for line in lines[1:]:
+        offset += len(line)
+        if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    saw_mapping_key = False
+    key_pattern = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
+    )
+    for line in body_lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line.startswith((" ", "\t")) and saw_mapping_key:
+            continue
+        if key_pattern.match(line):
+            saw_mapping_key = True
+            continue
+        return 0
+    return offset if saw_mapping_key else 0
+
+
 def content_after_frontmatter(text: str) -> str:
-    if not re.match(r"\A---[ \t]*\r?\n", text):
-        return text
-    match = re.match(r"\A---[ \t]*\r?\n.*?\r?\n(?:---|\.\.\.)[ \t]*\r?\n", text, re.DOTALL)
-    if not match:
-        return text
-    return text[match.end() :]
+    return text[_frontmatter_end(text) :]
 
 
 def check_status_prelude(skill_text: str, label: str = "SKILL.md") -> None:

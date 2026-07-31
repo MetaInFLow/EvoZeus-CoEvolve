@@ -1077,6 +1077,108 @@ def test_migration_preserves_harness_entry_examples_inside_indented_code(tmp_pat
     check_harness_entry_contract(target, manifest)
 
 
+def test_migration_preserves_harness_entry_examples_inside_frontmatter(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = (
+        "---\n"
+        'name: "example"\n'
+        "description: |\n"
+        f"  {HARNESS_ENTRY_BEGIN}\n"
+        "  EXAMPLE BUSINESS BYTES\n"
+        f"  {HARNESS_ENTRY_END}\n"
+        "---\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business_prefix = "---\n# Business introduction\n\n"
+    business_suffix = "---\n\n# Business continuation\n"
+    skill = target / "SKILL.md"
+    skill.write_text(
+        business_prefix + build_harness_activation_block() + "\n" + business_suffix,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+    assert business_prefix + business_suffix in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "container_example",
+    [
+        (
+            f"> {HARNESS_ENTRY_BEGIN}\n"
+            "> EXAMPLE BUSINESS BYTES\n"
+            f"> {HARNESS_ENTRY_END}\n"
+        ),
+        (
+            "- Example entry:\n"
+            f"  {HARNESS_ENTRY_BEGIN}\n"
+            "  EXAMPLE BUSINESS BYTES\n"
+            f"  {HARNESS_ENTRY_END}\n"
+        ),
+    ],
+)
+def test_migration_preserves_harness_entry_examples_inside_markdown_containers(
+    tmp_path: Path,
+    container_example: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + container_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert container_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
     tmp_path: Path,
 ) -> None:
