@@ -73,9 +73,9 @@ python3 .evozeus-wrapper/scripts/evozeus_branch_consumer.py plan \
 2. 用户明确授权计划中的 branch/worktree 动作；随后用同一参数增加 `--approve-save-plan`，只把脱敏计划写入私有 ledger。
 3. 按 `next_write_action` 创建或恢复独立 branch/worktree，并再次运行计划确认 `resume.decision=resume`。
 
-默认 ledger 位于 `~/.evozeus/coevolve/branch-plans/OWNER/REPO/<resume-key>.json`，仅保存 owner 可读写内容。后续 commit、push、PR 前都使用该文件作为 `--resume-plan` 重新执行实时门禁；repo、base ref、base commit、target branch、actor 或 resolved permission 任一变化即停止并要求 Owner 重新确认。
+默认 ledger 位于 `~/.evozeus/coevolve/branch-plans/OWNER/REPO/<resume-key>.json`，仅保存 owner 可读写内容。后续 commit、push、PR 前都使用该文件作为 `--resume-plan` 重新执行实时门禁；repo、base ref、base commit、target branch、actor 或 resolved permission 任一变化即停止。仅 ownership 时间窗超期且完整身份仍匹配时，Owner 可显式增加 `--reconfirm-owner` 生成 refreshed plan；保存 refreshed ledger 仍需 `--approve-save-plan`。
 
-PR 描述只复制输出中的 `pr_metadata`，不得发布 ledger 路径、Repo 本地路径、worktree 路径或内部错误。目标 PR 检查使用 `pull_request_target`：从 base SHA 执行可信 validator，把 head SHA 仅作为数据读取，通过 live GitHub event/API 重算 actor、head Repo 对应的 direct/fork、Issue 状态/类型/分类与 resume key。候选分支中的 validator、consumer 或 workflow 不参与本次信任判定。
+PR 描述只复制输出中的 `pr_metadata`，不得发布 ledger 路径、Repo 本地路径、worktree 路径或内部错误。目标 PR 检查使用 `pull_request_target`：从 base SHA 执行可信 validator，把 head SHA 仅作为数据读取，通过 live GitHub event/API 重算 actor、head Repo 对应的 direct/fork、Issue 状态/类型/分类与 resume key。候选分支中的 validator、consumer 或 workflow 不参与本次信任判定。Issue 后续编辑、关闭、转移、重新打开或分类标签变化时，默认分支 trusted job 通过 Actions API 重跑精确关联开放 PR 的原 workflow run，使 required check 再次读取 live Issue evidence。
 
 官方 Harness upgrade 使用独立 gate，并消费 CoEvolve PR #31 admin publisher 的 `evozeus/harness-vX-to-vY` 输出。Head 必须来自 canonical Repo，PR author 必须由 live API 证明为 `ADMIN`；除 target-owned Changelog 外，全部 managed files 都从已发布且非 prerelease 的 CoEvolve Release 取得 source 并完成目标渲染后核对，`.codex/hooks.json` 保持非 wrapper entries。Diff 只允许官方 managed files、canonical manifest、受所有权 marker 约束的 activation surface 与版本迁移记录。该 profile 不要求 Contributor Branch Plan 元数据。Issue 授权、ledger 保存与 branch plan 均不自动授权 commit、push 或 PR。
 

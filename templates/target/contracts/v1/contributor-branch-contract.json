@@ -1,7 +1,7 @@
 {
   "$id": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
   "contract": "evozeus.contributor_branch",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "schema_version": "v1",
   "compatibility": { "evozeus": ">=0.4.1", "coevolve_consumer": ">=0.14.0", "unknown_fields": "ignore", "unknown_profile_or_major_version": "fail_closed" },
   "protected_refs": { "exact": ["main", "master", "uat/current", "stable"], "prefixes": ["release/"], "direct_business_write": "deny" },
@@ -96,7 +96,19 @@
     "profile_classification_mismatch": "block",
     "evidence_fields": ["source", "checked_at", "number", "state", "is_pull_request", "labels", "title"]
   },
-  "resume": { "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "component", "purpose"], "owner_field": "actor", "base_match": ["ref", "commit"], "stale_after_days": 14, "mismatch_or_stale": "block_and_require_owner_reconfirmation" },
+  "resume": {
+    "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "purpose.type", "purpose.component", "purpose.summary"],
+    "owner_field": "actor",
+    "base_match": ["ref", "commit"],
+    "stale_after_days": 14,
+    "mismatch_or_stale": "block_and_require_owner_reconfirmation",
+    "owner_reconfirmation": {
+      "cli_flag": "--reconfirm-owner",
+      "requires_resume_plan": true,
+      "requires_matching_identity": true,
+      "ledger_refresh_requires": "--approve-save-plan"
+    }
+  },
   "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block" },
   "blocking_handling": {
     "dirty_tree": "block",

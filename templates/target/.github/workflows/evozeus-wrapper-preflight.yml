@@ -9,7 +9,7 @@ on:
       - ".github/workflows/evozeus-wrapper-preflight.yml"
   workflow_dispatch:
   issues:
-    types: [opened, edited]
+    types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
   release:
@@ -49,10 +49,16 @@ jobs:
 
   issue:
     if: github.event_name == 'issues'
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Write issue body
+        if: github.event.action == 'opened' || github.event.action == 'edited'
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
@@ -62,7 +68,19 @@ jobs:
           Path("/tmp/skill-feedback-issue.md").write_text(os.environ.get("ISSUE_BODY", ""), encoding="utf-8")
           PY
       - name: Validate issue template content
+        if: github.event.action == 'opened' || github.event.action == 'edited'
         run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py issue --file /tmp/skill-feedback-issue.md
+      - name: Re-run linked Pull Request gates
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: >-
+          python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py issue-pr-revalidate
+          --github-repository "$GH_REPOSITORY"
+          --github-issue-number "$GH_ISSUE_NUMBER"
+          --json
 
   pull-request:
     if: github.event_name == 'pull_request_target'
