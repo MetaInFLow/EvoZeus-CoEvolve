@@ -32,12 +32,14 @@ from scripts.evozeus_wrapper_lifecycle import (
     migrate_target_layout,
     plan_harness_upgrade,
     plan_target_layout_migration,
+    validate_instruction_surface_for_harness_entry,
     write_wrapper_manifest,
 )
 from scripts.evozeus_wrapper_preflight import (
     HARNESS_SKILL_TERMS,
     check_harness_entry_contract,
     check_harness_skill_contract,
+    discover_runtime_bundle,
 )
 
 
@@ -172,6 +174,48 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
 
     copy_templates(target, replacements(), force=True)
     assert "name: using-evozeus-harness" in harness.read_text(encoding="utf-8")
+
+
+def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("OWNER BYTES\n", encoding="utf-8")
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True)
+    harness.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="existing canonical Harness Skill path is unsafe"):
+        copy_templates(target, replacements(), force=True)
+
+    assert harness.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "OWNER BYTES\n"
+    assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_rejects_a_truncated_owned_surface_before_template_writes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original = (
+        "## 自进化方法\n\n"
+        "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。\n\n"
+        "Owner business text must survive.\n"
+    )
+    skill.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot be migrated safely"):
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+
+    assert skill.read_text(encoding="utf-8") == original
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".github").exists()
 
 
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
@@ -776,6 +820,41 @@ def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
     assert report["writes"] is True
     assert harness.read_text(encoding="utf-8").startswith("---\n")
     assert run_structure(target).returncode == 0
+
+
+def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
+    tmp_path: Path,
+) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    bundle = discover_runtime_bundle(wrapped)
+    assert TARGET_HARNESS_SKILL in bundle["required_files"]
+
+    harness = wrapped / TARGET_HARNESS_SKILL
+    harness.unlink()
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(wrapped / TARGET_PREFLIGHT_SCRIPT),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert runtime.returncode == 1
+    assert TARGET_HARNESS_SKILL in runtime.stderr
+
+    standalone = tmp_path / "standalone-runtime"
+    standalone.mkdir()
+    (standalone / "SKILL.md").write_text(
+        build_harness_activation_block() + "\n\n# Business\n",
+        encoding="utf-8",
+    )
+    assert TARGET_HARNESS_SKILL in discover_runtime_bundle(standalone)["required_files"]
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:

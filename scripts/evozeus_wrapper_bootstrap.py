@@ -21,6 +21,7 @@ try:
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
+        validate_instruction_surface_for_harness_entry,
         version_key,
         write_wrapper_manifest,
     )
@@ -36,6 +37,7 @@ except ImportError:
         latest_changelog_tag,
         migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
+        validate_instruction_surface_for_harness_entry,
         version_key,
         write_wrapper_manifest,
     )
@@ -164,24 +166,25 @@ def target_template_path(rel: Path) -> Path:
 
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
     existing_harness = target / TARGET_HARNESS_SKILL
-    if (existing_harness.exists() or existing_harness.is_symlink()) and not force:
+    if existing_harness.exists() or existing_harness.is_symlink():
         if existing_harness.is_symlink() or not existing_harness.is_file():
             raise ValueError(
                 f"existing canonical Harness Skill path is unsafe: {existing_harness}; "
-                "use an approved repair with --force"
+                "remove the unsafe path before an approved repair"
             )
-        try:
-            existing_text = existing_harness.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(
-                f"existing canonical Harness Skill cannot be verified: {existing_harness}; "
-                "use an approved repair with --force"
-            ) from exc
-        if not canonical_harness_skill_text_valid(existing_text):
-            raise ValueError(
-                f"existing canonical Harness Skill is incompatible: {existing_harness}; "
-                "preserve it and use an approved repair with --force"
-            )
+        if not force:
+            try:
+                existing_text = existing_harness.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(
+                    f"existing canonical Harness Skill cannot be verified: {existing_harness}; "
+                    "use an approved repair with --force"
+                ) from exc
+            if not canonical_harness_skill_text_valid(existing_text):
+                raise ValueError(
+                    f"existing canonical Harness Skill is incompatible: {existing_harness}; "
+                    "preserve it and use an approved repair with --force"
+                )
 
     actions: list[str] = []
     for src in sorted(TARGET_TEMPLATE_DIR.rglob("*")):
@@ -370,6 +373,10 @@ def main() -> int:
             "Harness can only be attached at the independent Git repository root: "
             f"requested={target}; repo_root={repo_root}"
         )
+    try:
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+    except ValueError as exc:
+        fail(str(exc))
     validate_repo(args.repo)
     if not TARGET_TEMPLATE_DIR.exists():
         fail(f"template folder missing: {TARGET_TEMPLATE_DIR}")
