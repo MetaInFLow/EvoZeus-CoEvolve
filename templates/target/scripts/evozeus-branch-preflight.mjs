@@ -367,11 +367,13 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     issue?.reference ?? options.issue,
     resolvedActor.toLowerCase(),
     resolvedPermission,
+    options.type,
     options.component,
     options.summary
   ]);
   let decision = "new";
   let resumeValid = false;
+  let ownerReconfirmed = false;
 
   if (resumePlan) {
     const ownershipTime = Date.parse(resumePlan.ownership?.checked_at ?? "");
@@ -382,8 +384,14 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       && resumePlan.repo?.canonical === options.repo
       && resumePlan.base?.ref === options.base
       && resumePlan.branch?.target === branchName;
-    if (!ownershipMatches || !Number.isFinite(ownershipTime) || nowTime - ownershipTime > staleMs) {
-      addBlocker(blockers, "stale_ownership", "resume plan owner, key, branch, or ownership window is stale");
+    const ownershipStale = !Number.isFinite(ownershipTime)
+      || !Number.isFinite(nowTime)
+      || ownershipTime > nowTime
+      || nowTime - ownershipTime > staleMs;
+    if (!ownershipMatches) {
+      addBlocker(blockers, "stale_ownership", "resume plan owner, key, or branch does not match");
+    } else if (ownershipStale && !options.reconfirm_owner) {
+      addBlocker(blockers, "stale_ownership", "resume plan ownership window is stale; Owner reconfirmation is required");
     } else if (resumePlan.base?.commit !== facts.base_commit) {
       addBlocker(blockers, "stale_base", "resume plan base commit no longer matches the canonical base");
     } else if (!facts.target_commit) {
@@ -391,6 +399,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     } else {
       decision = "resume";
       resumeValid = true;
+      ownerReconfirmed = ownershipStale && Boolean(options.reconfirm_owner);
     }
   } else if (facts.target_commit) {
     addBlocker(blockers, "branch_collision", "target branch exists without a matching resume plan");
@@ -470,7 +479,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       }
     },
     ownership: { actor: resolvedActor, checked_at: options.now },
-    resume: { key: resumeKey, decision },
+    resume: { key: resumeKey, decision, owner_reconfirmed: ownerReconfirmed },
     next_write_action: blockers.length === 0
       ? (decision === "resume" ? "resume_existing_branch_in_isolated_worktree" : permission.next_write_action)
       : "blocked",
@@ -493,6 +502,10 @@ function parseArguments(argv) {
       options.json = true;
       continue;
     }
+    if (token === "--reconfirm-owner") {
+      options.reconfirm_owner = true;
+      continue;
+    }
     if (!token.startsWith("--") || !valueOptions.has(token.slice(2)) || index + 1 >= argv.length) {
       throw new Error(`invalid argument: ${token}`);
     }
@@ -502,6 +515,9 @@ function parseArguments(argv) {
   const required = ["profile", "repo", "repo_path", "base", "issue", "actor", "type", "component", "summary", "permission", "worktree"];
   const missing = required.filter((key) => !options[key]);
   if (missing.length > 0) throw new Error(`missing arguments: ${missing.join(", ")}`);
+  if (options.reconfirm_owner && !options.resume_plan) {
+    throw new Error("--reconfirm-owner requires --resume-plan");
+  }
   options.date ||= new Date().toISOString().slice(0, 10).replaceAll("-", "");
   options.now = new Date().toISOString();
   return options;

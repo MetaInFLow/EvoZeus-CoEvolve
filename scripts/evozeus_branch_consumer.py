@@ -19,10 +19,10 @@ from typing import Any
 PROFILE = "coevolve_target_skillware_consumer"
 PROVENANCE_SCHEMA = "evozeus.coevolve.contributor-branch-snapshot-provenance.v1"
 CONTRACT_ID = "evozeus.contributor_branch"
-CONTRACT_VERSION = "1.1.0"
-CORE_REVISION = "b343a01ea2556835884b066c551f6fbe862ccb97"
-CONTRACT_SHA256 = "e1d4b43070d786ad14fffd7e5b9e13487c6942ea95f4c33c56734874dca7ffdd"
-PLANNER_SHA256 = "b439b1666cd9fd68a246f8a73dc4335f36e841297d6b14ca73e05af7a1923df4"
+CONTRACT_VERSION = "1.2.0"
+CORE_REVISION = "363a579693dd236bef5ecef9eb45309de15625f7"
+CONTRACT_SHA256 = "a518ca6d6192ead0bac76eb2ec27f0581cbee82813033824bd5e40f805a65d6f"
+PLANNER_SHA256 = "78edb3c6dd1e6d96bdd1011d3a631cab0f73f8fc73ebbe76bf0244dba186660b"
 CONTRACT_RELATIVE_PATH = Path("contracts/v1/contributor-branch-contract.json")
 PROVENANCE_RELATIVE_PATH = Path("contracts/v1/contributor-branch-provenance.json")
 PLANNER_RELATIVE_PATH = Path("scripts/evozeus-branch-preflight.mjs")
@@ -274,6 +274,7 @@ def compute_resume_key(
     issue: str,
     actor: str,
     permission: str,
+    purpose_type: str,
     component: str,
     summary: str,
 ) -> str:
@@ -284,6 +285,7 @@ def compute_resume_key(
         issue,
         actor.lower(),
         permission,
+        purpose_type,
         component,
         summary,
     )
@@ -305,6 +307,7 @@ def public_pr_metadata(plan: dict[str, Any]) -> dict[str, Any]:
         issue=issue,
         actor=actor,
         permission=permission,
+        purpose_type=purpose.get("type"),
         component=purpose.get("component"),
         summary=purpose.get("summary"),
     )
@@ -382,7 +385,7 @@ def write_ledger_plan(path: Path, plan: dict[str, Any]) -> None:
 
 
 def run_core_planner(
-    options: dict[str, str | None],
+    options: dict[str, str | bool | None],
     *,
     ledger_root: Path,
     approve_save_plan: bool,
@@ -404,8 +407,11 @@ def run_core_planner(
 
     arguments = [node, str(assets["planner_path"]), "plan"]
     for key, value in options.items():
-        if value is not None:
-            arguments.extend([f"--{key.replace('_', '-')}", str(value)])
+        if value is None or value is False:
+            continue
+        arguments.append(f"--{key.replace('_', '-')}")
+        if not isinstance(value, bool):
+            arguments.append(str(value))
     arguments.append("--json")
     try:
         result = subprocess.run(
@@ -512,6 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
         plan.add_argument(f"--{name}", required=True)
     plan.add_argument("--date")
     plan.add_argument("--resume-plan")
+    plan.add_argument("--reconfirm-owner", action="store_true")
     plan.add_argument("--approve-save-plan", action="store_true")
     plan.add_argument("--json", action="store_true")
     return parser
@@ -528,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
         return returncode
 
     ledger_root = Path.home() / DEFAULT_LEDGER_RELATIVE_PATH
-    option_names = ("profile", "repo", "repo_path", "base", "issue", "actor", "type", "component", "summary", "permission", "worktree", "date", "resume_plan")
+    option_names = ("profile", "repo", "repo_path", "base", "issue", "actor", "type", "component", "summary", "permission", "worktree", "date", "resume_plan", "reconfirm_owner")
     options = {name: getattr(args, name) for name in option_names}
     try:
         report, returncode = run_core_planner(

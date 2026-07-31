@@ -577,6 +577,10 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("--target candidate", workflow)
         self.assertNotIn("python3 candidate/.evozeus-wrapper/scripts/", workflow)
         self.assertIn("pull-requests: read", workflow)
+        self.assertIn("types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]", workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertIn("issue-pr-revalidate", workflow)
+        self.assertIn("if: always()", workflow)
 
     def test_copy_templates_consolidates_wrapper_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,9 +24,9 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `b343a01ea2556835884b066c551f6fbe862ccb97`：
+权威文件来自 EvoZeus Core revision `363a579693dd236bef5ecef9eb45309de15625f7`：
 
-- contract：`evozeus.contributor_branch` `1.1.0`
+- contract：`evozeus.contributor_branch` `1.2.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
 - canonical contract `$id`：`https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json`
 
@@ -71,6 +71,8 @@ PR 只使用 `pr_metadata`：contract revision/digest、profile、purpose、resu
 
 业务 PR 的公开字段只用于提交计划身份，不承担自证。`pull_request_target` workflow 从 event 指定的 exact base SHA checkout 执行可信 validator/consumer，再把 exact head SHA checkout 当作数据读取。Validator 以 live event/API 核验 canonical Repo、head Repo 对应的 direct/fork 路径、PR author、base、OPEN Issue/非 PR/Skill Feedback 分类，并按合同字段重算 resume key。候选分支内的 workflow、validator、consumer 与 timestamp 不参与本次信任判定。
 
+Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件会由默认分支中的 trusted issue job 定位 PR body 精确引用该 Issue 的开放业务 PR，并通过 GitHub Actions API 重跑各 PR 当前 head 对应的最新 `pull_request_target` workflow run。原 PR check 在原 ref 上重新读取 live Issue evidence，required check 随之进入 pending 并更新为 success/failure；已有 run 正在执行时不重复排队，找不到当前 head 的 trusted run 时 fail closed 并要求 edit/reopen PR。
+
 官方 Harness upgrade 使用独立 profile，直接消费 [CoEvolve PR #31](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 admin publisher 合同：branch 为 `evozeus/harness-vX-to-vY`，head 来自 canonical Repo，PR author 由 live API 证明为 `ADMIN`。除 target-owned `.evozeus-wrapper/CHANGELOG.md` 外，全部 wrapper-managed files 都与 base 绑定；upgrade 时从同版本、已发布且非 prerelease 的 CoEvolve Release 取得每一份官方 source，完成目标占位符渲染后逐字节核对。`.codex/hooks.json` 只替换 wrapper-owned entry并保持其他 target hooks。API diff 只允许官方 managed controls、canonical manifest、所有权 marker 内 activation 内容和明确版本迁移记录。Marker 外业务字节、额外业务文件、rename source、fork copy 或 manifest target/source identity 变化均阻断。该 profile 跳过业务 Contributor Plan metadata。
 
 ## 失败与恢复
@@ -81,7 +83,8 @@ PR 只使用 `pr_metadata`：contract revision/digest、profile、purpose、resu
 | planner 超时或输出结构/退出码矛盾 | 稳定 blocker | 检查本机 Node/Git，修复后重新计划 |
 | dirty canonical/current checkout | 停止 | 清理或保留现状并选择新的 clean 上下文 |
 | wrong base / branch collision / worktree collision | 停止 | 回到 canonical base，重新选择目标或提供匹配 ledger |
-| ledger stale 或完整身份变化 | 停止 | Owner 重新确认并生成新计划 |
+| ledger 超过 ownership 时间窗且完整身份仍匹配 | 默认停止 | Owner 显式增加 `--reconfirm-owner` 生成 refreshed plan；持久化仍需 `--approve-save-plan` |
+| ledger 完整身份变化 | 停止 | 原 ledger 不可重新确认；重新核对 owner、base、branch 与授权 |
 | permission evidence 缺失 | local permission path | 保持 push/PR 禁用，或恢复证据后重新计划 |
 | Issue evidence 缺失、关闭、PR-shaped 或未分类 | 停止 | 恢复 live OPEN Skill Feedback Issue 证据 |
 | candidate PR control code 与 base 不一致 | 停止 | 普通业务 PR 撤销控制面改动 |

@@ -1309,6 +1309,160 @@ def check_live_feedback_issue(
     ok("PR Issue identity, state, type, and Skill-feedback classification are live-verified")
 
 
+def revalidate_linked_pull_request_runs(
+    repo: str,
+    issue_number: int,
+    *,
+    runner=subprocess.run,
+) -> dict[str, object]:
+    if not GITHUB_REPO_RE.fullmatch(repo) or issue_number < 1:
+        fail("Issue-triggered PR revalidation requires OWNER/REPO and a positive Issue number")
+
+    def request_json(endpoint: str, label: str) -> object:
+        try:
+            result = runner(
+                ["gh", "api", endpoint, "--hostname", "github.com"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            fail(f"{label} is unavailable")
+        if result.returncode != 0:
+            fail(f"{label} is unavailable")
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            fail(f"{label} is invalid")
+
+    issue_pattern = re.compile(
+        rf"(?mi)^-[ \t]+Issue:[ \t]*`?{re.escape(repo)}#{issue_number}`?[ \t]*$",
+    )
+    linked_prs: dict[int, dict] = {}
+    for page in range(1, 11):
+        pull_requests = request_json(
+            f"repos/{repo}/pulls?state=open&per_page=100&page={page}",
+            "open Pull Request evidence",
+        )
+        if not isinstance(pull_requests, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("number"), int)
+            or item.get("body") is not None and not isinstance(item.get("body"), str)
+            or not isinstance(item.get("head"), dict)
+            or not re.fullmatch(r"[0-9a-f]{40}", str(item["head"].get("sha", "")))
+            for item in pull_requests
+        ):
+            fail("open Pull Request evidence is invalid")
+        for pull_request in pull_requests:
+            if issue_pattern.search(pull_request.get("body") or ""):
+                linked_prs[pull_request["number"]] = pull_request
+        if len(pull_requests) < 100:
+            break
+    else:
+        fail("open Pull Request inventory exceeds the trusted revalidation limit")
+
+    if not linked_prs:
+        return {
+            "schema_version": "evozeus.coevolve.issue-pr-revalidation.v1",
+            "repository": repo,
+            "issue_number": issue_number,
+            "linked_pull_requests": [],
+            "rerun_requested": [],
+            "already_pending": [],
+            "writes": False,
+        }
+
+    latest_runs: dict[int, dict] = {}
+    for page in range(1, 11):
+        workflow_runs = request_json(
+            f"repos/{repo}/actions/workflows/evozeus-wrapper-preflight.yml/runs"
+            f"?event=pull_request_target&exclude_pull_requests=false&per_page=100&page={page}",
+            "trusted Pull Request workflow-run evidence",
+        )
+        runs = workflow_runs.get("workflow_runs") if isinstance(workflow_runs, dict) else None
+        if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
+            fail("trusted Pull Request workflow-run evidence is invalid")
+        for run in runs:
+            pull_requests = run.get("pull_requests")
+            if not isinstance(pull_requests, list):
+                fail("trusted Pull Request workflow-run association is invalid")
+            for pull_request in pull_requests:
+                number = pull_request.get("number") if isinstance(pull_request, dict) else None
+                run_head = pull_request.get("head") if isinstance(pull_request, dict) else None
+                current_head = linked_prs.get(number, {}).get("head")
+                if (
+                    number in linked_prs
+                    and isinstance(run_head, dict)
+                    and isinstance(current_head, dict)
+                    and run_head.get("sha") == current_head.get("sha")
+                ):
+                    run_number = run.get("run_number")
+                    previous_number = latest_runs.get(number, {}).get("run_number", -1)
+                    if not isinstance(run_number, int):
+                        fail("trusted Pull Request workflow-run identity is invalid")
+                    if run_number > previous_number:
+                        latest_runs[number] = run
+        if len(runs) < 100:
+            break
+    else:
+        fail("trusted Pull Request workflow-run inventory exceeds the revalidation limit")
+
+    missing_runs = sorted(set(linked_prs) - set(latest_runs))
+    if missing_runs:
+        fail(
+            "linked Pull Requests have no trusted pull_request_target run for the current head; edit or reopen them: "
+            + ", ".join(f"#{number}" for number in missing_runs)
+        )
+
+    rerun_ids: list[tuple[int, int]] = []
+    already_pending: list[int] = []
+    for number, run in latest_runs.items():
+        run_id = run.get("id")
+        status = run.get("status")
+        event = run.get("event")
+        if (
+            not isinstance(run_id, int)
+            or event != "pull_request_target"
+            or status not in {"completed", "queued", "in_progress", "requested", "waiting", "pending"}
+        ):
+            fail("trusted Pull Request workflow-run identity is invalid")
+        if status == "completed":
+            rerun_ids.append((number, run_id))
+        else:
+            already_pending.append(number)
+
+    rerun_requested: list[int] = []
+    for number, run_id in rerun_ids:
+        try:
+            result = runner(
+                [
+                    "gh", "api", "--method", "POST",
+                    f"repos/{repo}/actions/runs/{run_id}/rerun",
+                    "--hostname", "github.com",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            fail(f"Pull Request #{number} trusted workflow re-run request is unavailable")
+        if result.returncode != 0:
+            fail(f"Pull Request #{number} trusted workflow re-run request failed")
+        rerun_requested.append(number)
+
+    return {
+        "schema_version": "evozeus.coevolve.issue-pr-revalidation.v1",
+        "repository": repo,
+        "issue_number": issue_number,
+        "linked_pull_requests": sorted(linked_prs),
+        "rerun_requested": sorted(rerun_requested),
+        "already_pending": sorted(already_pending),
+        "writes": bool(rerun_requested),
+    }
+
+
 def check_trusted_pr_checkouts(
     candidate: Path,
     trusted_root: Path,
@@ -1808,6 +1962,7 @@ def check_branch_pr_metadata(
         issue=values["Issue"],
         actor=github_actor,
         permission=event_permission,
+        purpose_type=purpose_type,
         component=component,
         summary=summary,
     )
@@ -2179,6 +2334,14 @@ def main() -> int:
     issue.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     issue.add_argument("--file", required=True, help="Markdown file containing the issue body.")
 
+    issue_prs = sub.add_parser(
+        "issue-pr-revalidate",
+        help="Re-run trusted PR gates linked to a changed Feedback Issue.",
+    )
+    issue_prs.add_argument("--github-repository", required=True, help="Trusted github.repository value.")
+    issue_prs.add_argument("--github-issue-number", required=True, type=int, help="Trusted Issue event number.")
+    issue_prs.add_argument("--json", action="store_true", help="Return the revalidation report as JSON.")
+
     pr = sub.add_parser("pr", help="Check Skill evolution PR readiness.")
     pr.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     pr.add_argument("--design-doc", help="Path to the design doc for this PR.")
@@ -2228,6 +2391,19 @@ def main() -> int:
         check_structure(args)
     elif args.command == "issue":
         check_issue(args)
+    elif args.command == "issue-pr-revalidate":
+        report = revalidate_linked_pull_request_runs(
+            args.github_repository,
+            args.github_issue_number,
+        )
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False))
+        else:
+            ok(
+                f"Issue {args.github_repository}#{args.github_issue_number} revalidation queued for "
+                f"{len(report['rerun_requested'])} linked Pull Request(s); "
+                f"{len(report['already_pending'])} already pending"
+            )
     elif args.command == "pr":
         check_pr(args)
     elif args.command == "release":

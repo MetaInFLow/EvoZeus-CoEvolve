@@ -147,7 +147,7 @@ Issue 已创建且实现授权成立后，任何目标业务文件写入前必�
 - `issue`：Issue 内容是否满足反馈模板字段。
 - `pr`：PR 是否有 design doc，且 changelog 有记录。
 - `release`：release tag 是否在 changelog 中，release notes 是否非空。
-- `evozeus_branch_consumer.py verify-snapshot/plan`：校验受管 Core snapshot，并生成零写入 branch plan；`--approve-save-plan` 只允许写入 owner-only ledger。
+- `evozeus_branch_consumer.py verify-snapshot/plan`：校验受管 Core snapshot，并生成零写入 branch plan；`--reconfirm-owner` 只刷新身份完全匹配的 stale ownership evidence，`--approve-save-plan` 才允许写入 owner-only ledger。
 
 ## Lifecycle CLI Contract
 
@@ -192,6 +192,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
 - canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，当前独立契约版本为 `v1.1.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
 - 业务 PR 使用 `pull_request_target`，执行 exact base SHA 中的 validator/consumer；candidate head SHA 只作为数据。可信 validator 以 event/API 重算 actor、head Repo 对应权限路径、base、Issue 与 resume key。
+- Feedback Issue 后续 edited/deleted/transferred/closed/reopened/labeled/unlabeled 时，默认分支 trusted job 通过 Actions API 重跑精确关联开放 PR 的最新 `pull_request_target` run，使原 required check 重新读取 live Issue evidence。
 - 官方 Harness upgrade 使用互斥 profile，并消费 [PR #31 admin publisher](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 `evozeus/harness-vX-to-vY` 输出：canonical direct branch、live `ADMIN`、已发布非 prerelease CoEvolve Release 的全部 managed source 核对、canonical manifest、受限 diff 与 activation marker 外业务字节保持。`.codex/hooks.json` 只更新 wrapper entry并保持 target-owned hooks。该 profile 不消费 Contributor Plan 元数据。
 - 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
 - `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。

@@ -37,6 +37,7 @@ from scripts.evozeus_wrapper_preflight import (
     check_branch_pr_metadata,
     check_pr,
     check_trusted_pr_checkouts,
+    revalidate_linked_pull_request_runs,
 )
 
 
@@ -130,8 +131,8 @@ def planner_env(binary_dir: Path, **values: str) -> dict[str, str]:
     }
 
 
-def options(repo: Path, worktree: Path, **overrides: str | None) -> dict[str, str | None]:
-    values: dict[str, str | None] = {
+def options(repo: Path, worktree: Path, **overrides: str | bool | None) -> dict[str, str | bool | None]:
+    values: dict[str, str | bool | None] = {
         "profile": "coevolve_target_skillware_consumer",
         "repo": REPO,
         "repo_path": str(repo),
@@ -145,6 +146,7 @@ def options(repo: Path, worktree: Path, **overrides: str | None) -> dict[str, st
         "worktree": str(worktree),
         "date": FIXED_DATE,
         "resume_plan": None,
+        "reconfirm_owner": False,
     }
     values.update(overrides)
     return values
@@ -157,7 +159,7 @@ def execute_plan(
     env: dict[str, str],
     *,
     approve_save_plan: bool = False,
-    **overrides: str | None,
+    **overrides: str | bool | None,
 ) -> tuple[dict, int]:
     return run_core_planner(
         options(repo, worktree, **overrides),
@@ -320,6 +322,70 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
         assert caught.value.code == "ledger_collision"
 
 
+def test_stale_ledger_requires_explicit_matching_owner_reconfirmation(tmp_path: Path) -> None:
+    repo = create_repo(tmp_path)
+    worktree = tmp_path / "isolated-worktree"
+    ledger_root = tmp_path / "private-ledger"
+    env = planner_env(fake_github_bin(tmp_path))
+    initial, returncode = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        approve_save_plan=True,
+    )
+    assert returncode == 0
+    ledger_path = Path(initial["ledger"]["path"])
+    run(["git", "worktree", "add", "-b", TARGET_BRANCH, str(worktree), "origin/main"], repo)
+
+    stale = json.loads(ledger_path.read_text(encoding="utf-8"))
+    stale["ownership"]["checked_at"] = "2000-01-01T00:00:00.000Z"
+    ledger_path.write_text(json.dumps(stale, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    stale_plan, stale_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+    )
+    assert stale_code == 2
+    assert "stale_ownership" in blocker_codes(stale_plan)
+
+    refreshed, refreshed_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        reconfirm_owner=True,
+        approve_save_plan=True,
+    )
+    assert refreshed_code == 0
+    assert refreshed["resume"] == {
+        "key": initial["resume"]["key"],
+        "decision": "resume",
+        "owner_reconfirmed": True,
+    }
+    assert refreshed["ledger"]["status"] == "saved"
+    persisted = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert persisted["ownership"]["checked_at"] != stale["ownership"]["checked_at"]
+
+    mismatched = copy.deepcopy(persisted)
+    mismatched["actor"]["id"] = "mallory"
+    ledger_path.write_text(json.dumps(mismatched, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    blocked, blocked_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        reconfirm_owner=True,
+    )
+    assert blocked_code == 2
+    assert "stale_ownership" in blocker_codes(blocked)
+    assert blocked["resume"]["owner_reconfirmed"] is False
+
+
 def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path: Path) -> None:
     binary_dir = fake_github_bin(tmp_path)
     ledger_root = tmp_path / "ledger"
@@ -463,6 +529,85 @@ def test_live_issue_gate_blocks_closed_pull_request_and_unclassified_issue(tmp_p
         assert blocker in blocker_codes(plan)
 
 
+def test_issue_event_revalidates_linked_pull_request_workflow_runs() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command[2].startswith(f"repos/{REPO}/pulls?"):
+            payload = [
+                {
+                    "number": 7,
+                    "body": f"## Contributor Branch Plan\n\n- Issue: `{REPO}#36`\n",
+                    "head": {"sha": "7" * 40},
+                },
+                {"number": 8, "body": f"- Issue: {REPO}#36\n", "head": {"sha": "8" * 40}},
+                {"number": 9, "body": f"- Issue: {REPO}#360\n", "head": {"sha": "9" * 40}},
+            ]
+        elif "/actions/workflows/evozeus-wrapper-preflight.yml/runs?" in command[2]:
+            payload = {
+                "workflow_runs": [
+                    {
+                        "id": 100,
+                        "run_number": 100,
+                        "event": "pull_request_target",
+                        "status": "completed",
+                        "pull_requests": [{"number": 7, "head": {"sha": "0" * 40}}],
+                    },
+                    {
+                        "id": 101,
+                        "run_number": 101,
+                        "event": "pull_request_target",
+                        "status": "completed",
+                        "pull_requests": [{"number": 7, "head": {"sha": "7" * 40}}],
+                    },
+                    {
+                        "id": 102,
+                        "run_number": 102,
+                        "event": "pull_request_target",
+                        "status": "in_progress",
+                        "pull_requests": [{"number": 8, "head": {"sha": "8" * 40}}],
+                    },
+                ],
+            }
+        elif command[2:4] == ["--method", "POST"]:
+            assert command[4] == f"repos/{REPO}/actions/runs/101/rerun"
+            return subprocess.CompletedProcess(command, 0, "", "")
+        else:
+            pytest.fail(f"unexpected GitHub command: {command}")
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    report = revalidate_linked_pull_request_runs(REPO, 36, runner=runner)
+    assert report == {
+        "schema_version": "evozeus.coevolve.issue-pr-revalidation.v1",
+        "repository": REPO,
+        "issue_number": 36,
+        "linked_pull_requests": [7, 8],
+        "rerun_requested": [7],
+        "already_pending": [8],
+        "writes": True,
+    }
+    assert sum(command[2:4] == ["--method", "POST"] for command in calls) == 1
+
+
+def test_issue_event_revalidation_fails_when_linked_pr_has_no_trusted_run() -> None:
+    writes: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        if command[2].startswith(f"repos/{REPO}/pulls?"):
+            payload = [{"number": 7, "body": f"- Issue: {REPO}#36\n", "head": {"sha": "7" * 40}}]
+        elif "/actions/workflows/evozeus-wrapper-preflight.yml/runs?" in command[2]:
+            payload = {"workflow_runs": []}
+        else:
+            writes.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    with pytest.raises(SystemExit):
+        revalidate_linked_pull_request_runs(REPO, 36, runner=runner)
+    assert writes == []
+
+
 def test_issue_to_pr_cli_derives_canonical_repo_and_runs_target_gate(tmp_path: Path) -> None:
     repo = create_repo(tmp_path)
     (repo / "SKILL.md").write_text(
@@ -539,6 +684,18 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
         issue=f"{REPO}#36",
         actor="alice",
         permission="direct",
+        purpose_type="bug",
+        component="skill",
+        summary="fix-feedback-flow",
+    )
+    assert resume_key != compute_resume_key(
+        profile="coevolve_target_skillware_consumer",
+        repo=REPO,
+        base_ref="origin/main",
+        issue=f"{REPO}#36",
+        actor="alice",
+        permission="direct",
+        purpose_type="docs",
         component="skill",
         summary="fix-feedback-flow",
     )
