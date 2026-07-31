@@ -59,7 +59,7 @@ def test_contract_manifest_fixes_external_session_signal_attachment() -> None:
     ]
     assert module.SESSION_SIGNAL_ATTACHMENT["availability"] == "unreleased"
     assert module.SESSION_SIGNAL_ATTACHMENT["component_manifest_sha256"] == (
-        "6b9548c02797b2baa62a0eaa64bf165702239b843490a7cf49c001b7e932bba8"
+        "15edff23fe06a5cd16e12a4374bba256b980e1a0af0033c7af449c7f85e7e3f7"
     )
 
 
