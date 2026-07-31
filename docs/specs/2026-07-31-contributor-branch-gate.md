@@ -24,9 +24,9 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `09ced60c30ef287e14071d76de89034a344c3cb6`：
+权威文件来自 EvoZeus Core revision `b343a01ea2556835884b066c551f6fbe862ccb97`：
 
-- contract：`evozeus.contributor_branch` `1.0.0`
+- contract：`evozeus.contributor_branch` `1.1.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
 - canonical contract `$id`：`https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json`
 
@@ -36,8 +36,8 @@ CoEvolve 在目标模板中保存 byte-for-byte snapshot 和 provenance。Consum
 
 1. Feedback Issue 已存在，用户另行授权实现。
 2. Consumer 读取目标 manifest 的 canonical Repo 与受管资产路径。
-3. Core planner 实时读取 Git worktree/base/branch 状态和 GitHub identity、viewer permission、fork policy。
-4. 用户看到 repo、base ref/commit、Issue、target branch、verified actor、resolved permission、证据来源/时间、isolated worktree、resume decision、next action 与 blockers。
+3. Core planner 实时读取 Git worktree/base/branch 状态、GitHub identity、viewer permission、fork policy 与 Issue evidence。
+4. 用户看到 repo、base ref/commit、Issue 状态/类型/分类、target branch、verified actor、resolved permission、证据来源/时间、isolated worktree、resume decision、next action 与 blockers。
 5. blockers 为空后，用户单独授权 branch/worktree 动作。
 6. `--approve-save-plan` 把脱敏计划原子写入私有 ledger；Agent 执行 planner 声明的 next action。
 7. 首次业务写入前再次以 ledger 执行 resume 计划，确认同一上下文。
@@ -67,7 +67,11 @@ Consumer 只生成计划与可选 ledger 记录，不创建 branch/worktree，�
 
 Ledger 删除 canonical Repo、worktree 和 ledger 的绝对路径。已有记录发生 resume key、Repo、actor、base ref、base commit、target branch 或 resolved permission 冲突时停止覆盖。
 
-PR 只使用 `pr_metadata`：contract revision/digest、resume key、Repo、base、branch、Issue、verified actor、resolved permission 和脱敏 evidence 摘要。planner stderr、内部错误、ledger 路径和本地路径不得进入公开面。
+PR 只使用 `pr_metadata`：contract revision/digest、profile、purpose、resume key、Repo、base、branch、Issue、verified actor、resolved permission 和脱敏 planning evidence 摘要。planner stderr、内部错误、ledger 路径和本地路径不得进入公开面。
+
+业务 PR 的公开字段只用于提交计划身份，不承担自证。`pull_request_target` workflow 从 event 指定的 exact base SHA checkout 执行可信 validator/consumer，再把 exact head SHA checkout 当作数据读取。Validator 以 live event/API 核验 canonical Repo、head Repo 对应的 direct/fork 路径、PR author、base、OPEN Issue/非 PR/Skill Feedback 分类，并按合同字段重算 resume key。候选分支内的 workflow、validator、consumer 与 timestamp 不参与本次信任判定。
+
+官方 Harness upgrade 使用独立 profile，直接消费 [CoEvolve PR #31](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 admin publisher 合同：branch 为 `evozeus/harness-vX-to-vY`，head 来自 canonical Repo，PR author 由 live API 证明为 `ADMIN`。除 target-owned `.evozeus-wrapper/CHANGELOG.md` 外，全部 wrapper-managed files 都与 base 绑定；upgrade 时从同版本、已发布且非 prerelease 的 CoEvolve Release 取得每一份官方 source，完成目标占位符渲染后逐字节核对。`.codex/hooks.json` 只替换 wrapper-owned entry并保持其他 target hooks。API diff 只允许官方 managed controls、canonical manifest、所有权 marker 内 activation 内容和明确版本迁移记录。Marker 外业务字节、额外业务文件、rename source、fork copy 或 manifest target/source identity 变化均阻断。该 profile 跳过业务 Contributor Plan metadata。
 
 ## 失败与恢复
 
@@ -78,11 +82,14 @@ PR 只使用 `pr_metadata`：contract revision/digest、resume key、Repo、base
 | dirty canonical/current checkout | 停止 | 清理或保留现状并选择新的 clean 上下文 |
 | wrong base / branch collision / worktree collision | 停止 | 回到 canonical base，重新选择目标或提供匹配 ledger |
 | ledger stale 或完整身份变化 | 停止 | Owner 重新确认并生成新计划 |
-| GitHub 证据缺失 | local | 接受 local 边界，或恢复证据后重新计划 |
+| permission evidence 缺失 | local permission path | 保持 push/PR 禁用，或恢复证据后重新计划 |
+| Issue evidence 缺失、关闭、PR-shaped 或未分类 | 停止 | 恢复 live OPEN Skill Feedback Issue 证据 |
+| candidate PR control code 与 base 不一致 | 停止 | 普通业务 PR 撤销控制面改动 |
+| 官方 Harness upgrade provenance/ADMIN/diff 不满足 | 停止 | 使用 published Stable Release 和专用迁移分支重新生成 |
 
 ## 升级与回滚
 
-Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、canonical Harness Skill、manifest `contributor_branch`、onboarding、workflow 和 PR metadata surface 作为同一受管集合刷新。升级后必须通过 structure 和 snapshot verification。
+Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、canonical Harness Skill、manifest `contributor_branch`、onboarding、workflow 和 PR metadata surface 作为同一受管集合刷新。升级 PR 由 base validator 通过官方 Release provenance、live ADMIN 与受限 diff 专用 gate；升级后必须通过 structure 和 snapshot verification。
 
 升级不读取或迁移用户的本地 branch ledger。回滚通过撤销目标 Harness upgrade commit 完成；已存在 branch/worktree 保持原 Git 状态，由 Owner 决定保留或清理。
 
@@ -91,9 +98,9 @@ Harness upgrade 把 consumer、Core contract/planner snapshot、provenance、can
 - clean new branch 与 matching resume
 - dirty tree、wrong base、branch collision
 - direct、fork-only、no-PR local
-- 缺少 `gh` 与 partial GitHub evidence 的 fail-closed 行为
+- 缺少 `gh`、partial permission evidence 与 invalid Issue evidence 的 fail-closed 行为
 - canonical checkout 后代与 symlink alias 路径阻断
 - snapshot digest/provenance/symlink 校验
 - ledger `0700/0600`、原子写入、路径脱敏与完整身份 collision
 - planner timeout、退出码/blockers 矛盾与 stderr 不外泄
-- fresh attach、legacy upgrade、target structure 和 workflow smoke
+- base-validator/candidate-data-only workflow、business plan identity 重算、fresh attach、official ADMIN upgrade、target structure 和 workflow smoke

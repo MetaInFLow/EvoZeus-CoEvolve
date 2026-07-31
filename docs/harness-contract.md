@@ -136,7 +136,7 @@ wrapper-managed Skill 的源头发现顺序固定，不允许跳过：
 3. PR：引用 design doc，更新 `SKILL.md` 和 `.evozeus-wrapper/CHANGELOG.md`。
 4. Release：tag 与 `.evozeus-wrapper/CHANGELOG.md` 对齐，release description 非空。
 
-Issue 已创建且实现授权成立后，任何目标业务文件写入前必须先通过 Contributor Branch Gate。EvoZeus Core v1 contract/planner 是规则事实源；CoEvolve 注入离线摘要快照、consumer、私有 ledger 与公开 PR metadata surface。计划先展示 Repo、base ref/commit、Issue、target branch、verified actor、resolved permission/evidence、isolated worktree、next action 与 blockers。blockers 清空且 branch/worktree 获得单独授权后才能执行首次写入。
+Issue 已创建且实现授权成立后，任何目标业务文件写入前必须先通过 Contributor Branch Gate。EvoZeus Core v1 contract/planner 是规则事实源；CoEvolve 注入离线摘要快照、consumer、私有 ledger 与公开 PR metadata surface。计划先展示 Repo、base ref/commit、live Issue evidence、target branch、verified actor、resolved permission/evidence、isolated worktree、next action 与 blockers。Issue 必须在同 Repo live 验证为 OPEN、非 Pull Request，并具有 Skill Feedback 分类。blockers 清空且 branch/worktree 获得单独授权后才能执行首次写入。
 
 ## Preflight Contract
 
@@ -171,7 +171,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
 ```
 
-`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`loop issue-to-pr` 默认只读，权限参数只表达预期，Core 每次根据 live GitHub evidence 解析 direct/fork/local；缺少或不完整证据进入 local。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
+`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`loop issue-to-pr` 默认只读，权限参数只表达预期，Core 每次根据 live GitHub evidence 解析 direct/fork/local；缺少或不完整的权限证据进入 local，Issue 证据缺失或无效会阻断计划。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
 
 ## Harness Version Contract
 
@@ -191,6 +191,8 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新 canonical Harness Skill、compact entry 和 manifest integration，并通过 post-migration structure validation 后才返回成功。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
 - canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，当前独立契约版本为 `v1.1.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- 业务 PR 使用 `pull_request_target`，执行 exact base SHA 中的 validator/consumer；candidate head SHA 只作为数据。可信 validator 以 event/API 重算 actor、head Repo 对应权限路径、base、Issue 与 resume key。
+- 官方 Harness upgrade 使用互斥 profile，并消费 [PR #31 admin publisher](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 `evozeus/harness-vX-to-vY` 输出：canonical direct branch、live `ADMIN`、已发布非 prerelease CoEvolve Release 的全部 managed source 核对、canonical manifest、受限 diff 与 activation marker 外业务字节保持。`.codex/hooks.json` 只更新 wrapper entry并保持 target-owned hooks。该 profile 不消费 Contributor Plan 元数据。
 - 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
 - `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。
 - 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。

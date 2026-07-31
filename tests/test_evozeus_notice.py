@@ -134,6 +134,7 @@ def test_target_preflight_import_does_not_create_notice_bytecode_cache() -> None
         scripts_dir = Path(tmp) / ".evozeus-wrapper" / "scripts"
         scripts_dir.mkdir(parents=True)
         shutil.copy2(ROOT / "scripts" / "evozeus_wrapper_preflight.py", scripts_dir)
+        shutil.copy2(ROOT / "scripts" / "evozeus_branch_consumer.py", scripts_dir)
         shutil.copy2(NOTICE_SCRIPT, scripts_dir)
 
         result = subprocess.run(

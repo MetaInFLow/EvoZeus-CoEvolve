@@ -85,7 +85,9 @@ The manifest records `dashboard.deployment_mode=opt_in_github_pages`. Push and w
 10. PR updates `SKILL.md` and `.evozeus-wrapper/CHANGELOG.md`.
 11. Release tag and release description are created after merge and release authorization.
 
-Run the target-local gate with `.evozeus-wrapper/scripts/evozeus_branch_consumer.py plan`. The offline Core snapshot is digest-bound through provenance; permission remains controlled by live GitHub evidence. Missing or partial evidence resolves to local patch. Existing ledger data cannot grant direct/fork access. The canonical checkout stays clean and every participant uses a separate branch/worktree.
+Run the target-local gate with `.evozeus-wrapper/scripts/evozeus_branch_consumer.py plan`. The offline Core snapshot is digest-bound through provenance. Permission remains controlled by live GitHub evidence; missing or partial permission evidence resolves to local patch. Issue evidence must prove a matching OPEN Skill Feedback Issue, otherwise the plan blocks. Existing ledger data cannot grant direct/fork access. The canonical checkout stays clean and every participant uses a separate branch/worktree.
+
+Business PR validation runs the base-SHA validator through `pull_request_target`; the candidate checkout is data only. It binds the public plan identity to live actor, head repository, base, Issue API evidence, and a recomputed resume key. Official Harness upgrades use a separate canonical-repo ADMIN path whose managed controls must match a published Stable CoEvolve Release and whose diff is limited to governed migration outputs.
 
 ## Wrapper Harness Upgrade
 

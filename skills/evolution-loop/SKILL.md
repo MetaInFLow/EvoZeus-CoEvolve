@@ -60,16 +60,16 @@ python3 scripts/evozeus_wrapper.py loop issue-to-pr \
 
 Run this stage only after the feedback Issue exists and the user separately authorized implementation.
 
-The command reads the target manifest, verifies the pinned EvoZeus Core contract/planner snapshot, collects live Git/GitHub evidence, and returns a zero-write branch plan. Display canonical repo, base ref/commit, Issue, target branch, verified actor, resolved permission, evidence timestamp/source, isolated worktree, resume decision, next action, and blockers before any target-file write.
+The command reads the target manifest, verifies the pinned EvoZeus Core contract/planner snapshot, collects live Git/GitHub evidence, and returns a zero-write branch plan. Display canonical repo, base ref/commit, Issue evidence, target branch, verified actor, resolved permission, evidence timestamp/source, isolated worktree, resume decision, next action, and blockers before any target-file write. The Issue must live-resolve to the same Repo and number, remain OPEN, resolve as an Issue rather than a Pull Request, and carry `skill-feedback` or the `[Skill Feedback]` title prefix.
 
 - Empty blockers plus separate branch/worktree approval: rerun with `--approve-save-plan`, execute the declared next action, then resume from the private ledger.
 - Direct evidence: create the isolated contribution branch in the canonical repo.
 - Fork evidence: create the isolated fork branch and later open the fork PR.
 - Local evidence: create a local-only patch/design context; push and PR remain forbidden.
 
-`--actor` and `--permission` are expectations. Live Core evidence controls the result. Missing `gh`, partial API evidence, a dirty checkout, wrong base, branch/worktree collision, stale ledger ownership, or a canonical-checkout path returns blockers. Do not modify business files while any blocker remains.
+`--actor` and `--permission` are expectations. Live Core evidence controls the result. Missing or partial permission evidence resolves the permission path to local; unavailable or invalid Issue evidence blocks the whole plan. A dirty checkout, wrong base, branch/worktree collision, stale ledger ownership, or a canonical-checkout path also returns blockers. Do not modify business files while any blocker remains.
 
-The ledger defaults to `~/.evozeus/coevolve/branch-plans/OWNER/REPO/<resume-key>.json`. Before commit, push, and PR, rerun with `--resume-plan <ledger-file>` and require the same repo, base ref, base commit, target branch, actor, and resolved permission. Copy only `pr_metadata` into the PR; local paths and ledger contents remain private.
+The ledger defaults to `~/.evozeus/coevolve/branch-plans/OWNER/REPO/<resume-key>.json`. Before commit, push, and PR, rerun with `--resume-plan <ledger-file>` and require the same repo, base ref, base commit, target branch, actor, and resolved permission. Copy only `pr_metadata` into the PR; local paths and ledger contents remain private. The target `pull_request_target` gate executes the validator from the exact base SHA, checks out the head SHA as data, live-verifies actor/head-repo permission topology and Issue evidence, then recomputes the resume key. Official Harness upgrades use a separate direct-branch ADMIN gate tied byte-for-byte to a published non-prerelease CoEvolve Release and a restricted migration diff.
 
 ## Stop Conditions
 

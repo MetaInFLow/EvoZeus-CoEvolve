@@ -1,7 +1,7 @@
 {
   "$id": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
   "contract": "evozeus.contributor_branch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "schema_version": "v1",
   "compatibility": { "evozeus": ">=0.4.1", "coevolve_consumer": ">=0.14.0", "unknown_fields": "ignore", "unknown_profile_or_major_version": "fail_closed" },
   "protected_refs": { "exact": ["main", "master", "uat/current", "stable"], "prefixes": ["release/"], "direct_business_write": "deny" },
@@ -11,7 +11,7 @@
     "types": ["dev", "bug", "refactor", "docs", "test", "chore"],
     "component_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
     "summary_pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,6}$",
-    "metadata_required": ["issue", "actor", "profile", "component", "purpose", "permission_path", "permission_evidence", "resume_key"]
+    "metadata_required": ["issue", "issue_evidence", "actor", "profile", "component", "purpose", "permission_path", "permission_evidence", "resume_key"]
   },
   "profiles": {
     "evozeus_core_direct": {
@@ -49,6 +49,7 @@
       "canonical_bases": ["origin/main", "origin/master"],
       "allowed_types": ["dev", "bug", "refactor", "docs", "test", "chore"],
       "allowed_permissions": ["direct", "fork", "local"],
+      "issue_classification": { "match": "label_or_title_prefix", "labels_any": ["skill-feedback"], "title_prefixes": ["[Skill Feedback]"] },
       "branch_class": "development",
       "user_channel_claim": "none"
     }
@@ -86,6 +87,15 @@
     "repo_or_command_arguments_may_grant_permission": false,
     "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "fork_allowed"]
   },
+  "issue_resolution": {
+    "authority": "live_github_api_evidence",
+    "source": "gh api repos/{owner}/{repo}/issues/{number}",
+    "required_state": "OPEN",
+    "pull_requests_allowed": false,
+    "unavailable_or_incomplete_evidence": "block",
+    "profile_classification_mismatch": "block",
+    "evidence_fields": ["source", "checked_at", "number", "state", "is_pull_request", "labels", "title"]
+  },
   "resume": { "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "component", "purpose"], "owner_field": "actor", "base_match": ["ref", "commit"], "stale_after_days": 14, "mismatch_or_stale": "block_and_require_owner_reconfirmation" },
   "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block" },
   "blocking_handling": {
@@ -96,6 +106,7 @@
     "stale_ownership": "block_and_require_owner_reconfirmation",
     "canonical_checkout_dirty_or_unavailable": "block",
     "actor_or_permission_expectation_mismatch": "block",
+    "issue_unavailable_or_invalid": "block",
     "github_unavailable": "local_patch_only"
   },
   "approval_boundaries": {

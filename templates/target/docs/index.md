@@ -44,7 +44,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 创建 Issue 不授权修改 Skill、创建分支、设计文档或 PR；实现修复需要新的明确授权。
 
-实现授权成立后，任何业务文件写入前必须通过 contributor branch gate。分支计划以 Core v1 contract 为唯一规则源，先展示 repo、base commit、Issue、branch、actor、permission evidence、隔离 worktree 和下一动作；blockers 未清空时保持零写入。计划可在明确批准后进入私有 ledger，PR 只公开脱敏的 `pr_metadata`。
+实现授权成立后，任何业务文件写入前必须通过 contributor branch gate。分支计划以 Core v1 contract 为唯一规则源，先展示 repo、base commit、live Issue evidence、branch、actor、permission evidence、隔离 worktree 和下一动作；blockers 未清空时保持零写入。计划可在明确批准后进入私有 ledger，PR 只公开脱敏的 `pr_metadata`。PR workflow 从 base SHA 执行可信 validator，并以 GitHub event/API 重算公开 plan identity；候选 checkout 仅作为数据。
 
 ## 进化规则
 

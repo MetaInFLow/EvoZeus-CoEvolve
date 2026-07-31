@@ -20,10 +20,10 @@ from typing import Any
 PROFILE = "coevolve_target_skillware_consumer"
 PROVENANCE_SCHEMA = "evozeus.coevolve.contributor-branch-snapshot-provenance.v1"
 CONTRACT_ID = "evozeus.contributor_branch"
-CONTRACT_VERSION = "1.0.0"
-CORE_REVISION = "09ced60c30ef287e14071d76de89034a344c3cb6"
-CONTRACT_SHA256 = "3868cab2fa78a8a7b394a5f810a1d9470161b5a76db72dec2e8bc1215160fcea"
-PLANNER_SHA256 = "be53d96f8f1b964e57da06afacdc246c1a0461e5aabf7aa9edeca4bade049ad8"
+CONTRACT_VERSION = "1.1.0"
+CORE_REVISION = "b343a01ea2556835884b066c551f6fbe862ccb97"
+CONTRACT_SHA256 = "e1d4b43070d786ad14fffd7e5b9e13487c6942ea95f4c33c56734874dca7ffdd"
+PLANNER_SHA256 = "b439b1666cd9fd68a246f8a73dc4335f36e841297d6b14ca73e05af7a1923df4"
 CONTRACT_RELATIVE_PATH = Path("contracts/v1/contributor-branch-contract.json")
 PROVENANCE_RELATIVE_PATH = Path("contracts/v1/contributor-branch-provenance.json")
 PLANNER_RELATIVE_PATH = Path("scripts/evozeus-branch-preflight.mjs")
@@ -267,9 +267,50 @@ def public_safe_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def compute_resume_key(
+    *,
+    profile: str,
+    repo: str,
+    base_ref: str,
+    issue: str,
+    actor: str,
+    permission: str,
+    component: str,
+    summary: str,
+) -> str:
+    fields = (
+        profile,
+        repo.lower(),
+        base_ref,
+        issue,
+        actor.lower(),
+        permission,
+        component,
+        summary,
+    )
+    digest = hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()[:24]
+    return f"branch_v1_{digest}"
+
+
 def public_pr_metadata(plan: dict[str, Any]) -> dict[str, Any]:
     evidence = plan.get("permission_evidence", {})
     repository_evidence = evidence.get("repository", {})
+    purpose = plan.get("purpose", {})
+    issue = plan.get("issue", {}).get("reference")
+    actor = plan.get("actor", {}).get("id")
+    permission = plan.get("permission_path", {}).get("resolved")
+    expected_resume_key = compute_resume_key(
+        profile=plan.get("profile"),
+        repo=plan.get("repo", {}).get("canonical"),
+        base_ref=plan.get("base", {}).get("ref"),
+        issue=issue,
+        actor=actor,
+        permission=permission,
+        component=purpose.get("component"),
+        summary=purpose.get("summary"),
+    )
+    if plan.get("resume", {}).get("key") != expected_resume_key:
+        raise ConsumerError("planner_output_invalid", "Core planner resume key does not match its public identity fields")
     return {
         "schema_version": "evozeus.coevolve.branch-pr-metadata.v1",
         "contract": {
@@ -279,16 +320,18 @@ def public_pr_metadata(plan: dict[str, Any]) -> dict[str, Any]:
             "source_revision": CORE_REVISION,
         },
         "resume_key": plan.get("resume", {}).get("key"),
+        "profile": plan.get("profile"),
+        "purpose": purpose,
         "repo": plan.get("repo", {}).get("canonical"),
         "base": plan.get("base"),
         "branch": plan.get("branch", {}).get("target"),
-        "issue": plan.get("issue", {}).get("reference"),
+        "issue": issue,
         "actor": {
-            "id": plan.get("actor", {}).get("id"),
+            "id": actor,
             "verified": plan.get("actor", {}).get("verified"),
         },
-        "permission": plan.get("permission_path", {}).get("resolved"),
-        "permission_evidence": {
+        "permission": permission,
+        "planning_permission_evidence": {
             "source": evidence.get("source"),
             "checked_at": evidence.get("checked_at"),
             "viewer_permission": repository_evidence.get("viewer_permission"),
@@ -404,7 +447,7 @@ def run_core_planner(
         "runtime_network_fetch": False,
         "permission_authority": "core_planner_live_github_evidence",
     }
-    plan["pr_metadata"] = public_pr_metadata(plan)
+    plan["pr_metadata"] = None if blockers else public_pr_metadata(plan)
     ledger_path = ledger_path_for(plan, ledger_root)
     plan["ledger"] = {
         "schema_version": "evozeus.coevolve.branch-ledger.v1",

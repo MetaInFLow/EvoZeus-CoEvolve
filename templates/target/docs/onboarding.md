@@ -43,10 +43,11 @@
 
 - Feedback Issue 和实现授权成立后，先运行 `.evozeus-wrapper/scripts/evozeus_branch_consumer.py plan`；该步骤只读。
 - `wrapper.json` 的 `contributor_branch` 给出 consumer、Core contract/planner snapshot 与 provenance 路径。执行前用 `verify-snapshot --json` 校验摘要和来源。
-- Agent 必须先展示 canonical repo、base ref/commit、Issue、目标 branch、verified actor、resolved permission、`permission_evidence`、隔离 worktree、next action 与 blockers。
+- Agent 必须先展示 canonical repo、base ref/commit、`issue_evidence`、目标 branch、verified actor、resolved permission、`permission_evidence`、隔离 worktree、next action 与 blockers。
 - blockers 清空后仍需 branch/worktree 单独授权。增加 `--approve-save-plan` 只保存 owner-only 本地 ledger；分支、worktree、commit、push 与 PR 按各自授权执行。
 - 每位参与者使用独立 branch/worktree；canonical checkout 保持 clean。后续动作通过 `--resume-plan` 重新取实时证据并核对完整身份。
-- 无法证明 direct/fork 时进入 local patch；push 与 PR 保持禁用。
+- 无法证明 direct/fork 时权限路径进入 local patch；push 与 PR 保持禁用。Issue 无法 live 验证为同 Repo 的 OPEN Skill Feedback Issue 时，计划整体阻断。
+- 业务 PR 由 base-SHA `pull_request_target` validator 读取候选数据并重算 plan identity；候选脚本不执行。官方 Harness upgrade 走 direct + live ADMIN + published Stable Release + restricted diff 专用 gate，不要求业务 Contributor Plan。
 
 ## Dashboard
 

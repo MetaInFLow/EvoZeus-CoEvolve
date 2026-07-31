@@ -91,7 +91,10 @@ HARNESS_SKILL_REQUIRED_TERMS = (
     "普通 Skill 调用不授权",
     "evozeus_branch_consumer.py",
     "--approve-save-plan",
+    "issue_evidence",
     "permission_evidence",
+    "pull_request_target",
+    "evozeus/harness-vX-to-vY",
     "隔离 worktree",
 )
 

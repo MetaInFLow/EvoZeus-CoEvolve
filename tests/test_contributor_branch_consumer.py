@@ -1,3 +1,4 @@
+import base64
 import copy
 import json
 import os
@@ -6,6 +7,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from scripts.evozeus_branch_consumer import (
     CORE_REVISION,
     PLANNER_SHA256,
     ConsumerError,
+    compute_resume_key,
     error_report,
     ledger_path_for,
     run_core_planner,
@@ -27,7 +30,14 @@ from scripts.evozeus_wrapper_lifecycle import (
     build_wrapper_manifest,
     write_wrapper_manifest,
 )
-from scripts.evozeus_wrapper_preflight import check_branch_pr_metadata
+from scripts.evozeus_wrapper_preflight import (
+    MAINTAINER_REQUIRED_FILES,
+    TRUSTED_CONTROL_SOURCES,
+    _canonical_harness_entry_block,
+    check_branch_pr_metadata,
+    check_pr,
+    check_trusted_pr_checkouts,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +100,19 @@ if args[:2] == ["api", "repos/MetaInFLow/example-skill"]:
         "disabled": False,
         "allow_forking": allow_forking,
     }))
+    raise SystemExit(0)
+if args[:2] == ["api", "repos/MetaInFLow/example-skill/issues/36"]:
+    state = os.environ.get("FAKE_GH_ISSUE_STATE", "open")
+    labels = [] if os.environ.get("FAKE_GH_ISSUE_UNCLASSIFIED") == "1" else [{"name": "skill-feedback"}]
+    issue = {
+        "number": 36,
+        "state": state,
+        "title": "Reusable Skill feedback",
+        "labels": labels,
+    }
+    if os.environ.get("FAKE_GH_ISSUE_IS_PR") == "1":
+        issue["pull_request"] = {}
+    print(json.dumps(issue))
     raise SystemExit(0)
 raise SystemExit(1)
 """,
@@ -239,6 +262,7 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
     assert initial["base"]["commit"] == run(["git", "rev-parse", "origin/main"], repo)
     assert initial["branch"]["target"] == TARGET_BRANCH
     assert initial["permission_path"]["resolved"] == "direct"
+    assert initial["issue_evidence"]["state"] == "OPEN"
     assert initial["ledger"]["status"] == "saved"
     assert initial["consumer_operation"] == {"writes": True, "scope": "local_private_ledger_only"}
 
@@ -253,6 +277,12 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
     assert saved["ledger"]["path_redacted"] is True
     assert str(repo) not in json.dumps(initial["pr_metadata"], ensure_ascii=False)
     assert str(worktree) not in json.dumps(initial["pr_metadata"], ensure_ascii=False)
+    assert initial["pr_metadata"]["profile"] == "coevolve_target_skillware_consumer"
+    assert initial["pr_metadata"]["purpose"] == {
+        "type": "bug",
+        "component": "skill",
+        "summary": "fix-feedback-flow",
+    }
 
     run(["git", "worktree", "add", "-b", TARGET_BRANCH, str(worktree), "origin/main"], repo)
     resumed, resumed_code = execute_plan(
@@ -388,9 +418,10 @@ def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: 
         missing_env,
         permission="local",
     )
-    assert missing_code == 0
+    assert missing_code == 2
     assert missing["permission_evidence"]["source"] == "unavailable"
     assert missing["permission_path"]["resolved"] == "local"
+    assert "issue_evidence_unavailable" in blocker_codes(missing)
 
     partial_root = tmp_path / "partial"
     partial_root.mkdir()
@@ -409,6 +440,27 @@ def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: 
     assert partial["permission_evidence"]["source"] == "github_api_partial"
     assert partial["permission_path"]["resolved"] == "local"
     assert "permission_expectation_mismatch" in blocker_codes(partial)
+
+
+def test_live_issue_gate_blocks_closed_pull_request_and_unclassified_issue(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    scenarios = (
+        ({"FAKE_GH_ISSUE_STATE": "closed"}, "issue_not_open"),
+        ({"FAKE_GH_ISSUE_IS_PR": "1"}, "issue_is_pull_request"),
+        ({"FAKE_GH_ISSUE_UNCLASSIFIED": "1"}, "issue_not_feedback"),
+    )
+    for index, (environment, blocker) in enumerate(scenarios):
+        root = tmp_path / f"issue-{index}"
+        root.mkdir()
+        repo = create_repo(root)
+        plan, returncode = execute_plan(
+            repo,
+            root / "worktree",
+            tmp_path / "ledger",
+            planner_env(binary_dir, **environment),
+        )
+        assert returncode == 2
+        assert blocker in blocker_codes(plan)
 
 
 def test_issue_to_pr_cli_derives_canonical_repo_and_runs_target_gate(tmp_path: Path) -> None:
@@ -476,51 +528,651 @@ def test_issue_to_pr_cli_derives_canonical_repo_and_runs_target_gate(tmp_path: P
     assert report["repository_boundary"]["repo_root"] == str(repo)
 
 
-def test_pr_metadata_gate_accepts_public_fields_and_rejects_local_permission(tmp_path: Path) -> None:
+def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
     shutil.copytree(ASSET_ROOT, target / ".evozeus-wrapper")
+    resume_key = compute_resume_key(
+        profile="coevolve_target_skillware_consumer",
+        repo=REPO,
+        base_ref="origin/main",
+        issue=f"{REPO}#36",
+        actor="alice",
+        permission="direct",
+        component="skill",
+        summary="fix-feedback-flow",
+    )
     body = f"""# Skill Evolution PR
 
 ## Contributor Branch Plan
 
-- Resume key: branch_v1_0123456789abcdef01234567
+- Resume key: {resume_key}
 - Core source revision: {CORE_REVISION}
 - Contract SHA-256: {CONTRACT_SHA256}
+- Profile: coevolve_target_skillware_consumer
+- Purpose type / component / summary: bug / skill / fix-feedback-flow
 - Canonical repo: {REPO}
 - Base ref / commit: origin/main / {'1' * 40}
 - Target branch: {TARGET_BRANCH}
 - Issue: {REPO}#36
 - Verified actor: alice
-- Resolved permission / evidence source / checked time: direct / github_api / 2026-07-31T00:00:00.000Z
+- Permission path: direct
 """
+    issue_runner = lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0],
+        0,
+        json.dumps({
+            "number": 36,
+            "state": "open",
+            "title": "Reusable defect",
+            "labels": [{"name": "skill-feedback"}],
+        }),
+        "",
+    )
     trusted_context = {
         "github_repository": REPO,
         "github_head_ref": TARGET_BRANCH,
+        "github_head_repo": REPO,
+        "github_actor": "alice",
         "github_base_ref": "main",
         "github_base_sha": "1" * 40,
+        "issue_runner": issue_runner,
     }
     check_branch_pr_metadata(target, body, **trusted_context)
 
     with pytest.raises(SystemExit):
         check_branch_pr_metadata(
             target,
-            body.replace(
-                "direct / github_api / 2026-07-31T00:00:00.000Z",
-                "local / github_api_partial / 2026-07-31T00:00:00.000Z",
-            ),
+            body.replace("- Permission path: direct", "- Permission path: local"),
             **trusted_context,
         )
 
     mismatches = (
         {"github_repository": "MetaInFLow/other-skill"},
         {"github_head_ref": "codex/bug/20260731-skill-other"},
+        {"github_head_repo": "mallory/example-skill"},
+        {"github_actor": "mallory"},
         {"github_base_ref": "master"},
         {"github_base_sha": "2" * 40},
     )
     for mismatch in mismatches:
         with pytest.raises(SystemExit):
             check_branch_pr_metadata(target, body, **{**trusted_context, **mismatch})
+
+    with pytest.raises(SystemExit):
+        check_branch_pr_metadata(
+            target,
+            body.replace(resume_key, "branch_v1_0123456789abcdef01234567"),
+            **trusted_context,
+        )
+
+    closed_issue_runner = lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0],
+        0,
+        json.dumps({
+            "number": 36,
+            "state": "closed",
+            "title": "Reusable defect",
+            "labels": [{"name": "skill-feedback"}],
+        }),
+        "",
+    )
+    with pytest.raises(SystemExit):
+        check_branch_pr_metadata(
+            target,
+            body,
+            **{**trusted_context, "issue_runner": closed_issue_runner},
+        )
+
+
+def make_control_checkout(root: Path, version: str, marker: str) -> str:
+    root.mkdir()
+    for relative_path in TRUSTED_CONTROL_SOURCES:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative_path == ".codex/hooks.json":
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "SessionStart": [
+                                {
+                                    "matcher": "custom",
+                                    "hooks": [{"type": "command", "command": "echo target-owned"}],
+                                },
+                                {
+                                    "matcher": "startup|resume",
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": "/usr/bin/python3 .evozeus-wrapper/hooks/evozeus_wrapper_start_check.py",
+                                            "statusMessage": marker,
+                                        }
+                                    ],
+                                },
+                            ]
+                        }
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        else:
+            path.write_text(f"{marker}:{relative_path}\n", encoding="utf-8")
+    for relative_path in MAINTAINER_REQUIRED_FILES:
+        if relative_path == ".evozeus-wrapper/wrapper.json" or relative_path in TRUSTED_CONTROL_SOURCES:
+            continue
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"base-bound:{relative_path}\n", encoding="utf-8")
+    manifest = root / ".evozeus-wrapper/wrapper.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            build_wrapper_manifest(
+                REPO,
+                version,
+                WRAPPER_MANAGED_FILES,
+                [],
+                instruction_surface="SKILL.md",
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "SKILL.md").write_text(
+        f"# Business Skill\n\n{_canonical_harness_entry_block()}\n\nBusiness instructions.\n",
+        encoding="utf-8",
+    )
+    run(["git", "init", "-b", "main"], root)
+    run(["git", "config", "user.name", "Trust Gate Test"], root)
+    run(["git", "config", "user.email", "trust-gate@example.com"], root)
+    run(["git", "add", "."], root)
+    run(["git", "commit", "-m", "test: control checkout"], root)
+    return run(["git", "rev-parse", "HEAD"], root)
+
+
+def test_trusted_release_source_map_covers_every_managed_publisher_output() -> None:
+    expected = set(MAINTAINER_REQUIRED_FILES) - {
+        ".evozeus-wrapper/wrapper.json",
+        ".evozeus-wrapper/CHANGELOG.md",
+    }
+    assert set(TRUSTED_CONTROL_SOURCES) == expected
+
+
+def official_upgrade_runner(
+    candidate: Path,
+    changed_paths: set[str],
+    *,
+    extra_entries: tuple[dict, ...] = (),
+    prerelease: bool = False,
+    source_overrides: dict[str, bytes] | None = None,
+):
+    source_to_target = {source: target for target, source in TRUSTED_CONTROL_SOURCES.items()}
+
+    def runner(command, **kwargs):
+        endpoint = command[2]
+        if "/collaborators/" in endpoint:
+            payload = {
+                "permission": "admin",
+                "user": {"permissions": {"admin": True}},
+            }
+        elif endpoint.endswith("/releases/tags/v1.1.0"):
+            payload = {
+                "tag_name": "v1.1.0",
+                "draft": False,
+                "prerelease": prerelease,
+                "published_at": "2026-07-31T00:00:00Z",
+            }
+        elif "/pulls/7/files?" in endpoint:
+            payload = [
+                *(
+                    {
+                        "filename": path,
+                        "status": "added" if path.endswith("-v1.0.0-to-v1.1.0.md") else "modified",
+                    }
+                    for path in sorted(changed_paths)
+                ),
+                *extra_entries,
+            ]
+        else:
+            source_path = endpoint.split("/contents/", 1)[1].split("?ref=", 1)[0]
+            candidate_content = (candidate / source_to_target[source_path]).read_bytes()
+            if source_path == "templates/target/.codex/hooks.json":
+                candidate_hooks = json.loads(candidate_content)
+                wrapper_entry = candidate_hooks["hooks"]["SessionStart"][-1]
+                candidate_content = (
+                    json.dumps({"hooks": {"SessionStart": [wrapper_entry]}}, indent=2) + "\n"
+                ).encode("utf-8")
+            content = (source_overrides or {}).get(source_path, candidate_content)
+            payload = {
+                "content": base64.b64encode(content).decode("ascii")
+            }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    return runner
+
+
+def make_upgrade_checkouts(tmp_path: Path) -> tuple[Path, Path, str, str, set[str]]:
+    trusted = tmp_path / "trusted"
+    candidate = tmp_path / "candidate"
+    base_sha = make_control_checkout(trusted, "v1.0.0", "base")
+    make_control_checkout(candidate, "v1.1.0", "official")
+    migration_path = ".evozeus-wrapper/docs/migrations/2026-07-31-v1.0.0-to-v1.1.0.md"
+    migration = candidate / migration_path
+    migration.parent.mkdir(parents=True, exist_ok=True)
+    migration.write_text(
+        "# Harness Refresh\n\n- Wrapper 版本：v1.0.0 -> v1.1.0\n\n## 验证\n\n- passed\n\n## 回滚\n\n- revert\n",
+        encoding="utf-8",
+    )
+    run(["git", "add", migration_path], candidate)
+    run(["git", "commit", "-m", "test: add migration record"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    changed_paths = {
+        *TRUSTED_CONTROL_SOURCES,
+        ".evozeus-wrapper/wrapper.json",
+        migration_path,
+    }
+    return trusted, candidate, base_sha, head_sha, changed_paths
+
+
+def test_trusted_control_gate_accepts_official_admin_upgrade(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    mode = check_trusted_pr_checkouts(
+        candidate,
+        trusted,
+        github_head_sha=head_sha,
+        github_base_sha=base_sha,
+        github_repository=REPO,
+        github_head_repo=REPO,
+        github_actor="alice",
+        github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+        github_pr_number=7,
+        github_api_runner=official_upgrade_runner(candidate, changed_paths),
+    )
+    assert mode == "official_harness_upgrade"
+
+
+def test_trusted_control_gate_accepts_real_publisher_managed_output(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    manifest = json.loads((candidate / ".evozeus-wrapper/wrapper.json").read_text(encoding="utf-8"))
+    replacements = {
+        "SKILL_NAME": "example-skill",
+        "REPO_NAME": REPO,
+        "REPO_URL": f"https://github.com/{REPO}",
+        "CURRENT_VERSION": "v0.1.0",
+        "INITIAL_VERSION": "v0.1.0",
+        "DATE": manifest["applied_at"],
+        "VISIBILITY": "public",
+        "WRAPPER_VERSION": "v1.1.0",
+    }
+    source_overrides = {
+        source_path: (ROOT / source_path).read_bytes()
+        for source_path in TRUSTED_CONTROL_SOURCES.values()
+    }
+    for relative_path, source_path in TRUSTED_CONTROL_SOURCES.items():
+        source_text = source_overrides[source_path].decode("utf-8")
+        for key, value in replacements.items():
+            source_text = source_text.replace(f"{{{{{key}}}}}", value)
+        destination = candidate / relative_path
+        if relative_path == ".codex/hooks.json":
+            trusted_hooks = json.loads((trusted / relative_path).read_text(encoding="utf-8"))
+            official_entry = json.loads(source_text)["hooks"]["SessionStart"][0]
+            preserved = trusted_hooks["hooks"]["SessionStart"][:-1]
+            rendered = copy.deepcopy(trusted_hooks)
+            rendered["hooks"]["SessionStart"] = [*preserved, official_entry]
+            destination.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
+        else:
+            destination.write_text(source_text, encoding="utf-8")
+    run(["git", "add", "."], candidate)
+    run(["git", "commit", "-m", "test: render official managed output"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+
+    mode = check_trusted_pr_checkouts(
+        candidate,
+        trusted,
+        github_head_sha=head_sha,
+        github_base_sha=base_sha,
+        github_repository=REPO,
+        github_head_repo=REPO,
+        github_actor="alice",
+        github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+        github_pr_number=7,
+        github_api_runner=official_upgrade_runner(
+            candidate,
+            changed_paths,
+            source_overrides=source_overrides,
+        ),
+    )
+    assert mode == "official_harness_upgrade"
+
+
+def test_trusted_control_gate_rejects_fork_copy_of_official_upgrade(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo="alice/example-skill",
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(candidate, changed_paths),
+        )
+
+
+def test_trusted_control_gate_rejects_prerelease_upgrade(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(
+                candidate,
+                changed_paths,
+                prerelease=True,
+            ),
+        )
+
+
+def test_trusted_control_gate_rejects_upgrade_manifest_identity_change(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    manifest = candidate / ".evozeus-wrapper/wrapper.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["canonical_repo"] = "mallory/other-skill"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    run(["git", "add", str(manifest.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", "test: change target identity"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(candidate, changed_paths),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["drop_managed_file", "weaken_hook_registration", "extra_top_level_field"],
+)
+def test_trusted_control_gate_rejects_noncanonical_upgrade_manifest(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    trusted, candidate, base_sha, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    manifest = candidate / ".evozeus-wrapper/wrapper.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    if mutation == "drop_managed_file":
+        data["managed_files"].remove(".github/workflows/evozeus-wrapper-preflight.yml")
+    elif mutation == "weaken_hook_registration":
+        data["hook_registration"]["codex"].pop("trust_review")
+    else:
+        data["candidate_defined_trust"] = True
+    manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    run(["git", "add", str(manifest.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", f"test: {mutation}"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(candidate, changed_paths),
+        )
+
+
+def test_trusted_control_gate_rejects_official_upgrade_with_business_file(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(candidate, changed_paths | {"business.py"}),
+        )
+
+
+def test_trusted_control_gate_rejects_business_mutation_in_instruction_surface(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    surface = candidate / "SKILL.md"
+    surface.write_text(
+        surface.read_text(encoding="utf-8").replace("Business instructions.", "Changed business instructions."),
+        encoding="utf-8",
+    )
+    run(["git", "add", "SKILL.md"], candidate)
+    run(["git", "commit", "-m", "test: mutate business surface"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(candidate, changed_paths | {"SKILL.md"}),
+        )
+
+
+def test_trusted_control_gate_rejects_renamed_business_file(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    rename = {
+        "filename": ".evozeus-wrapper/docs/migrations/2026-07-31-v1.0.0-to-v1.1.0.md",
+        "previous_filename": "business.py",
+        "status": "renamed",
+    }
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(
+                candidate,
+                changed_paths,
+                extra_entries=(rename,),
+            ),
+        )
+
+
+def test_trusted_control_gate_rejects_business_pr_tampering(tmp_path: Path) -> None:
+    trusted = tmp_path / "trusted"
+    candidate = tmp_path / "candidate"
+    base_sha = make_control_checkout(trusted, "v1.0.0", "base")
+    make_control_checkout(candidate, "v1.0.0", "base")
+    tampered = candidate / ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    tampered.write_text("untrusted candidate validator\n", encoding="utf-8")
+    run(["git", "add", str(tampered.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", "test: tamper validator"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref=TARGET_BRANCH,
+            github_pr_number=7,
+            github_api_runner=lambda *args, **kwargs: pytest.fail("business tamper must fail before API lookup"),
+        )
+
+
+def test_trusted_control_gate_rejects_business_manifest_tampering(tmp_path: Path) -> None:
+    trusted = tmp_path / "trusted"
+    candidate = tmp_path / "candidate"
+    base_sha = make_control_checkout(trusted, "v1.0.0", "base")
+    make_control_checkout(candidate, "v1.0.0", "base")
+    manifest = candidate / ".evozeus-wrapper/wrapper.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["canonical_repo"] = "mallory/other-skill"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    run(["git", "add", str(manifest.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", "test: tamper manifest"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref=TARGET_BRANCH,
+            github_pr_number=7,
+            github_api_runner=lambda *args, **kwargs: pytest.fail("business tamper must fail before API lookup"),
+        )
+
+
+def test_trusted_control_gate_rejects_business_hooks_tampering(tmp_path: Path) -> None:
+    trusted = tmp_path / "trusted"
+    candidate = tmp_path / "candidate"
+    base_sha = make_control_checkout(trusted, "v1.0.0", "base")
+    make_control_checkout(candidate, "v1.0.0", "base")
+    hooks = candidate / ".codex/hooks.json"
+    hooks.write_text('{"hooks":{"SessionStart":[]}}\n', encoding="utf-8")
+    run(["git", "add", str(hooks.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", "test: weaken hooks"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref=TARGET_BRANCH,
+            github_pr_number=7,
+            github_api_runner=lambda *args, **kwargs: pytest.fail("business tamper must fail before API lookup"),
+        )
+
+
+def test_trusted_control_gate_rejects_hooks_not_bound_to_official_release(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, head_sha, changed_paths = make_upgrade_checkouts(tmp_path)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(
+                candidate,
+                changed_paths,
+                source_overrides={"templates/target/.codex/hooks.json": b"unofficial hooks\n"},
+            ),
+        )
+
+
+def test_trusted_control_gate_rejects_stale_unrefreshed_managed_file(tmp_path: Path) -> None:
+    trusted, candidate, base_sha, _, changed_paths = make_upgrade_checkouts(tmp_path)
+    relative_path = ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    (candidate / relative_path).write_bytes((trusted / relative_path).read_bytes())
+    run(["git", "add", relative_path], candidate)
+    run(["git", "commit", "-m", "test: leave managed file stale"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+            github_pr_number=7,
+            github_api_runner=official_upgrade_runner(
+                candidate,
+                changed_paths - {relative_path},
+                source_overrides={
+                    "scripts/evozeus_wrapper_preflight.py": b"official refreshed preflight\n"
+                },
+            ),
+        )
+
+
+def test_official_upgrade_profile_skips_contributor_plan_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "candidate"
+    trusted = tmp_path / "trusted"
+    target.mkdir()
+    trusted.mkdir()
+    monkeypatch.setattr(
+        "scripts.evozeus_wrapper_preflight.check_trusted_pr_checkouts",
+        lambda *args, **kwargs: "official_harness_upgrade",
+    )
+    monkeypatch.setattr(
+        "scripts.evozeus_wrapper_preflight.load_wrapper_manifest",
+        lambda _target: {"wrapper_version": "v1.1.0"},
+    )
+    monkeypatch.setattr("scripts.evozeus_wrapper_preflight.check_maintainer", lambda *args, **kwargs: None)
+    args = SimpleNamespace(
+        target=str(target),
+        pr_body=str(tmp_path / "publisher-body-without-contributor-plan.md"),
+        trusted_root=str(trusted),
+        github_head_sha="1" * 40,
+        github_base_sha="2" * 40,
+        github_repository=REPO,
+        github_head_repo=REPO,
+        github_actor="alice",
+        github_head_ref="evozeus/harness-v1.0.0-to-v1.1.0",
+        github_pr_number=7,
+    )
+    check_pr(args)
 
 
 @pytest.mark.parametrize(

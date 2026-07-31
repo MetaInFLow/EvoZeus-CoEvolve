@@ -564,6 +564,18 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("actions/setup-node@v4", workflow)
         self.assertIn("evozeus_branch_consumer.py verify-snapshot --json", workflow)
         self.assertIn("--pr-body /tmp/skill-evolution-pr.md", workflow)
+        self.assertIn("pull_request_target:", workflow)
+        self.assertIn("Checkout trusted base validator", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
+        self.assertIn("Checkout candidate as untrusted data", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", workflow)
+        self.assertIn(
+            "python3 trusted-base/.evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr",
+            workflow,
+        )
+        self.assertIn("--target candidate", workflow)
+        self.assertNotIn("python3 candidate/.evozeus-wrapper/scripts/", workflow)
+        self.assertIn("pull-requests: read", workflow)
 
     def test_copy_templates_consolidates_wrapper_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

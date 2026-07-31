@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import copy
 import json
 import re
 import shutil
@@ -15,6 +17,21 @@ try:
     from .evozeus_notice import load_notice_policy, render_notice
 except ImportError:
     from evozeus_notice import load_notice_policy, render_notice
+
+try:
+    from .evozeus_branch_consumer import (
+        ConsumerError as ContributorBranchError,
+        PROFILE as CONTRIBUTOR_BRANCH_PROFILE,
+        compute_resume_key,
+        verify_managed_snapshot,
+    )
+except ImportError:
+    from evozeus_branch_consumer import (
+        ConsumerError as ContributorBranchError,
+        PROFILE as CONTRIBUTOR_BRANCH_PROFILE,
+        compute_resume_key,
+        verify_managed_snapshot,
+    )
 
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
@@ -116,7 +133,10 @@ HARNESS_SKILL_TERMS = [
     "普通 Skill 调用不授权",
     "evozeus_branch_consumer.py",
     "--approve-save-plan",
+    "issue_evidence",
     "permission_evidence",
+    "pull_request_target",
+    "evozeus/harness-vX-to-vY",
     "隔离 worktree",
 ]
 
@@ -143,6 +163,42 @@ NOTICE_REQUIRED_STATES = {
 VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RESUME_KEY_RE = re.compile(r"^branch_v1_[0-9a-f]{24}$")
+COEVOLVE_SOURCE_REPO = "MetaInFLow/EvoZeus-CoEvolve"
+TRUSTED_CONTROL_SOURCES = {
+    CODEX_HOOKS_CONFIG: "templates/target/.codex/hooks.json",
+    TARGET_WRAPPER_GUIDE: "templates/target/WRAPPER.md",
+    TARGET_DASHBOARD_INDEX: "templates/target/docs/index.md",
+    TARGET_DASHBOARD_CONFIG: "templates/target/docs/_config.yml",
+    TARGET_DESIGN_TEMPLATE: "templates/target/docs/design-doc-template.md",
+    TARGET_DESIGNS_README: "templates/target/docs/designs/README.md",
+    TARGET_MIGRATIONS_README: "templates/target/docs/wrapper-migrations/README.md",
+    ".github/ISSUE_TEMPLATE/config.yml": "templates/target/.github/ISSUE_TEMPLATE/config.yml",
+    ".github/ISSUE_TEMPLATE/skill-feedback.yml": "templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+    TARGET_PREFLIGHT_SCRIPT: "scripts/evozeus_wrapper_preflight.py",
+    TARGET_NOTICE_SCRIPT: "scripts/evozeus_notice.py",
+    TARGET_BRANCH_CONSUMER_SCRIPT: "scripts/evozeus_branch_consumer.py",
+    TARGET_BRANCH_CONTRACT: "templates/target/contracts/v1/contributor-branch-contract.json",
+    TARGET_BRANCH_PROVENANCE: "templates/target/contracts/v1/contributor-branch-provenance.json",
+    TARGET_BRANCH_PLANNER: "templates/target/scripts/evozeus-branch-preflight.mjs",
+    CODEX_START_HOOK_SCRIPT: "templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+    ".github/workflows/evozeus-wrapper-preflight.yml": "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+    ".github/pull_request_template.md": "templates/target/.github/pull_request_template.md",
+    TARGET_ONBOARDING_GUIDE: "templates/target/docs/onboarding.md",
+    TARGET_FEEDBACK_POLICY: "templates/target/.evozeus_evoinfra/feedback-policy.json",
+    TARGET_AUDIT_RULE: "templates/target/.evozeus_evoinfra/audit-rule.md",
+    TARGET_NOTICE_POLICY: "templates/target/.evozeus_evoinfra/notice-policy.json",
+    TARGET_HARNESS_SKILL: "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+}
+EXPECTED_CONTRIBUTOR_BRANCH = {
+    "profile": "coevolve_target_skillware_consumer",
+    "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+    "contract_path": TARGET_BRANCH_CONTRACT,
+    "provenance_path": TARGET_BRANCH_PROVENANCE,
+    "planner_path": TARGET_BRANCH_PLANNER,
+    "permission_authority": "core_planner_live_github_evidence",
+    "runtime_network_fetch": False,
+    "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+}
 RUNTIME_REFERENCE_RE = re.compile(
     r"(?P<path>(?:references|scripts|assets|templates|agents)/[A-Za-z0-9_.@()/+=,~-]+)",
 )
@@ -640,18 +696,13 @@ def check_dashboard_contract(manifest: dict | None) -> None:
     ok("dashboard deployment contract is complete")
 
 
-def check_contributor_branch_contract(target: Path, manifest: dict | None) -> None:
-    expected = {
-        "profile": "coevolve_target_skillware_consumer",
-        "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
-        "contract_path": TARGET_BRANCH_CONTRACT,
-        "provenance_path": TARGET_BRANCH_PROVENANCE,
-        "planner_path": TARGET_BRANCH_PLANNER,
-        "permission_authority": "core_planner_live_github_evidence",
-        "runtime_network_fetch": False,
-        "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
-    }
-    if (manifest or {}).get("contributor_branch") != expected:
+def check_contributor_branch_contract(
+    target: Path,
+    manifest: dict | None,
+    *,
+    snapshot_verified_from_official_release: bool = False,
+) -> None:
+    if (manifest or {}).get("contributor_branch") != EXPECTED_CONTRIBUTOR_BRANCH:
         fail("wrapper manifest contributor_branch contract is missing or incompatible")
     managed_files = (manifest or {}).get("managed_files")
     managed_branch_files = {
@@ -664,19 +715,11 @@ def check_contributor_branch_contract(target: Path, manifest: dict | None) -> No
         fail("wrapper manifest must keep every contributor branch asset wrapper-managed")
     for relative_path in managed_branch_files:
         _manifest_relative_file(target, relative_path, "contributor branch asset")
-    result = run_command(
-        [sys.executable, str(target / TARGET_BRANCH_CONSUMER_SCRIPT), "verify-snapshot", "--json"],
-        cwd=target,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        fail(f"contributor branch snapshot verification failed: {detail}")
-    try:
-        report = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        fail("contributor branch snapshot verification returned invalid JSON")
-    if report.get("status") != "verified" or report.get("writes") is not False:
-        fail("contributor branch snapshot verification did not produce a read-only verified result")
+    if not snapshot_verified_from_official_release:
+        try:
+            verify_managed_snapshot(target / TARGET_EVOINFRA_DIR)
+        except ContributorBranchError:
+            fail("contributor branch snapshot verification failed")
     ok("contributor branch contract and offline snapshot are verified")
 
 
@@ -997,7 +1040,11 @@ def check_notice_policy(target: Path) -> None:
     ok("notice policy satisfies the target-Skill visual contract")
 
 
-def check_maintainer(args: argparse.Namespace) -> None:
+def check_maintainer(
+    args: argparse.Namespace,
+    *,
+    snapshot_verified_from_official_release: bool = False,
+) -> None:
     target = Path(args.target).resolve()
     missing = [path for path in MAINTAINER_REQUIRED_FILES if not (target / path).exists()]
     if missing:
@@ -1010,7 +1057,11 @@ def check_maintainer(args: argparse.Namespace) -> None:
     check_notice_policy(target)
     check_onboarding_contract(manifest)
     check_dashboard_contract(manifest)
-    check_contributor_branch_contract(target, manifest)
+    check_contributor_branch_contract(
+        target,
+        manifest,
+        snapshot_verified_from_official_release=snapshot_verified_from_official_release,
+    )
     check_integration_contract(target, manifest)
     check_runtime(args)
     ok("maintainer bundle contains required wrapper files")
@@ -1184,25 +1235,487 @@ def check_design_doc(path: Path) -> None:
     ok(f"design doc has required concepts: {path}")
 
 
+def collect_live_github_issue(
+    repo: str,
+    issue_number: int,
+    *,
+    runner=subprocess.run,
+) -> dict[str, object]:
+    try:
+        result = runner(
+            ["gh", "api", f"repos/{repo}/issues/{issue_number}", "--hostname", "github.com"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        fail("PR Issue could not be verified through the trusted GitHub API path")
+    if result.returncode != 0:
+        fail("PR Issue could not be verified through the trusted GitHub API path")
+    try:
+        issue = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        fail("trusted GitHub Issue evidence is invalid")
+    if not isinstance(issue, dict):
+        fail("trusted GitHub Issue evidence must be an object")
+    return issue
+
+
+def check_live_feedback_issue(
+    contract: dict,
+    *,
+    repo: str,
+    issue_number: int,
+    runner=subprocess.run,
+) -> None:
+    issue = collect_live_github_issue(repo, issue_number, runner=runner)
+    labels = issue.get("labels")
+    label_names = [
+        label if isinstance(label, str) else label.get("name")
+        for label in labels
+        if isinstance(label, (str, dict))
+    ] if isinstance(labels, list) else []
+    if (
+        issue.get("number") != issue_number
+        or str(issue.get("state", "")).upper() != contract.get("issue_resolution", {}).get("required_state")
+        or "pull_request" in issue
+        or not isinstance(issue.get("title"), str)
+        or not all(isinstance(label, str) for label in label_names)
+    ):
+        fail("PR must reference the matching live OPEN GitHub Issue, not a Pull Request")
+
+    classification = contract.get("profiles", {}).get(CONTRIBUTOR_BRANCH_PROFILE, {}).get("issue_classification", {})
+    normalized_labels = {label.lower() for label in label_names}
+    label_match = any(
+        isinstance(label, str) and label.lower() in normalized_labels
+        for label in classification.get("labels_any", [])
+    )
+    title_match = any(
+        isinstance(prefix, str) and issue["title"].startswith(prefix)
+        for prefix in classification.get("title_prefixes", [])
+    )
+    if classification.get("match") != "label_or_title_prefix" or not (label_match or title_match):
+        fail("PR Issue is not classified as Skill feedback")
+    ok("PR Issue identity, state, type, and Skill-feedback classification are live-verified")
+
+
+def check_trusted_pr_checkouts(
+    candidate: Path,
+    trusted_root: Path,
+    *,
+    github_head_sha: str,
+    github_base_sha: str,
+    github_repository: str,
+    github_head_repo: str,
+    github_actor: str,
+    github_head_ref: str,
+    github_pr_number: int,
+    github_api_runner=subprocess.run,
+) -> str:
+    for path, expected, label in (
+        (candidate, github_head_sha, "candidate"),
+        (trusted_root, github_base_sha, "trusted base"),
+    ):
+        result = run_command(["git", "-C", str(path), "rev-parse", "HEAD"])
+        if result.returncode != 0 or result.stdout.strip() != expected:
+            fail(f"{label} checkout does not match the trusted GitHub event SHA")
+
+    candidate_manifest_file = _manifest_relative_file(
+        candidate,
+        TARGET_WRAPPER_MANIFEST,
+        "candidate wrapper manifest",
+    )
+    trusted_manifest_file = _manifest_relative_file(
+        trusted_root,
+        TARGET_WRAPPER_MANIFEST,
+        "trusted wrapper manifest",
+    )
+    candidate_manifest = read_json_object(candidate_manifest_file)
+    trusted_manifest = read_json_object(trusted_manifest_file)
+
+    expected_managed_files = [
+        path for path in MAINTAINER_REQUIRED_FILES if path != TARGET_WRAPPER_MANIFEST
+    ]
+    official_managed_files = set(expected_managed_files) - {TARGET_CHANGELOG}
+    if set(TRUSTED_CONTROL_SOURCES) != official_managed_files:
+        fail("trusted Harness managed-file source map is incomplete")
+    changed: list[str] = []
+    for relative_path in expected_managed_files:
+        if relative_path == TARGET_CHANGELOG:
+            continue
+        candidate_file = _manifest_relative_file(candidate, relative_path, "candidate PR control file")
+        trusted_file = _manifest_relative_file(trusted_root, relative_path, "trusted base control file")
+        if candidate_file.read_bytes() != trusted_file.read_bytes():
+            changed.append(relative_path)
+    if candidate_manifest_file.read_bytes() != trusted_manifest_file.read_bytes():
+        changed.append(TARGET_WRAPPER_MANIFEST)
+    if not changed:
+        ok("business PR control files and manifest are byte-bound to the trusted base")
+        return "business"
+
+    candidate_version = candidate_manifest.get("wrapper_version")
+    trusted_version = trusted_manifest.get("wrapper_version")
+    if not isinstance(candidate_version, str) or not isinstance(trusted_version, str):
+        fail("Harness upgrade requires semantic base and candidate wrapper versions")
+    if version_key(candidate_version) <= version_key(trusted_version):
+        fail("business PR cannot change trusted Harness control files")
+    if (
+        trusted_manifest.get("canonical_repo") != github_repository
+        or candidate_manifest.get("canonical_repo") != github_repository
+        or candidate_manifest.get("wrapper_repo") != COEVOLVE_SOURCE_REPO
+    ):
+        fail("Harness upgrade manifest does not match the trusted target and source repositories")
+    preserved_manifest_fields = (
+        "canonical_repo",
+        "instruction_surface",
+        "install_links",
+        "integration",
+        "onboarding",
+        "dashboard",
+        "runtime_bundle",
+    )
+    if any(candidate_manifest.get(field) != trusted_manifest.get(field) for field in preserved_manifest_fields):
+        fail("Harness upgrade changes target-owned manifest bindings")
+    canonical_identity = {
+        "wrapper_repo": COEVOLVE_SOURCE_REPO,
+        "layout_version": 2,
+        "target_wrapper_dir": TARGET_EVOINFRA_DIR,
+        "target_infra_dir": TARGET_EVOINFRA_DIR,
+        "legacy_layout_dirs": [LEGACY_TARGET_EVOINFRA_DIR, OLDEST_TARGET_EVOINFRA_DIR],
+        "harness_skill_path": TARGET_HARNESS_SKILL,
+        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_managed": True,
+        "managed_files": expected_managed_files,
+        "contributor_branch": EXPECTED_CONTRIBUTOR_BRANCH,
+    }
+    if any(candidate_manifest.get(field) != value for field, value in canonical_identity.items()):
+        fail("Harness upgrade manifest wrapper-owned identity is not canonical")
+    if not re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}", str(candidate_manifest.get("applied_at", ""))):
+        fail("Harness upgrade manifest applied_at is invalid")
+
+    integration = candidate_manifest.get("integration", {})
+    repo_hook_installed = bool(
+        (integration.get("capabilities") or {})
+        .get("repo_maintenance_hook", {})
+        .get("installed")
+    ) if isinstance(integration, dict) else False
+    expected_hook_registration = {
+        "codex": {
+            "capability": "repo_maintenance_hook",
+            "config_file": CODEX_HOOKS_CONFIG,
+            "hook_script": CODEX_START_HOOK_SCRIPT,
+            "event": "SessionStart",
+            "matcher": "startup|resume",
+            "scope": "canonical_repository",
+            "covers_skill_invocation": False,
+            "installation_status": "installed" if repo_hook_installed else "not_installed",
+            "trust_status": "pending_review" if repo_hook_installed else "not_installed",
+            "trust_review": "required_by_codex_hooks",
+            "latest_version_env": "EVOZEUS_WRAPPER_LATEST_VERSION",
+            "enforcement_env": "EVOZEUS_WRAPPER_HOOK_ENFORCEMENT",
+        },
+    }
+    if candidate_manifest.get("hook_registration") != expected_hook_registration:
+        fail("Harness upgrade manifest hook registration is not canonical")
+    wrapper_owned_mutable_keys = {
+        *canonical_identity,
+        "wrapper_version",
+        "applied_at",
+        "hook_registration",
+    }
+    preserved_keys = (set(candidate_manifest) | set(trusted_manifest)) - wrapper_owned_mutable_keys
+    if any(
+        (key in candidate_manifest) != (key in trusted_manifest)
+        or candidate_manifest.get(key) != trusted_manifest.get(key)
+        for key in preserved_keys
+    ):
+        fail("Harness upgrade adds or changes a noncanonical manifest field")
+    expected_upgrade_branch = f"evozeus/harness-{trusted_version}-to-{candidate_version}"
+    if github_head_ref != expected_upgrade_branch:
+        fail("Harness upgrade branch does not match the trusted from/to versions")
+    if github_head_repo.lower() != github_repository.lower():
+        fail("Harness upgrade must use a direct branch in the canonical repository")
+
+    try:
+        permission_result = github_api_runner(
+            [
+                "gh", "api",
+                f"repos/{github_repository}/collaborators/{github_actor}/permission",
+                "--hostname", "github.com",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        fail("Harness upgrade author permission could not be live-verified")
+    if permission_result.returncode != 0:
+        fail("Harness upgrade author permission could not be live-verified")
+    try:
+        permission = json.loads(permission_result.stdout)
+    except json.JSONDecodeError:
+        fail("Harness upgrade author permission evidence is invalid")
+    if (
+        not isinstance(permission, dict)
+        or str(permission.get("permission", "")).lower() != "admin"
+        or permission.get("user", {}).get("permissions", {}).get("admin") is not True
+    ):
+        fail("Harness upgrade requires live ADMIN permission for the PR author")
+
+    try:
+        release_result = github_api_runner(
+            [
+                "gh", "api",
+                f"repos/{COEVOLVE_SOURCE_REPO}/releases/tags/{candidate_version}",
+                "--hostname", "github.com",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        fail("Harness upgrade release provenance is unavailable")
+    if release_result.returncode != 0:
+        fail("Harness upgrade release provenance is unavailable")
+    try:
+        release = json.loads(release_result.stdout)
+    except json.JSONDecodeError:
+        fail("Harness upgrade release provenance is invalid")
+    if (
+        not isinstance(release, dict)
+        or release.get("tag_name") != candidate_version
+        or release.get("draft") is not False
+        or release.get("prerelease") is not False
+        or not isinstance(release.get("published_at"), str)
+    ):
+        fail("Harness upgrade requires an official published CoEvolve Release")
+
+    changed_entries: dict[str, dict] = {}
+    for page in range(1, 11):
+        try:
+            files_result = github_api_runner(
+                [
+                    "gh", "api",
+                    f"repos/{github_repository}/pulls/{github_pr_number}/files?per_page=100&page={page}",
+                    "--hostname", "github.com",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            fail("Harness upgrade file diff could not be live-verified")
+        if files_result.returncode != 0:
+            fail("Harness upgrade file diff could not be live-verified")
+        try:
+            page_files = json.loads(files_result.stdout)
+        except json.JSONDecodeError:
+            fail("Harness upgrade file diff evidence is invalid")
+        if not isinstance(page_files, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("filename"), str)
+            for item in page_files
+        ):
+            fail("Harness upgrade file diff evidence is invalid")
+        for item in page_files:
+            changed_entries[item["filename"]] = item
+        if len(page_files) < 100:
+            break
+    else:
+        fail("Harness upgrade file diff exceeds the trusted verification limit")
+
+    trusted_surface = trusted_manifest.get("instruction_surface")
+    candidate_surface = candidate_manifest.get("instruction_surface")
+    if (
+        not isinstance(trusted_surface, str)
+        or candidate_surface != trusted_surface
+        or Path(trusted_surface).is_absolute()
+        or ".." in Path(trusted_surface).parts
+    ):
+        fail("Harness upgrade must preserve the trusted instruction surface")
+    trusted_surface_file = _manifest_relative_file(
+        trusted_root,
+        trusted_surface,
+        "trusted instruction surface",
+    )
+    candidate_surface_file = _manifest_relative_file(
+        candidate,
+        candidate_surface,
+        "candidate instruction surface",
+    )
+
+    def business_surface(text: str) -> str:
+        if text.count(HARNESS_ENTRY_BEGIN) != 1 or text.count(HARNESS_ENTRY_END) != 1:
+            fail("Harness upgrade instruction surface requires one owned activation block")
+        start = text.index(HARNESS_ENTRY_BEGIN)
+        end = text.index(HARNESS_ENTRY_END, start) + len(HARNESS_ENTRY_END)
+        block = text[start:end].replace("\r\n", "\n")
+        if block != _canonical_harness_entry_block():
+            fail("Harness upgrade instruction surface activation block is not canonical")
+        return text[:start] + text[end:]
+
+    trusted_surface_text = trusted_surface_file.read_text(encoding="utf-8")
+    candidate_surface_text = candidate_surface_file.read_text(encoding="utf-8")
+    if business_surface(candidate_surface_text) != business_surface(trusted_surface_text):
+        fail("Harness upgrade changes target-owned instruction-surface bytes")
+    fixed_outputs = {
+        *TRUSTED_CONTROL_SOURCES,
+        TARGET_WRAPPER_MANIFEST,
+    }
+    if candidate_surface_text != trusted_surface_text:
+        fixed_outputs.add(trusted_surface)
+    migration_pattern = re.compile(
+        rf"^{re.escape(TARGET_MIGRATIONS_DIR)}/20[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}}-"
+        rf"{re.escape(trusted_version)}-to-{re.escape(candidate_version)}\.md$"
+    )
+    changed_paths = set(changed_entries)
+    unexpected = sorted(
+        path for path in changed_paths
+        if path not in fixed_outputs and not migration_pattern.fullmatch(path)
+    )
+    if not set(changed).issubset(changed_paths) or TARGET_WRAPPER_MANIFEST not in changed_paths:
+        fail("Harness upgrade API diff does not contain the verified control-plane changes")
+    if unexpected:
+        fail("Harness upgrade diff contains files outside official managed and migration outputs")
+
+    trusted_changelog = read_text(trusted_root / TARGET_CHANGELOG)
+    version_matches = list(re.finditer(r"^##\s+\[?(v\d+\.\d+\.\d+)\]?", trusted_changelog, re.MULTILINE))
+    current_skill_version = version_matches[0].group(1) if version_matches else "v0.1.0"
+    initial_skill_version = version_matches[-1].group(1) if version_matches else current_skill_version
+    initial_date_match = re.search(
+        rf"^##\s+\[?{re.escape(initial_skill_version)}\]?\s+-\s+(20[0-9]{{2}}-[0-9]{{2}}-[0-9]{{2}})",
+        trusted_changelog,
+        re.MULTILINE,
+    )
+    trusted_wrapper = read_text(trusted_root / TARGET_WRAPPER_GUIDE)
+    visibility_match = re.search(r"(?m)^- Selected visibility:\s*([^\r\n]+)$", trusted_wrapper)
+    replacements = {
+        "SKILL_NAME": skill_name_from_skill_md(trusted_surface_file) or github_repository.split("/", 1)[1],
+        "REPO_NAME": github_repository,
+        "REPO_URL": f"https://github.com/{github_repository}",
+        "CURRENT_VERSION": current_skill_version,
+        "INITIAL_VERSION": initial_skill_version,
+        "DATE": initial_date_match.group(1) if initial_date_match else candidate_manifest["applied_at"],
+        "VISIBILITY": visibility_match.group(1).strip() if visibility_match else "public",
+        "WRAPPER_VERSION": candidate_version,
+    }
+    for relative_path in sorted(TRUSTED_CONTROL_SOURCES):
+        source_path = TRUSTED_CONTROL_SOURCES[relative_path]
+        try:
+            source_result = github_api_runner(
+                [
+                    "gh", "api",
+                    f"repos/{COEVOLVE_SOURCE_REPO}/contents/{source_path}?ref={candidate_version}",
+                    "--hostname", "github.com",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            fail("Harness upgrade source provenance is unavailable")
+        if source_result.returncode != 0:
+            fail("Harness upgrade source provenance is unavailable")
+        try:
+            source_data = json.loads(source_result.stdout)
+            official_text = base64.b64decode(source_data["content"]).decode("utf-8")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, UnicodeDecodeError):
+            fail("Harness upgrade source provenance is invalid")
+        for key, value in replacements.items():
+            official_text = official_text.replace(f"{{{{{key}}}}}", value)
+        if re.search(r"\{\{[A-Z_]+\}\}", official_text):
+            fail("Harness upgrade official template has unresolved target placeholders")
+        candidate_file = _manifest_relative_file(candidate, relative_path, "candidate Harness upgrade file")
+        if relative_path == CODEX_HOOKS_CONFIG:
+            trusted_hooks_file = _manifest_relative_file(
+                trusted_root,
+                relative_path,
+                "trusted Codex hooks config",
+            )
+            try:
+                official_hooks = json.loads(official_text)
+                trusted_hooks = json.loads(trusted_hooks_file.read_text(encoding="utf-8"))
+                candidate_hooks = json.loads(candidate_file.read_text(encoding="utf-8"))
+                wrapper_entry = official_hooks["hooks"]["SessionStart"][0]
+                expected_hooks = copy.deepcopy(trusted_hooks)
+                session_start = expected_hooks.setdefault("hooks", {}).setdefault("SessionStart", [])
+                if not isinstance(session_start, list):
+                    raise TypeError("trusted SessionStart hooks must be a list")
+                preserved = []
+                for entry in session_start:
+                    handlers = entry.get("hooks") if isinstance(entry, dict) else None
+                    if not isinstance(handlers, list):
+                        raise TypeError("trusted SessionStart entry must contain hooks")
+                    wrapper_owned = any(
+                        isinstance(handler, dict)
+                        and isinstance(handler.get("command"), str)
+                        and "evozeus_wrapper_start_check.py" in handler["command"]
+                        for handler in handlers
+                    )
+                    if not wrapper_owned:
+                        preserved.append(entry)
+                expected_hooks["hooks"]["SessionStart"] = [*preserved, wrapper_entry]
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+                fail("Harness upgrade Codex hooks provenance is invalid")
+            if candidate_hooks != expected_hooks:
+                fail("Harness upgrade changes target-owned Codex hook entries")
+            continue
+        if candidate_file.read_bytes() != official_text.encode("utf-8"):
+            fail(f"candidate Harness control file does not match official Release {candidate_version}: {relative_path}")
+    for path, item in changed_entries.items():
+        status = item.get("status")
+        if migration_pattern.fullmatch(path):
+            if status != "added":
+                fail("Harness upgrade migration record must be a newly added file")
+            migration_file = _manifest_relative_file(
+                candidate,
+                path,
+                "Harness upgrade migration record",
+            )
+            migration_text = migration_file.read_text(encoding="utf-8")
+            if not all(
+                term in migration_text
+                for term in (trusted_version, candidate_version, "## 验证", "## 回滚")
+            ):
+                fail("Harness upgrade migration record is incomplete")
+        elif status != "modified":
+            fail("Harness upgrade cannot add, remove, or rename governed existing files")
+        if item.get("previous_filename") is not None:
+            fail("Harness upgrade cannot hide a source path through a rename")
+
+    ok(f"Harness upgrade control files match official CoEvolve Release {candidate_version}")
+    return "official_harness_upgrade"
+
+
 def check_branch_pr_metadata(
     target: Path,
     body: str,
     *,
     github_repository: str | None,
     github_head_ref: str | None,
+    github_head_repo: str | None,
+    github_actor: str | None,
     github_base_ref: str | None,
     github_base_sha: str | None,
+    plan_asset_root: Path | None = None,
+    issue_runner=subprocess.run,
 ) -> None:
     labels = (
         "Resume key",
         "Core source revision",
         "Contract SHA-256",
+        "Profile",
+        "Purpose type / component / summary",
         "Canonical repo",
         "Base ref / commit",
         "Target branch",
         "Issue",
         "Verified actor",
-        "Resolved permission / evidence source / checked time",
+        "Permission path",
     )
     values: dict[str, str] = {}
     for label in labels:
@@ -1214,7 +1727,12 @@ def check_branch_pr_metadata(
             fail(f"PR Contributor Branch Plan cannot expose a local path: {label}")
         values[label] = value
 
-    provenance = read_json_object(target / TARGET_BRANCH_PROVENANCE)
+    try:
+        assets = verify_managed_snapshot(plan_asset_root or target / TARGET_EVOINFRA_DIR)
+    except ContributorBranchError:
+        fail("Contributor Branch Plan snapshot does not match the trusted base verifier")
+    provenance = assets["provenance"]
+    contract = assets["contract"]
     if values["Core source revision"] != provenance.get("source_revision"):
         fail("PR Core source revision must match the managed contributor branch provenance")
     if values["Contract SHA-256"] != provenance.get("contract", {}).get("sha256"):
@@ -1227,36 +1745,109 @@ def check_branch_pr_metadata(
         fail("PR canonical repo must use OWNER/REPO")
     if not RESUME_KEY_RE.fullmatch(values["Resume key"]):
         fail("PR resume key must use the contributor branch v1 format")
+    if values["Profile"] != CONTRIBUTOR_BRANCH_PROFILE:
+        fail("PR profile must use the CoEvolve target Skillware consumer")
+    purpose_match = re.fullmatch(
+        r"(dev|bug|refactor|docs|test|chore)[ \t]*/[ \t]*([a-z0-9]+(?:-[a-z0-9]+)*)[ \t]*/[ \t]*([a-z0-9]+(?:-[a-z0-9]+){0,6})",
+        values["Purpose type / component / summary"],
+    )
+    if not purpose_match:
+        fail("PR purpose must include valid type, component, and summary fields")
+    purpose_type, component, summary = purpose_match.groups()
+    profile = contract.get("profiles", {}).get(CONTRIBUTOR_BRANCH_PROFILE, {})
+    if purpose_type not in profile.get("allowed_types", []):
+        fail("PR purpose type is not allowed by the trusted contributor branch contract")
     base_match = re.fullmatch(r"origin/(main|master)[ \t]*/[ \t]*([0-9a-f]{40})", values["Base ref / commit"])
     if not base_match:
         fail("PR base must include canonical origin/main or origin/master and a full commit")
-    if not re.fullmatch(r"codex/[a-z]+/[a-z0-9-]+", values["Target branch"]):
+    branch_match = re.fullmatch(
+        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(component)}-{re.escape(summary)}",
+        values["Target branch"],
+    )
+    if not branch_match:
         fail("PR target branch does not match the contributor branch namespace")
-    issue_match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#[1-9][0-9]*", values["Issue"])
+    issue_match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)", values["Issue"])
     if not issue_match or issue_match.group(1).lower() != repo.lower():
         fail("PR Issue must belong to the canonical repo")
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", values["Verified actor"]):
         fail("PR verified actor must use a GitHub login")
-    if not re.fullmatch(
-        r"(direct|fork)[ \t]*/[ \t]*github_api[ \t]*/[ \t]*20[0-9]{2}-[0-9]{2}-[0-9]{2}T.+",
-        values["Resolved permission / evidence source / checked time"],
-    ):
-        fail("PR permission metadata requires direct/fork with complete github_api evidence and timestamp")
-    if not all((github_repository, github_head_ref, github_base_ref, github_base_sha)):
-        fail("PR metadata validation requires the trusted GitHub repository, head, and base context")
+    if values["Permission path"] not in {"direct", "fork"}:
+        fail("PR permission path must allow a remote Pull Request")
+    if not all((github_repository, github_head_ref, github_head_repo, github_actor, github_base_ref, github_base_sha)):
+        fail("PR metadata validation requires trusted GitHub repository, actor, head, and base context")
     if repo != github_repository:
         fail("PR canonical repo does not match github.repository")
     if values["Target branch"] != github_head_ref:
         fail("PR target branch does not match github.head_ref")
+    if values["Verified actor"].lower() != github_actor.lower():
+        fail("PR verified actor does not match the pull request author")
     if base_match.group(1) != github_base_ref:
         fail("PR base ref does not match github.base_ref")
     if base_match.group(2) != github_base_sha:
         fail("PR base commit does not match github.event.pull_request.base.sha")
-    ok("PR body contains public-safe contributor branch metadata")
+    direct_head = github_head_repo.lower() == repo.lower()
+    expected_fork = f"{github_actor}/{repo.split('/', 1)[1]}"
+    fork_head = github_head_repo.lower() == expected_fork.lower()
+    event_permission = "direct" if direct_head else ("fork" if fork_head else None)
+    if event_permission is None or values["Permission path"] != event_permission:
+        fail("PR permission path does not match the trusted head repository topology")
+
+    expected_resume_key = compute_resume_key(
+        profile=values["Profile"],
+        repo=repo,
+        base_ref=f"origin/{github_base_ref}",
+        issue=values["Issue"],
+        actor=github_actor,
+        permission=event_permission,
+        component=component,
+        summary=summary,
+    )
+    if values["Resume key"] != expected_resume_key:
+        fail("PR resume key does not match the trusted branch-plan identity")
+
+    check_live_feedback_issue(
+        contract,
+        repo=repo,
+        issue_number=int(issue_match.group(2)),
+        runner=issue_runner,
+    )
+    ok("PR body plan identity is recomputed from trusted GitHub context")
 
 
 def check_pr(args: argparse.Namespace) -> None:
     target = Path(args.target).resolve()
+    trusted_root: Path | None = None
+    if args.pr_body:
+        trusted_values = (
+            args.trusted_root,
+            args.github_head_sha,
+            args.github_base_sha,
+            args.github_repository,
+            args.github_head_repo,
+            args.github_actor,
+            args.github_head_ref,
+            args.github_pr_number,
+        )
+        if not all(trusted_values):
+            fail("PR workflow validation requires complete trusted GitHub event context")
+        trusted_root = Path(args.trusted_root).resolve()
+        trust_mode = check_trusted_pr_checkouts(
+            target,
+            trusted_root,
+            github_head_sha=args.github_head_sha,
+            github_base_sha=args.github_base_sha,
+            github_repository=args.github_repository,
+            github_head_repo=args.github_head_repo,
+            github_actor=args.github_actor,
+            github_head_ref=args.github_head_ref,
+            github_pr_number=args.github_pr_number,
+        )
+        if trust_mode == "business":
+            check_maintainer(args)
+        else:
+            check_maintainer(args, snapshot_verified_from_official_release=True)
+            ok("official Harness upgrade uses its dedicated ADMIN and Release provenance gate")
+            return
     design_doc = Path(args.design_doc).resolve() if args.design_doc else find_design_doc(target)
     check_design_doc(design_doc)
 
@@ -1276,8 +1867,11 @@ def check_pr(args: argparse.Namespace) -> None:
             body,
             github_repository=args.github_repository,
             github_head_ref=args.github_head_ref,
+            github_head_repo=args.github_head_repo,
+            github_actor=args.github_actor,
             github_base_ref=args.github_base_ref,
             github_base_sha=args.github_base_sha,
+            plan_asset_root=trusted_root / TARGET_EVOINFRA_DIR,
         )
         ok("PR body references design doc and changelog")
 
@@ -1580,8 +2174,13 @@ def main() -> int:
     pr.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     pr.add_argument("--design-doc", help="Path to the design doc for this PR.")
     pr.add_argument("--pr-body", help="Optional PR body markdown file.")
+    pr.add_argument("--trusted-root", help="Trusted base-SHA checkout used to execute PR validation.")
     pr.add_argument("--github-repository", help="Trusted github.repository value for PR metadata binding.")
     pr.add_argument("--github-head-ref", help="Trusted github.head_ref value for PR metadata binding.")
+    pr.add_argument("--github-head-repo", help="Trusted pull_request.head.repo.full_name value.")
+    pr.add_argument("--github-head-sha", help="Trusted pull_request.head.sha value.")
+    pr.add_argument("--github-actor", help="Trusted pull_request.user.login value.")
+    pr.add_argument("--github-pr-number", type=int, help="Trusted pull_request.number value.")
     pr.add_argument("--github-base-ref", help="Trusted github.base_ref value for PR metadata binding.")
     pr.add_argument("--github-base-sha", help="Trusted pull_request.base.sha value for PR metadata binding.")
 

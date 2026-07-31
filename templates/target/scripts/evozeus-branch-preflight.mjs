@@ -219,6 +219,35 @@ export function collectGitHubPermissionEvidence(repo, checkedAt, runner = spawnS
   };
 }
 
+export function collectGitHubIssueEvidence(repo, issueNumber, checkedAt, runner = spawnSync) {
+  const issueData = Number.isInteger(issueNumber) && issueNumber > 0
+    ? commandJson(runner, ["api", `repos/${repo}/issues/${issueNumber}`, "--hostname", "github.com"])
+    : null;
+  const labels = Array.isArray(issueData?.labels)
+    ? issueData.labels
+      .map((label) => typeof label === "string" ? label : label?.name)
+      .filter((label) => typeof label === "string")
+    : null;
+  const available = Boolean(
+    issueData
+    && Number.isInteger(issueData.number)
+    && typeof issueData.state === "string"
+    && typeof issueData.title === "string"
+    && labels
+  );
+  return {
+    source: available ? "github_api" : "unavailable",
+    checked_at: checkedAt,
+    repository: repo,
+    available,
+    number: available ? issueData.number : null,
+    state: available ? issueData.state.toUpperCase() : null,
+    is_pull_request: available ? Boolean(issueData.pull_request) : null,
+    labels: available ? labels : [],
+    title: available ? issueData.title : null
+  };
+}
+
 function resolvePermission(evidence) {
   if (evidence.source !== "github_api") return "local";
   if (!evidence.identity.available || !evidence.repository.permission_available) return "local";
@@ -259,7 +288,7 @@ function validateInput(options, contract, profile, blockers) {
   if (!contract.permission_paths[options.permission]) addBlocker(blockers, "invalid_permission", "permission must be direct, fork, or local");
 }
 
-export function buildBranchPlan(options, contract, facts, permissionEvidence, resumePlan = null) {
+export function buildBranchPlan(options, contract, facts, permissionEvidence, issueEvidence, resumePlan = null) {
   const blockers = [];
   const profile = contract.profiles[options.profile] || null;
   validateInput(options, contract, profile, blockers);
@@ -282,6 +311,28 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, re
   }
 
   const issue = parseIssue(options.issue, options.repo);
+  if (!issueEvidence?.available || issueEvidence.source !== "github_api") {
+    addBlocker(blockers, "issue_evidence_unavailable", "Feedback Issue existence cannot be verified from GitHub");
+  } else {
+    if (issueEvidence.repository.toLowerCase() !== options.repo.toLowerCase() || issueEvidence.number !== issue?.number) {
+      addBlocker(blockers, "issue_evidence_mismatch", "GitHub Issue evidence does not match the requested canonical Issue");
+    }
+    if (issueEvidence.is_pull_request) {
+      addBlocker(blockers, "issue_is_pull_request", "the requested governance entity is a pull request, not an Issue");
+    }
+    if (issueEvidence.state !== contract.issue_resolution.required_state) {
+      addBlocker(blockers, "issue_not_open", "the requested Feedback Issue must remain open during implementation");
+    }
+    const classification = profile?.issue_classification;
+    if (classification) {
+      const evidenceLabels = issueEvidence.labels.map((label) => label.toLowerCase());
+      const labelMatch = classification.labels_any.some((label) => evidenceLabels.includes(label.toLowerCase()));
+      const titleMatch = classification.title_prefixes.some((prefix) => issueEvidence.title.startsWith(prefix));
+      if (classification.match !== "label_or_title_prefix" || (!labelMatch && !titleMatch)) {
+        addBlocker(blockers, "issue_not_feedback", "the requested Issue is not classified as Skill feedback");
+      }
+    }
+  }
   const branchName = `codex/${options.type}/${options.date}-${options.component}-${options.summary}`;
   const branchCheck = git(facts.root, ["check-ref-format", "--branch", branchName]);
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
@@ -388,6 +439,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, re
       existing_commit: facts.target_commit
     },
     issue,
+    issue_evidence: issueEvidence,
     actor: {
       id: resolvedActor,
       expected: options.actor,
@@ -463,8 +515,10 @@ function main() {
     const provisionalBranch = `codex/${options.type}/${options.date}-${options.component}-${options.summary}`;
     const facts = collectGitFacts(resolve(options.repo_path), options.base, provisionalBranch);
     const permissionEvidence = collectGitHubPermissionEvidence(options.repo, options.now);
+    const parsedIssue = parseIssue(options.issue, options.repo);
+    const issueEvidence = collectGitHubIssueEvidence(options.repo, parsedIssue?.number, options.now);
     const resumePlan = options.resume_plan ? readJson(resolve(options.resume_plan)) : null;
-    plan = buildBranchPlan(options, contract, facts, permissionEvidence, resumePlan);
+    plan = buildBranchPlan(options, contract, facts, permissionEvidence, issueEvidence, resumePlan);
   } catch (error) {
     plan = {
       schema_version: "v1",
