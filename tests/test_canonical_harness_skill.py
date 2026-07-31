@@ -968,6 +968,30 @@ def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -
     assert (target / "SKILL.md").read_bytes() == skill_bytes
 
 
+def test_migration_rejects_a_non_directory_write_parent_before_any_write(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(legacy_skill_text(), encoding="utf-8")
+    write_manifest(target, legacy=True)
+    blocker = target / ".evozeus-wrapper/skills"
+    blocker.write_text("OWNER FILE\n", encoding="utf-8")
+    skill_bytes = skill.read_bytes()
+    manifest_bytes = (target / TARGET_WRAPPER_MANIFEST).read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="parent is not a directory"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert plan["can_apply"] is False
+    assert any("parent is not a directory" in item for item in plan["conflicts"])
+    assert blocker.read_text(encoding="utf-8") == "OWNER FILE\n"
+    assert skill.read_bytes() == skill_bytes
+    assert (target / TARGET_WRAPPER_MANIFEST).read_bytes() == manifest_bytes
+
+
 def test_preflight_rejects_reversed_harness_entry_markers_without_traceback(
     tmp_path: Path,
 ) -> None:
@@ -1023,6 +1047,29 @@ def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_en
         encoding="utf-8",
     )
     assert set(REQUIRED_FILES).issubset(discover_runtime_bundle(standalone)["required_files"])
+
+
+def test_runtime_bundle_rejects_a_damaged_canonical_harness_contract(tmp_path: Path) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    (wrapped / TARGET_HARNESS_SKILL).write_text("BROKEN\n", encoding="utf-8")
+
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(wrapped / TARGET_PREFLIGHT_SCRIPT),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert runtime.returncode == 1
+    assert "frontmatter is missing or malformed" in runtime.stderr
 
 
 @pytest.mark.parametrize(

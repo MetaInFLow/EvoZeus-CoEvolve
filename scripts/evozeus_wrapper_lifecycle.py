@@ -2806,15 +2806,27 @@ def plan_target_layout_migration(
             if relative_path.is_absolute() or ".." in relative_path.parts:
                 conflicts.append(f"migration write path escapes target repository: {relative}")
                 continue
-            cursor = target / relative_path
-            while cursor != target:
+            cursor = target
+            for index, part in enumerate(relative_path.parts):
+                cursor /= part
                 if cursor.is_symlink():
                     conflicts.append(
                         "migration write path contains a symlink: "
                         + str(cursor.relative_to(target))
                     )
                     break
-                cursor = cursor.parent
+                if cursor.exists() and index < len(relative_path.parts) - 1 and not cursor.is_dir():
+                    conflicts.append(
+                        "migration write path parent is not a directory: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
+                if cursor.exists() and index == len(relative_path.parts) - 1 and not cursor.is_file():
+                    conflicts.append(
+                        "migration write path is not a regular file: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
 
     return {
         "stage": "harness_layout_migration",
