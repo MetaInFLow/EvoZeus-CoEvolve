@@ -2196,6 +2196,14 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
                 all(term in section for term in required_terms)
                 for required_terms in accepted_signatures
             ):
+                if heading in {STATUS_SECTION_HEADING, LEGACY_STATUS_SECTION_HEADING}:
+                    terminator = re.search(
+                        r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+                        section,
+                    )
+                    if not terminator:
+                        continue
+                    span = (start, start + terminator.end())
                 spans.append(span)
             continue
         if not (

@@ -361,6 +361,7 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "## EvoZeus-wrapper 状态检查\n\n"
                 "Skill 入口 preflight for the wrapper contract.\n"
                 ".evozeus-wrapper/wrapper.json\n\n"
+                "解决顺序：完成只读检查后进入业务主链路。\n\n"
                 "# Target Skill Title\n\n"
                 "Target-owned content.\n\n"
                 "## 自进化方法\n\n"

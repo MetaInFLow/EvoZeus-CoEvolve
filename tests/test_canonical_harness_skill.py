@@ -505,6 +505,32 @@ def test_target_owned_heading_survives_when_a_later_wrapper_section_uses_same_he
     assert "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环" not in updated
 
 
+def test_legacy_status_migration_preserves_business_without_h1_or_h2_boundary(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = (
+        "Business introduction must survive byte-for-byte.  \n\n"
+        "### Workflow\n\n"
+        "1. Keep this lower-level business section.\n"
+    )
+    source = (
+        '---\nname: "example"\n---\n\n'
+        + build_status_section(replacements()).rstrip()
+        + "\n\n"
+        + business
+    )
+    (target / "SKILL.md").write_text(source, encoding="utf-8")
+
+    migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
+    updated = (target / "SKILL.md").read_text(encoding="utf-8")
+
+    assert business in updated
+    assert "## EvoZeus-CoEvolve 状态检查" not in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
