@@ -523,6 +523,7 @@ def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path
     fork_root = tmp_path / "fork"
     fork_root.mkdir()
     fork_repo = create_repo(fork_root)
+    run(["git", "remote", "add", "alice", "https://github.com/alice/example-skill.git"], fork_repo)
     fork, fork_code = execute_plan(
         fork_repo,
         fork_root / "worktree",
@@ -663,6 +664,33 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     )
     assert live_code == 2
     assert "branch_collision" in blocker_codes(live)
+
+    remote_only_root = tmp_path / "remote-only-resume"
+    remote_only_root.mkdir()
+    remote_only_repo = create_repo(remote_only_root)
+    remote_only_worktree = remote_only_root / "worktree"
+    remote_only_ledger = remote_only_root / "ledger"
+    remote_only_initial, remote_only_initial_code = execute_plan(
+        remote_only_repo,
+        remote_only_worktree,
+        remote_only_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert remote_only_initial_code == 0
+    remote_only, remote_only_code = execute_plan(
+        remote_only_repo,
+        remote_only_worktree,
+        remote_only_ledger,
+        planner_env(
+            binary_dir,
+            FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_only_repo),
+        ),
+        resume_plan=remote_only_initial["ledger"]["path"],
+    )
+    assert remote_only_code == 2
+    assert "resume_branch_local_missing" in blocker_codes(remote_only)
+    assert "resume_branch_wrong_base" not in blocker_codes(remote_only)
 
     base_root = tmp_path / "stale-base"
     base_root.mkdir()

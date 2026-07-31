@@ -25,7 +25,7 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `f9b633ad1f528528f6a89d89f03f8c1dbd0a43df`：
+权威文件来自 EvoZeus Core revision `8436fa93fca0474c9c398b53314bb1a2ce230f5e`：
 
 - contract：`evozeus.contributor_branch` `1.3.0`
 - planner：`scripts/evozeus-branch-preflight.mjs`
@@ -57,7 +57,7 @@ Consumer 只生成计划与可选 ledger 记录，不创建 branch/worktree，�
 `--permission` 是用户看到的期望值。期望与实时解析结果不同会产生 `permission_expectation_mismatch`，避免静默改变执行路径。
 
 本地 `remote.origin` 的有效 fetch URL 与全部有效 push URL 都必须解析为声明的 exact GitHub Repo；`pushurl`、`insteadOf` 或 `pushInsteadOf` 指向其他 host/Repo 时直接阻断。
-目标 branch 固定包含 verified actor 的小写 login；相同日期和 purpose 下的不同 actor 拥有不同 branch/resume identity。Canonical base 与目标 branch 都通过有效 origin 的 live `git ls-remote` 取证；查询不可用、cached base 过期或本地/live remote 同名目标分支分叉时阻断。已注册的 requested resume worktree 还必须自身 status 可用且 clean；prunable registration 只有在目录已消失时才允许进入 prune-and-recreate，目录仍存在或路径祖先为文件/dangling symlink 时按占用阻断。
+目标 branch 固定包含 verified actor 的小写 login，且最后一个 ref component 不超过 240 bytes；相同日期和 purpose 下的不同 actor 拥有不同 branch/resume identity。Canonical base 通过 origin live 取证；direct target 使用 origin，fork target 要求已配置 remote 的全部有效 fetch/push URL 精确指向 verified actor fork，并从该 remote 取证。查询不可用、cached base 过期、本地/live remote 同名目标分支分叉时阻断；resume 目标仅存在于 live remote 时也阻断，获得独立写入授权后 fetch 并创建本地分支。已注册的 requested resume worktree 还必须自身 status 可用且 clean；prunable registration 只有在目录已消失时才允许进入 prune-and-recreate，目录仍存在或路径祖先为文件/dangling symlink 时按占用阻断。
 
 ## Ledger 与公开元数据
 
@@ -91,8 +91,11 @@ Issue 的 `edited/deleted/transferred/closed/reopened/labeled/unlabeled` 事件�
 | ledger 完整身份变化 | 停止 | 原 ledger 不可重新确认；重新核对 owner、base、branch 与授权 |
 | permission evidence 缺失 | local permission path | 保持 push/PR 禁用，或恢复证据后重新计划 |
 | live base/target remote evidence 缺失或分叉 | 停止 | 恢复 effective origin 查询并对齐 cached base 或本地/live remote branch |
+| resume target 仅存在于 live remote | 停止 | 获得独立写入授权后 fetch 目标 ref、创建本地分支，再重新计划 |
 | requested resume worktree dirty/status 不可用 | 停止 | 处理该 worktree 的已有改动或状态错误后重新计划 |
 | prunable path 仍存在或祖先不可作为目录 | 停止 | 显式处理遗留内容/非法路径后重新计划 |
+| fork remote 缺失或 URL 不精确 | 停止 | 配置指向 verified actor exact fork 的 fetch/push remote |
+| branch leaf 超过 240 bytes | 停止 | 缩短 component 或 summary |
 | Issue evidence 缺失、关闭、PR-shaped 或未分类 | 停止 | 恢复 live OPEN Skill Feedback Issue 证据 |
 | candidate PR control code 与 base 不一致 | 停止 | 普通业务 PR 撤销控制面改动 |
 | 官方 Harness upgrade provenance/ADMIN/diff 不满足 | 停止 | 使用 published Stable Release 和专用迁移分支重新生成 |
@@ -112,7 +115,7 @@ Fresh attach 在任何模板写入前预检所有 gate destinations；已存在�
 - direct、fork-only、no-PR local
 - 缺少 `gh`、partial permission evidence、archived/disabled Repo 与 invalid Issue evidence 的 fail-closed 行为
 - 有效 fetch/push URL、multi-pushurl 与 Git URL rewrite 校验
-- actor-exclusive branch、live base/target remote、requested resume worktree status 与 occupied-prunable/path-ancestor 校验
+- actor-exclusive/length-bounded branch、live base/direct/fork target remote、remote-only resume、requested resume worktree status 与 occupied-prunable/path-ancestor 校验
 - canonical checkout 后代与 symlink alias 路径阻断
 - snapshot digest/provenance/symlink 校验
 - ledger `0700/0600`、原子写入、路径脱敏与完整身份 collision

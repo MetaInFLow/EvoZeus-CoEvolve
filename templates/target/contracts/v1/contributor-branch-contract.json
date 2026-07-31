@@ -9,6 +9,7 @@
   "branch_naming": {
     "template": "codex/{type}/{yyyymmdd}-{actor}-{component}-{summary}",
     "actor_source": "verified_github_login_lowercase",
+    "max_leaf_bytes": 240,
     "types": ["dev", "bug", "refactor", "docs", "test", "chore"],
     "component_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
     "summary_pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,6}$",
@@ -96,6 +97,7 @@
     "push_urls": "every_effective_origin_push_url_must_match_canonical_github_repo",
     "canonical_base_state": "live_git_ls_remote_effective_origin_required",
     "target_branch_state": "live_git_ls_remote_effective_origin_required",
+    "fork_target_remote": "configured_remote_with_exact_actor_fork_fetch_and_push_urls_required",
     "local_remote_divergence": "block"
   },
   "issue_resolution": {
@@ -115,6 +117,7 @@
     "mismatch_or_stale": "block_and_require_owner_reconfirmation",
     "matching_branch_without_worktree": "recreate_resume_worktree_for_existing_branch",
     "matching_branch_with_prunable_worktree": "prune_and_recreate_resume_worktree_for_existing_branch",
+    "remote_only_branch": "block_until_explicit_fetch_and_local_branch_creation",
     "missing_cli_date_source": "validated_resume_plan_target_branch",
     "evidence_requirements": { "writes": false, "blockers": "empty", "decision": ["new", "resume"], "next_write_action": "not_blocked" },
     "owner_reconfirmation": {
@@ -131,11 +134,14 @@
     "protected_ref_write": "block",
     "branch_collision": "block_without_matching_resume_plan",
     "invalid_resume_evidence_or_wrong_base": "block",
+    "resume_branch_local_missing": "block_until_explicit_fetch_and_local_branch_creation",
     "stale_ownership": "block_and_require_owner_reconfirmation",
     "canonical_checkout_dirty_or_unavailable": "block",
     "current_checkout_status_unavailable": "block",
     "requested_worktree_dirty_or_unavailable": "block",
     "base_or_target_remote_status_unavailable_or_diverged": "block",
+    "fork_remote_missing_or_mismatched": "block",
+    "branch_leaf_over_max_bytes": "block",
     "actor_or_permission_expectation_mismatch": "block",
     "issue_unavailable_or_invalid": "block",
     "github_unavailable": "local_patch_only"

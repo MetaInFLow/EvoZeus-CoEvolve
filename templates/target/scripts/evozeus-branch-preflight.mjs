@@ -198,9 +198,9 @@ export function loadContributorBranchContract(path = DEFAULT_CONTRACT) {
   return contract;
 }
 
-function liveRemoteBranch(root, targetBranch, runner) {
+function liveRemoteBranch(root, remote, targetBranch, runner) {
   const ref = `refs/heads/${targetBranch}`;
-  const result = git(root, ["ls-remote", "--exit-code", "--heads", "origin", ref], runner);
+  const result = git(root, ["ls-remote", "--exit-code", "--heads", remote, ref], runner);
   if (result.status === 2) return { available: true, commit: null, reason: null };
   if (result.status !== 0) return { available: false, commit: null, reason: "git_ls_remote_failed" };
   const matches = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split(/\s+/));
@@ -212,7 +212,37 @@ function liveRemoteBranch(root, targetBranch, runner) {
   return { available: true, commit: matches[0][0].toLowerCase(), reason: null };
 }
 
-export function collectGitFacts(repoPath, baseRef, targetBranch, requestedWorktree, runner = spawnSync) {
+function remoteForRepository(root, repository, runner) {
+  if (typeof repository !== "string" || !repository) {
+    return { available: false, name: null, repository: null, reason: "target_repository_missing" };
+  }
+  const names = (gitText(root, ["remote"], false, runner) || "").split(/\r?\n/).filter(Boolean);
+  const matches = names.filter((name) => {
+    const fetchUrls = (gitText(root, ["remote", "get-url", "--all", name], false, runner) || "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const pushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", name], false, runner) || "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const repos = [...fetchUrls, ...pushUrls].map((url) => githubRepoFromRemote(url));
+    return fetchUrls.length > 0
+      && pushUrls.length > 0
+      && repos.every((repo) => repo?.toLowerCase() === repository.toLowerCase());
+  });
+  if (matches.length === 0) {
+    return { available: false, name: null, repository, reason: "matching_remote_missing" };
+  }
+  return { available: true, name: matches.sort()[0], repository, reason: null };
+}
+
+export function collectGitFacts(
+  repoPath,
+  baseRef,
+  targetBranch,
+  requestedWorktree,
+  targetRepository,
+  runner = spawnSync
+) {
   const root = canonicalPath(gitText(repoPath, ["rev-parse", "--show-toplevel"], true, runner));
   const worktrees = parseWorktrees(gitText(root, ["worktree", "list", "--porcelain"], true, runner));
   const currentStatus = checkoutStatus(root, {}, runner);
@@ -234,25 +264,31 @@ export function collectGitFacts(repoPath, baseRef, targetBranch, requestedWorktr
   const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false, runner);
   const baseBranch = baseRef.startsWith("origin/") ? baseRef.slice("origin/".length) : null;
   const baseRemote = baseBranch
-    ? liveRemoteBranch(root, baseBranch, runner)
+    ? liveRemoteBranch(root, "origin", baseBranch, runner)
     : { available: false, commit: null, reason: "unsupported_base_remote" };
   const localCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false, runner)
     : null;
-  const remoteBranch = targetBranch
-    ? liveRemoteBranch(root, targetBranch, runner)
+  const originRepo = githubRepoFromRemote(originUrl);
+  const targetRemote = targetRepository?.toLowerCase() === originRepo?.toLowerCase()
+    ? { available: true, name: "origin", repository: targetRepository, reason: null }
+    : remoteForRepository(root, targetRepository, runner);
+  const remoteBranch = targetBranch && targetRemote.available
+    ? { ...liveRemoteBranch(root, targetRemote.name, targetBranch, runner), remote: targetRemote.name }
+    : targetBranch
+      ? { available: false, commit: null, reason: targetRemote.reason, remote: null }
     : { available: true, commit: null, reason: null };
   const remoteCommit = remoteBranch.commit;
   const targetCommit = localCommit || remoteCommit;
   const targetDescendsFromBase = Boolean(
     baseCommit
-    && targetCommit
-    && git(root, ["merge-base", "--is-ancestor", baseCommit, targetCommit], runner).status === 0
+    && localCommit
+    && git(root, ["merge-base", "--is-ancestor", baseCommit, localCommit], runner).status === 0
   );
   return {
     root,
     origin_url: originUrl,
-    origin_repo: githubRepoFromRemote(originUrl),
+    origin_repo: originRepo,
     origin_push_repos: originPushUrls.map((url) => githubRepoFromRemote(url)),
     head: gitText(root, ["rev-parse", "HEAD"], true, runner),
     current_branch: gitText(root, ["branch", "--show-current"], false, runner),
@@ -266,9 +302,10 @@ export function collectGitFacts(repoPath, baseRef, targetBranch, requestedWorktr
     target_local_commit: localCommit,
     target_remote_commit: remoteCommit,
     target_remote_status: remoteBranch,
+    target_remote: targetRemote,
     target_descends_from_base: targetDescendsFromBase,
     target_local: Boolean(localCommit),
-    target_remote: Boolean(remoteCommit),
+    target_remote_exists: Boolean(remoteCommit),
     worktrees
   };
 }
@@ -465,6 +502,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   const branchName = targetBranchFor(options, resolvedActor);
   const branchCheck = git(facts.root, ["check-ref-format", "--branch", branchName]);
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
+  const maxLeafBytes = contract.branch_naming.max_leaf_bytes;
+  const branchLeaf = branchName.slice(branchName.lastIndexOf("/") + 1);
+  if (!Number.isInteger(maxLeafBytes) || maxLeafBytes < 1 || Buffer.byteLength(branchLeaf, "utf8") > maxLeafBytes) {
+    addBlocker(blockers, "branch_component_too_long", "generated branch leaf exceeds the contract filesystem limit");
+  }
   if (isProtectedRef(branchName, contract)) addBlocker(blockers, "protected_target", "target branch is protected");
   if (!facts.base_commit) addBlocker(blockers, "missing_base", `base ref does not resolve: ${options.base}`);
   if (!facts.base_remote_status?.available || !facts.base_remote_status.commit) {
@@ -562,6 +604,8 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       addBlocker(blockers, "stale_base", "resume plan base commit no longer matches the canonical base");
     } else if (!facts.target_commit) {
       addBlocker(blockers, "resume_branch_missing", "resume plan target branch no longer exists");
+    } else if (!facts.target_local_commit) {
+      addBlocker(blockers, "resume_branch_local_missing", "resume target exists only on the live remote; explicit approval is required to fetch it and create the local branch");
     } else if (!facts.target_descends_from_base) {
       addBlocker(blockers, "resume_branch_wrong_base", "resume target branch does not descend from the saved canonical base");
     } else {
@@ -634,7 +678,12 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       class: profile?.branch_class ?? null,
       user_channel_claim: profile?.user_channel_claim ?? null,
       current: facts.current_branch,
-      existing_commit: facts.target_commit
+      existing_commit: facts.target_commit,
+      remote_name: facts.target_remote?.name ?? null,
+      remote_repository: facts.target_remote?.repository ?? null,
+      remote_commit: facts.target_remote_commit,
+      remote_status_available: Boolean(facts.target_remote_status?.available),
+      remote_status_reason: facts.target_remote_status?.reason ?? null
     },
     issue,
     issue_evidence: issueEvidence,
@@ -736,12 +785,17 @@ function main() {
     options.date = resolvePlanDate(options, resumePlan);
     const permissionEvidence = collectGitHubPermissionEvidence(options.repo, options.now);
     const provisionalActor = permissionEvidence.identity.login || options.actor;
+    const provisionalPermission = resolvePermission(permissionEvidence);
+    const provisionalRepository = provisionalPermission === "fork"
+      ? `${provisionalActor}/${options.repo.split("/")[1]}`
+      : options.repo;
     const provisionalBranch = targetBranchFor(options, provisionalActor);
     const facts = collectGitFacts(
       resolve(options.repo_path),
       options.base,
       provisionalBranch,
-      options.worktree
+      options.worktree,
+      provisionalRepository
     );
     const parsedIssue = parseIssue(options.issue, options.repo);
     const issueEvidence = collectGitHubIssueEvidence(options.repo, parsedIssue?.number, options.now);
