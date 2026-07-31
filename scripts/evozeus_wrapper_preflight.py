@@ -841,6 +841,13 @@ def add_tree_files(target: Path, dirname: str, files: list[str]) -> None:
                 files.append(rel)
 
 
+def add_harness_runtime_files(files: list[str]) -> None:
+    """Add the complete file closure required by the canonical Harness contract."""
+    for path in REQUIRED_FILES:
+        if path not in files:
+            files.append(path)
+
+
 def discover_runtime_bundle(target: Path) -> dict:
     manifest = load_wrapper_manifest(target)
     harness_runtime_path = None
@@ -865,8 +872,8 @@ def discover_runtime_bundle(target: Path) -> dict:
         ]
         if instruction_surface not in required:
             required.insert(0, instruction_surface)
-        if harness_runtime_path and harness_runtime_path not in required:
-            required.append(harness_runtime_path)
+        if harness_runtime_path:
+            add_harness_runtime_files(required)
         optional = [
             normalize_relative_path(path)
             for path in runtime_bundle.get("optional_files", [])
@@ -886,8 +893,8 @@ def discover_runtime_bundle(target: Path) -> dict:
     text = entry.read_text(encoding="utf-8", errors="ignore")
     if TARGET_HARNESS_SKILL in text:
         harness_runtime_path = TARGET_HARNESS_SKILL
-    if harness_runtime_path and harness_runtime_path not in required_files:
-        required_files.append(harness_runtime_path)
+    if harness_runtime_path:
+        add_harness_runtime_files(required_files)
     business_text = strip_wrapper_runtime_sections(text)
     for rel in referenced_runtime_files(business_text):
         if rel not in required_files:

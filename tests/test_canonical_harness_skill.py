@@ -16,6 +16,7 @@ from scripts.evozeus_wrapper_bootstrap import (
     build_wrapper_section,
     copy_templates,
     inject_evolution_method,
+    validate_existing_manifest_for_attach,
 )
 from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_ENTRY_BEGIN,
@@ -37,6 +38,7 @@ from scripts.evozeus_wrapper_lifecycle import (
 )
 from scripts.evozeus_wrapper_preflight import (
     HARNESS_SKILL_TERMS,
+    REQUIRED_FILES,
     check_harness_entry_contract,
     check_harness_skill_contract,
     discover_runtime_bundle,
@@ -188,12 +190,70 @@ def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
     harness.parent.mkdir(parents=True)
     harness.symlink_to(outside)
 
-    with pytest.raises(ValueError, match="existing canonical Harness Skill path is unsafe"):
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
         copy_templates(target, replacements(), force=True)
 
     assert harness.is_symlink()
     assert outside.read_text(encoding="utf-8") == "OWNER BYTES\n"
     assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_rejects_a_symlinked_harness_parent_without_writing_outside_repo(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / ".evozeus-wrapper").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=True)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflights_every_template_destination_before_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside-github"
+    outside.mkdir()
+    (target / ".github").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=False)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".codex").exists()
+
+
+@pytest.mark.parametrize(
+    "damaged_entry",
+    [
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}",
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_BEGIN}",
+    ],
+)
+def test_attach_preflight_rejects_nested_or_interleaved_harness_markers(
+    tmp_path: Path,
+    damaged_entry: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original = damaged_entry + "\n\n# Business Skill\n"
+    skill.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unbalanced canonical Harness entry"):
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+
+    assert skill.read_text(encoding="utf-8") == original
+    assert not (target / ".evozeus-wrapper").exists()
     assert not (target / ".github").exists()
 
 
@@ -216,6 +276,35 @@ def test_attach_preflight_rejects_a_truncated_owned_surface_before_template_writ
     assert skill.read_text(encoding="utf-8") == original
     assert not (target / ".evozeus-wrapper").exists()
     assert not (target / ".github").exists()
+
+
+def test_attach_preflight_routes_an_existing_legacy_manifest_to_migration(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original_skill = legacy_skill_text()
+    skill.write_text(original_skill, encoding="utf-8")
+    manifest = write_manifest(target, legacy=True)
+    manifest_path = target / TARGET_WRAPPER_MANIFEST
+    original_manifest = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="requires migrate-layout before attach"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+    assert skill.read_text(encoding="utf-8") == original_skill
+    assert manifest_path.read_bytes() == original_manifest
+    assert not (target / TARGET_HARNESS_SKILL).exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_allows_an_idempotent_canonical_manifest(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+
+    validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
 
 
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
@@ -829,7 +918,7 @@ def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_en
     wrapped.mkdir()
     prepare_fresh_target(wrapped)
     bundle = discover_runtime_bundle(wrapped)
-    assert TARGET_HARNESS_SKILL in bundle["required_files"]
+    assert set(REQUIRED_FILES).issubset(bundle["required_files"])
 
     harness = wrapped / TARGET_HARNESS_SKILL
     harness.unlink()
@@ -854,7 +943,43 @@ def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_en
         build_harness_activation_block() + "\n\n# Business\n",
         encoding="utf-8",
     )
-    assert TARGET_HARNESS_SKILL in discover_runtime_bundle(standalone)["required_files"]
+    assert set(REQUIRED_FILES).issubset(discover_runtime_bundle(standalone)["required_files"])
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        TARGET_WRAPPER_MANIFEST,
+        TARGET_PREFLIGHT_SCRIPT,
+        ".evozeus-wrapper/scripts/evozeus_notice.py",
+        ".evozeus-wrapper/policies/notice-policy.json",
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+    ],
+)
+def test_runtime_bundle_rejects_a_missing_harness_transitive_dependency(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    (wrapped / dependency).unlink()
+
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/evozeus_wrapper_preflight.py"),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert runtime.returncode == 1
+    assert dependency in runtime.stderr
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:
