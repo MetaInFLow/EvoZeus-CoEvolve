@@ -653,6 +653,19 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     assert "-alice-skill-" in alice["branch"]["target"]
     assert "-bob-skill-" in bob["branch"]["target"]
 
+    namespace_root = tmp_path / "namespace-conflict"
+    namespace_root.mkdir()
+    namespace_repo = create_repo(namespace_root)
+    run(["git", "branch", "codex/bug", "origin/main"], namespace_repo)
+    namespace, namespace_code = execute_plan(
+        namespace_repo,
+        namespace_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert namespace_code == 2
+    assert "branch_namespace_collision" in blocker_codes(namespace)
+
     remote_root = tmp_path / "live-remote"
     remote_root.mkdir()
     remote_repo = create_repo(remote_root)
@@ -729,6 +742,39 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     assert resumed_code == 2
     assert "requested_worktree_dirty" in blocker_codes(resumed)
     assert resumed["worktree"]["registered"] is False
+
+    redirected_root = tmp_path / "redirected-resume"
+    redirected_root.mkdir()
+    redirected_repo = create_repo(redirected_root)
+    redirected_worktree = redirected_root / "worktree"
+    redirected_ledger = redirected_root / "ledger"
+    redirected_initial, redirected_initial_code = execute_plan(
+        redirected_repo,
+        redirected_worktree,
+        redirected_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert redirected_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", redirected_initial["branch"]["target"],
+        str(redirected_worktree), "origin/main",
+    ], redirected_repo)
+    canonical_git_dir = run(["git", "rev-parse", "--absolute-git-dir"], redirected_repo)
+    (redirected_worktree / ".git").write_text(
+        f"gitdir: {canonical_git_dir}\n",
+        encoding="utf-8",
+    )
+    redirected, redirected_code = execute_plan(
+        redirected_repo,
+        redirected_worktree,
+        redirected_ledger,
+        planner_env(binary_dir),
+        resume_plan=redirected_initial["ledger"]["path"],
+    )
+    assert redirected_code == 2
+    assert "requested_worktree_status_unavailable" in blocker_codes(redirected)
+    assert redirected["worktree"]["requested_checkout"]["status_reason"] == "worktree_branch_mismatch"
 
 
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:

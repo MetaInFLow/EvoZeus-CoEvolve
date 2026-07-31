@@ -89,18 +89,53 @@ function parseWorktrees(text) {
   return worktrees;
 }
 
-function checkoutStatus(path, { bare = false } = {}, runner = spawnSync) {
-  const reason = bare ? "bare" : (!existsSync(path) ? "missing" : null);
-  if (reason) return { path, available: false, reason, dirty_entries: [] };
+function checkoutStatus(path, descriptor, expectedCommonDir, runner = spawnSync) {
+  const unavailable = (reason, identity = {}) => ({
+    path,
+    available: false,
+    reason,
+    dirty_entries: [],
+    top_level: identity.top_level ?? null,
+    common_dir: identity.common_dir ?? null,
+    branch: identity.branch ?? null,
+    expected_branch: descriptor?.branch ?? null
+  });
+  if (!descriptor) return unavailable("worktree_registration_missing");
+  if (descriptor.bare) return unavailable("bare");
+  if (!existsSync(path)) return unavailable("missing");
+  if (!expectedCommonDir) return unavailable("git_common_dir_unavailable");
+
+  const topLevelValue = gitText(path, ["rev-parse", "--show-toplevel"], false, runner);
+  const commonDirValue = gitText(path, ["rev-parse", "--git-common-dir"], false, runner);
+  const branchResult = git(path, ["symbolic-ref", "--quiet", "HEAD"], runner);
+  if (!topLevelValue || !commonDirValue || ![0, 1].includes(branchResult.status)) {
+    return unavailable("worktree_identity_unavailable");
+  }
+  let topLevel;
+  let commonDir;
+  try {
+    topLevel = canonicalPath(topLevelValue);
+    commonDir = canonicalPath(isAbsolute(commonDirValue) ? commonDirValue : resolve(path, commonDirValue));
+  } catch {
+    return unavailable("worktree_identity_unavailable");
+  }
+  const branch = branchResult.status === 0 ? branchResult.stdout.trim() : null;
+  const identity = { top_level: topLevel, common_dir: commonDir, branch };
+  if (topLevel !== descriptor.path) return unavailable("worktree_top_level_mismatch", identity);
+  if (commonDir !== expectedCommonDir) return unavailable("worktree_common_dir_mismatch", identity);
+  if (branch !== descriptor.branch) return unavailable("worktree_branch_mismatch", identity);
+
   const result = git(path, ["status", "--porcelain=v1", "--untracked-files=all"], runner);
   if (result.status !== 0) {
-    return { path, available: false, reason: "git_status_failed", dirty_entries: [] };
+    return unavailable("git_status_failed", identity);
   }
   return {
     path,
     available: true,
     reason: null,
-    dirty_entries: result.stdout.trim().split("\n").filter(Boolean)
+    dirty_entries: result.stdout.trim().split("\n").filter(Boolean),
+    ...identity,
+    expected_branch: descriptor.branch
   };
 }
 
@@ -245,17 +280,22 @@ export function collectGitFacts(
 ) {
   const root = canonicalPath(gitText(repoPath, ["rev-parse", "--show-toplevel"], true, runner));
   const worktrees = parseWorktrees(gitText(root, ["worktree", "list", "--porcelain"], true, runner));
-  const currentStatus = checkoutStatus(root, {}, runner);
+  const commonDirValue = gitText(root, ["rev-parse", "--git-common-dir"], false, runner);
+  const commonDir = commonDirValue
+    ? canonicalPath(isAbsolute(commonDirValue) ? commonDirValue : resolve(root, commonDirValue))
+    : null;
+  const currentDescriptor = worktrees.find((item) => item.path === root);
+  const currentStatus = checkoutStatus(root, currentDescriptor, commonDir, runner);
   const canonicalDescriptor = worktrees[0] || { path: root, bare: false };
   const canonicalStatus = canonicalDescriptor.path === root
     ? currentStatus
-    : checkoutStatus(canonicalDescriptor.path, canonicalDescriptor, runner);
+    : checkoutStatus(canonicalDescriptor.path, canonicalDescriptor, commonDir, runner);
   const requestedPath = canonicalPath(requestedWorktree);
   const requestedDescriptor = worktrees.find((item) => item.path === requestedPath);
   const requestedStatus = requestedDescriptor
     ? (requestedDescriptor.path === root
       ? currentStatus
-      : checkoutStatus(requestedDescriptor.path, requestedDescriptor, runner))
+      : checkoutStatus(requestedDescriptor.path, requestedDescriptor, commonDir, runner))
     : null;
   const originUrl = gitText(root, ["remote", "get-url", "origin"], false, runner);
   const originPushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", "origin"], false, runner) || "")
@@ -269,6 +309,10 @@ export function collectGitFacts(
   const localCommit = targetBranch
     ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false, runner)
     : null;
+  const localBranchRefsText = gitText(root, ["for-each-ref", "--format=%(refname)", "refs/heads"], false, runner);
+  const localBranchRefs = localBranchRefsText === null
+    ? null
+    : localBranchRefsText.split(/\r?\n/).filter(Boolean);
   const originRepo = githubRepoFromRemote(originUrl);
   const targetRemote = targetRepository?.toLowerCase() === originRepo?.toLowerCase()
     ? { available: true, name: "origin", repository: targetRepository, reason: null }
@@ -306,6 +350,7 @@ export function collectGitFacts(
     target_descends_from_base: targetDescendsFromBase,
     target_local: Boolean(localCommit),
     target_remote_exists: Boolean(remoteCommit),
+    local_branch_refs: localBranchRefs,
     worktrees
   };
 }
@@ -502,6 +547,14 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   const branchName = targetBranchFor(options, resolvedActor);
   const branchCheck = git(facts.root, ["check-ref-format", "--branch", branchName]);
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
+  const targetRef = `refs/heads/${branchName}`;
+  if (!Array.isArray(facts.local_branch_refs)) {
+    addBlocker(blockers, "local_branch_refs_unavailable", "local branch namespace cannot be verified");
+  } else if (facts.local_branch_refs.some(
+    (ref) => ref !== targetRef && (targetRef.startsWith(`${ref}/`) || ref.startsWith(`${targetRef}/`))
+  )) {
+    addBlocker(blockers, "branch_namespace_collision", "an existing local branch occupies a prefix or descendant of the generated target");
+  }
   const maxLeafBytes = contract.branch_naming.max_leaf_bytes;
   const branchLeaf = branchName.slice(branchName.lastIndexOf("/") + 1);
   if (!Number.isInteger(maxLeafBytes) || maxLeafBytes < 1 || Buffer.byteLength(branchLeaf, "utf8") > maxLeafBytes) {
@@ -710,19 +763,31 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       current_checkout: {
         status_available: facts.current_status.available,
         status_reason: facts.current_status.reason,
-        dirty_entry_count: facts.current_status.dirty_entries.length
+        dirty_entry_count: facts.current_status.dirty_entries.length,
+        top_level: facts.current_status.top_level,
+        common_dir: facts.current_status.common_dir,
+        branch: facts.current_status.branch,
+        expected_branch: facts.current_status.expected_branch
       },
       canonical_checkout: {
         status_source: "git status --porcelain=v1",
         status_available: facts.canonical_status.available,
         status_reason: facts.canonical_status.reason,
-        dirty_entry_count: facts.canonical_status.dirty_entries.length
+        dirty_entry_count: facts.canonical_status.dirty_entries.length,
+        top_level: facts.canonical_status.top_level,
+        common_dir: facts.canonical_status.common_dir,
+        branch: facts.canonical_status.branch,
+        expected_branch: facts.canonical_status.expected_branch
       },
       requested_checkout: facts.requested_status
         ? {
           status_available: facts.requested_status.available,
           status_reason: facts.requested_status.reason,
-          dirty_entry_count: facts.requested_status.dirty_entries.length
+          dirty_entry_count: facts.requested_status.dirty_entries.length,
+          top_level: facts.requested_status.top_level,
+          common_dir: facts.requested_status.common_dir,
+          branch: facts.requested_status.branch,
+          expected_branch: facts.requested_status.expected_branch
         }
         : null
     },
