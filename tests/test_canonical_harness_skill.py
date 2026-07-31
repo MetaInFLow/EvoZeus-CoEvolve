@@ -1135,6 +1135,77 @@ def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path:
     check_harness_entry_contract(target, manifest)
 
 
+def test_invalid_flow_markdown_does_not_own_a_harness_entry_example(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    invalid_flow_example = (
+        "---\n"
+        "{key: [broken\n"
+        f"{HARNESS_ENTRY_BEGIN}\n"
+        "EXAMPLE BUSINESS BYTES\n"
+        f"{HARNESS_ENTRY_END}\n"
+        "}\n"
+        "---\n"
+        "\n# Business Skill\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(invalid_flow_example, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert invalid_flow_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "mapping_body",
+    [
+        "display name: Demo",
+        "123: Demo",
+        "显示名称: Demo",
+        "{}",
+        '{"name":"Demo"}',
+        "{name:'Demo'}",
+        '{\n"name":"Demo"\n}',
+        "tags:\n- alpha",
+        "!!map\n? complex key\n: Demo",
+    ],
+)
+def test_migration_preserves_frontmatter_with_general_yaml_mapping_keys(
+    tmp_path: Path,
+    mapping_body: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = f"---\n{mapping_body}\n---\n"
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 @pytest.mark.parametrize(
     "container_example",
     [
@@ -1174,6 +1245,60 @@ def test_migration_preserves_harness_entry_examples_inside_markdown_containers(
     )
 
     assert container_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "html_example",
+    [
+        (
+            "<pre>\n"
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</pre>\n\n"
+        ),
+        (
+            "<div>\n"
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</div>\n\n"
+        ),
+        (
+            '<widget title="a > b">\n'
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</widget>\n\n"
+        ),
+    ],
+)
+def test_migration_preserves_harness_entry_examples_inside_raw_html_blocks(
+    tmp_path: Path,
+    html_example: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + html_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert html_example in updated
     assert updated.count(HARNESS_ENTRY_BEGIN) == 2
     assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
     check_harness_entry_contract(target, manifest)

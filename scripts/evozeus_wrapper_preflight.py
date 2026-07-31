@@ -441,19 +441,32 @@ def _canonical_harness_entry_block() -> str:
 def _mask_markdown_fenced_code(text: str) -> str:
     """Mask non-contract Markdown bytes while preserving offsets and newlines."""
     masked: list[str] = []
-    frontmatter_end = len(text) - len(content_after_frontmatter(text))
     fence: tuple[str, int] | None = None
-    offset = 0
+    html_block: tuple[str, re.Pattern[str] | None] | None = None
 
     def mask_line(line: str) -> str:
         return "".join(character if character in "\r\n" else " " for character in line)
 
+    def is_complete_html_tag(line: str) -> bool:
+        match = re.match(r"^[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*", line)
+        if not match:
+            return False
+        quote: str | None = None
+        for index in range(match.end(), len(line)):
+            character = line[index]
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ">":
+                return not line[index + 1 :].strip()
+        return False
+
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
-        if offset < frontmatter_end:
-            masked.append(mask_line(line))
-            offset += len(line)
-            continue
         if fence:
             fence_char, minimum_length = fence
             if re.match(
@@ -462,18 +475,61 @@ def _mask_markdown_fenced_code(text: str) -> str:
             ):
                 fence = None
             masked.append(mask_line(line))
-            offset += len(line)
+            continue
+        if html_block:
+            mode, end_pattern = html_block
+            if (mode == "blank" and not content.strip()) or (
+                end_pattern is not None and end_pattern.search(content)
+            ):
+                html_block = None
+            masked.append(mask_line(line))
             continue
         fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
         if fence_match:
             marker = fence_match.group(1)
             fence = (marker[0], len(marker))
             masked.append(mask_line(line))
+        elif re.fullmatch(
+            rf"(?:{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*",
+            content,
+        ):
+            masked.append(line)
+        elif html_match := re.match(
+            r"^[ ]{0,3}<(script|pre|style|textarea)(?:[ \t>]|$)",
+            content,
+            re.IGNORECASE,
+        ):
+            end_pattern = re.compile(rf"</{html_match.group(1)}[ \t]*>", re.IGNORECASE)
+            if not end_pattern.search(content[html_match.end() :]):
+                html_block = ("pattern", end_pattern)
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!--", content):
+            if "-->" not in content[content.find("<!--") + 4 :]:
+                html_block = ("pattern", re.compile(r"-->"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<\?", content):
+            if "?>" not in content[content.find("<?") + 2 :]:
+                html_block = ("pattern", re.compile(r"\?>"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<![A-Z]", content):
+            if ">" not in content[content.find("<!") + 2 :]:
+                html_block = ("pattern", re.compile(r">"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!\[CDATA\[", content):
+            if "]]>" not in content[content.find("<![CDATA[") + 9 :]:
+                html_block = ("pattern", re.compile(r"\]\]>"))
+            masked.append(mask_line(line))
+        elif re.match(
+            r"^[ ]{0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)",
+            content,
+            re.IGNORECASE,
+        ) or is_complete_html_tag(content):
+            html_block = ("blank", None)
+            masked.append(mask_line(line))
         elif re.match(r"^(?: {4,}|\t)", content):
             masked.append(mask_line(line))
         else:
             masked.append(line)
-        offset += len(line)
     return "".join(masked)
 
 
@@ -484,22 +540,33 @@ def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
     visible = _mask_markdown_fenced_code(text)
-    marker_pattern = re.compile(
-        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
-        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+    canonical_block = _canonical_harness_entry_block()
+    entry_pattern = re.compile(
+        "^"
+        + r"\n".join(re.escape(line) for line in canonical_block.splitlines())
+        + r"[ \t]*$",
         re.MULTILINE,
     )
-    markers = list(marker_pattern.finditer(visible))
-    begins = [match for match in markers if match.group("begin")]
-    ends = [match for match in markers if match.group("end")]
-    if (
-        len(begins) != 1
-        or len(ends) != 1
-        or begins[0].start() > ends[0].start()
-    ):
+    entries = list(entry_pattern.finditer(visible))
+    if len(entries) != 1:
+        marker_pattern = re.compile(
+            rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+            rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+            re.MULTILINE,
+        )
+        markers = list(marker_pattern.finditer(visible))
+        begins = [match for match in markers if match.group("begin")]
+        ends = [match for match in markers if match.group("end")]
+        if (
+            not entries
+            and len(begins) == 1
+            and len(ends) == 1
+            and begins[0].start() < ends[0].start()
+        ):
+            fail("instruction surface Harness Skill link does not match the canonical manifest path")
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
-    start = begins[0].start()
-    end = ends[0].start() + len(HARNESS_ENTRY_END)
+    start = entries[0].start()
+    end = start + len(canonical_block)
     block = text[start:end]
     if block != _canonical_harness_entry_block():
         fail("instruction surface Harness Skill link does not match the canonical manifest path")
@@ -795,20 +862,125 @@ def _frontmatter_end(text: str) -> int:
     else:
         return 0
 
+    flow_candidate = "\n".join(body_lines).strip()
+    if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        inner = flow_candidate[1:-1]
+        quote: str | None = None
+        escaped = False
+        comment = False
+        stack: list[str] = []
+        segment_has_content = False
+        segment_has_separator = False
+        saw_pair = False
+        valid_flow = True
+        for index, character in enumerate(inner):
+            if comment:
+                if character in "\r\n":
+                    comment = False
+                continue
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                segment_has_content = True
+            elif character == "#":
+                comment = True
+            elif character in "[{":
+                stack.append(character)
+                segment_has_content = True
+            elif character in "]}":
+                expected = "[" if character == "]" else "{"
+                if not stack or stack.pop() != expected:
+                    valid_flow = False
+                    break
+            elif not stack and character == ",":
+                if not segment_has_content or not segment_has_separator:
+                    valid_flow = False
+                    break
+                saw_pair = True
+                segment_has_content = False
+                segment_has_separator = False
+            elif not stack and character == ":":
+                if not segment_has_content:
+                    valid_flow = False
+                    break
+                if segment_has_separator:
+                    next_character = inner[index + 1 : index + 2]
+                    if not next_character or next_character.isspace():
+                        valid_flow = False
+                        break
+                else:
+                    segment_has_separator = True
+            elif not character.isspace():
+                segment_has_content = True
+        valid_flow = valid_flow and quote is None and not stack
+        if segment_has_content:
+            valid_flow = valid_flow and segment_has_separator
+            saw_pair = saw_pair or segment_has_separator
+        if valid_flow and (not inner.strip() or saw_pair):
+            return offset
+
+    def mapping_key_separator(line: str) -> int | None:
+        quote: str | None = None
+        escaped = False
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ":" and (index + 1 == len(line) or line[index + 1] in " \t"):
+                return index if line[:index].strip() else None
+        return None
+
     saw_mapping_key = False
-    key_pattern = re.compile(
-        r"^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^'\r\n]+'|\"[^\"\r\n]+\")[ \t]*:"
-    )
+    explicit_key = False
+    mapping_tag = False
+    allows_indentless_sequence = False
     for line in body_lines:
-        if not line.strip() or line.lstrip().startswith("#"):
+        stripped = line.strip()
+        if not stripped or line.lstrip().startswith("#"):
             continue
-        if line.startswith((" ", "\t")) and saw_mapping_key:
-            continue
-        if key_pattern.match(line):
+        if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
             saw_mapping_key = True
             continue
+        if stripped == "!!map" and not saw_mapping_key:
+            mapping_tag = True
+            continue
+        if line.startswith((" ", "\t")) and (saw_mapping_key or mapping_tag):
+            continue
+        if allows_indentless_sequence and (line == "-" or line.startswith("- ")):
+            continue
+        if line.startswith("? "):
+            explicit_key = True
+            continue
+        if explicit_key and (line == ":" or line.startswith(": ")):
+            saw_mapping_key = True
+            explicit_key = False
+            continue
+        separator = mapping_key_separator(line)
+        if separator is not None:
+            saw_mapping_key = True
+            allows_indentless_sequence = not line[separator + 1 :].strip()
+            continue
         return 0
-    return offset if saw_mapping_key else 0
+    return offset if saw_mapping_key and not explicit_key else 0
 
 
 def content_after_frontmatter(text: str) -> str:
