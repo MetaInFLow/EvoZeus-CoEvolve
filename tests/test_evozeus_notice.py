@@ -69,6 +69,8 @@ def test_readme_covers_canonical_user_visible_event_contract() -> None:
             for maturity in ("Implemented", "Partial", "Planned")
         )
     assert any("| Partial |" in row for row in canonical_rows.values())
+    assert "| Partial |" in canonical_rows["UAT 就绪"]
+    assert "真实更新 UAT 指针并发出该 marker 的执行路径尚未实现" in canonical_rows["UAT 就绪"]
 
     lesson_row = canonical_rows["Lesson 候选"]
     for required_fragment in (

@@ -84,7 +84,7 @@ EvoZeus 只在关键生命周期状态真实变化时显示一行短标记。事
 | 自动更新完成 | Implemented | `✅ EvoZeus · 自动更新完成｜Stable v0.4.2 · 新会话加载Plugin` | 新产品已通过验证并完成渠道切换。 | 组件完整性、Doctor 与切换门禁全部通过。 | Core | 只下载文件、只更新单组件或尚需恢复时不得报完成。 |
 | 自动更新失败 | Implemented | `🛡️ EvoZeus · 自动更新失败｜继续使用Stable v0.4.1 · 清单校验失败` | 更新事务失败，上一验证版本仍可用。 | 下载、校验、Plugin 对齐或切换失败，回退已确认。 | Core | 上一版本未保全时不得声称“继续使用”；失败不得同时标成完成。 |
 | 进化执行 | Implemented | `🛠️ EvoZeus · 进化中｜MetaInFLow/example-skill · 修复验收门禁` | 已批准的 Skillware 改动正在实施。 | 用户已单独授权修改目标 Repo。 | CoEvolve | Lesson 记录授权、Issue 创建授权和修改授权不得互相替代。 |
-| UAT 就绪 | Implemented | `🧪 EvoZeus · UAT 就绪｜MetaInFLow/example-skill · abc1234` | 唯一 UAT 候选已更新并可验收。 | 目标 Commit 通过门禁且 UAT 指针已真实更新。 | CoEvolve | 计划、未通过测试的 Commit 或 Stable Release 不得标成 UAT 就绪。 |
+| UAT 就绪 | Partial | `🧪 EvoZeus · UAT 就绪｜MetaInFLow/example-skill · abc1234` | 唯一 UAT 候选已更新并可验收。 | 目标 Commit 通过门禁且 UAT 指针已真实更新。 | CoEvolve | 当前只有渠道识别与本地 UAT Notice renderer；真实更新 UAT 指针并发出该 marker 的执行路径尚未实现。在该路径落地前不得发出；计划、未通过测试的 Commit 或 Stable Release 也不得标成 UAT 就绪。 |
 | 正式发布 | Implemented | `🚀 EvoZeus · 已发布｜MetaInFLow/example-skill · v1.2.0` | 已验证的候选已成为真实 Release。 | Release 与对应不可变版本实际存在。 | Core / CoEvolve | tag 草稿、发布计划或仅通过 UAT 时不得显示。 |
 | 回滚 | Implemented | `↩️ EvoZeus · 已回滚｜Stable v0.4.1` | 系统已恢复到上一份可用版本。 | 恢复动作完成且目标版本通过 Doctor。 | Core；Skillware 回滚由 CoEvolve 编排 | 只选择回滚目标或尚未验证恢复结果时不得显示。 |
 | 暂停 | Implemented | `🛡️ EvoZeus · 暂停｜缺少可脱敏的验证证据` | 安全、隐私、权限或证据条件阻止继续执行。 | 继续动作会越过明确边界。 | Core / CoEvolve | 普通警告、低优先级建议或可继续的兼容漂移不得升级为暂停。 |

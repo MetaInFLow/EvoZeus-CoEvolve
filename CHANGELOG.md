@@ -11,6 +11,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Fixed
 
 - Clarified that `writes=false` is machine-visible in the Notice renderer's structured return and `--json` output; default text mode emits only `display_text`.
+- Downgraded the user-visible `UAT 就绪` event to Partial until a real UAT pointer-update and canonical marker emission path exists.
 
 ### Changed
 
