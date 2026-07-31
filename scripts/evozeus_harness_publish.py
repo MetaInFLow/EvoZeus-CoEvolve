@@ -12,6 +12,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 try:
     from .evozeus_wrapper_global_hook import plan_upgrade_all
@@ -22,6 +23,14 @@ except ImportError:
 
 
 CommandRunner = Callable[[list[str], Path | None], dict[str, Any]]
+
+
+def _redact_url_credentials(value: str) -> str:
+    return re.sub(
+        r"(?i)((?:https?|ssh)://)[^\s/]*@",
+        r"\1",
+        value,
+    )
 
 
 def run_command(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
@@ -50,7 +59,7 @@ def _checked(runner, args: list[str], cwd: Path | None = None) -> str:
     result = _call_runner(runner, args, cwd)
     if result.get("returncode") != 0:
         detail = (result.get("stderr") or result.get("stdout") or "command failed").strip()
-        raise RuntimeError(f"{' '.join(args)}: {detail}")
+        raise RuntimeError(f"{' '.join(args)}: {_redact_url_credentials(detail)}")
     return str(result.get("stdout") or "").strip()
 
 
@@ -147,18 +156,39 @@ def resolve_github_admin_access(repo: str, runner=run_command) -> dict[str, Any]
     }
 
 
+def _github_repo_path(path: str) -> str | None:
+    value = path.strip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value) else None
+
+
 def _github_repo_from_remote(remote: str) -> str | None:
     value = remote.strip()
-    patterns = (
-        r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?$",
-        r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$",
-        r"^ssh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?$",
+    if "://" in value:
+        parsed = urlsplit(value)
+        if parsed.hostname and parsed.hostname.casefold() == "github.com":
+            return _github_repo_path(parsed.path)
+        return None
+    match = re.fullmatch(
+        r"git@github\.com:(.+)",
+        value,
+        flags=re.IGNORECASE,
     )
-    for pattern in patterns:
-        match = re.fullmatch(pattern, value, flags=re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return None
+    return _github_repo_path(match.group(1)) if match else None
+
+
+def _redacted_remote(remote: str) -> str:
+    resolved = _github_repo_from_remote(remote)
+    if resolved:
+        return f"github.com/{resolved}"
+    value = remote.strip()
+    if "://" in value:
+        parsed = urlsplit(value)
+        if parsed.hostname:
+            return parsed.hostname
+    match = re.match(r"^(?:[^@\s]+@)?([^:/\s]+)[:/]", value)
+    return match.group(1) if match else "unrecognized origin"
 
 
 def verify_canonical_github_origin(repo: str, canonical: Path, runner=run_command) -> str:
@@ -169,7 +199,7 @@ def verify_canonical_github_origin(repo: str, canonical: Path, runner=run_comman
     resolved = _github_repo_from_remote(remote)
     if resolved is None or resolved.casefold() != repo.casefold():
         raise RuntimeError(
-            f"canonical origin does not match {repo}: {remote or 'missing origin'}"
+            f"canonical origin does not match {repo}: {_redacted_remote(remote)}"
         )
     return repo
 
@@ -323,6 +353,26 @@ def _relative_changed_files(worktree: Path, changed_files: list[str]) -> set[str
     return relative
 
 
+def _remote_branch_oid(canonical: Path, branch: str, runner) -> str | None:
+    result = _call_runner(
+        runner,
+        ["git", "-C", str(canonical), "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+    )
+    if result.get("returncode") != 0:
+        raise RuntimeError("remote upgrade branch lookup failed")
+    output = str(result.get("stdout") or "").strip()
+    if not output:
+        return None
+    fields = output.split()
+    if (
+        len(fields) != 2
+        or fields[1] != f"refs/heads/{branch}"
+        or not re.fullmatch(r"[0-9a-fA-F]{40,64}", fields[0])
+    ):
+        raise RuntimeError("remote upgrade branch lookup returned an invalid ref")
+    return fields[0]
+
+
 def publish_target_upgrade(
     target: dict[str, Any],
     *,
@@ -384,6 +434,7 @@ def publish_target_upgrade(
     cleanup_safe = False
     try:
         _checked(runner, ["git", "-C", str(canonical), "fetch", "origin", default_branch])
+        remote_branch_oid = _remote_branch_oid(canonical, branch, runner)
         _checked(
             runner,
             [
@@ -392,7 +443,7 @@ def publish_target_upgrade(
                 str(canonical),
                 "worktree",
                 "add",
-                "-b",
+                "-B",
                 branch,
                 str(worktree),
                 f"origin/{default_branch}",
@@ -423,7 +474,7 @@ def publish_target_upgrade(
                 "worktree": str(worktree),
             }
         declared = _relative_changed_files(worktree, migration.get("changed_files", []))
-        undeclared = sorted(changed - declared) if declared else []
+        undeclared = sorted(changed - declared)
         if undeclared:
             raise RuntimeError("migration changed undeclared files: " + ", ".join(undeclared))
 
@@ -443,7 +494,19 @@ def publish_target_upgrade(
             ],
         )
         commit = _checked(runner, ["git", "-C", str(worktree), "rev-parse", "HEAD"])
-        _checked(runner, ["git", "-C", str(worktree), "push", "-u", "origin", branch])
+        _checked(
+            runner,
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "push",
+                f"--force-with-lease=refs/heads/{branch}:{remote_branch_oid or ''}",
+                "-u",
+                "origin",
+                branch,
+            ],
+        )
         pr_url = pr_creator(
             repo=repo,
             branch=branch,

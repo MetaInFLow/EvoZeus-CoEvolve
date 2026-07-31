@@ -252,8 +252,96 @@ class GitHubAccessTest(unittest.TestCase):
                     "MetaInFLow/example",
                 )
 
+    def test_accepts_credentialed_https_origin_without_exposing_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            canonical = Path(tmp) / "canonical"
+            canonical.mkdir()
+            credential = "secret-token-value"
+            remote = f"https://oauth2:{credential}@github.com/MetaInFLow/example.git\n"
+
+            self.assertEqual(
+                verify_canonical_github_origin(
+                    "MetaInFLow/example",
+                    canonical,
+                    runner=lambda args, cwd=None: completed(stdout=remote),
+                ),
+                "MetaInFLow/example",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "github.com/MetaInFLow/example") as raised:
+                verify_canonical_github_origin(
+                    "MetaInFLow/another",
+                    canonical,
+                    runner=lambda args, cwd=None: completed(stdout=remote),
+                )
+            self.assertNotIn(credential, str(raised.exception))
+            self.assertNotIn("oauth2", str(raised.exception))
+
+    def test_redacts_credentials_from_origin_command_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            canonical = Path(tmp) / "canonical"
+            canonical.mkdir()
+            credential = "secret-token-value"
+            detail = (
+                "fatal: unable to access "
+                f"https://oauth2:{credential}@github.com/MetaInFLow/example.git"
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "https://github.com") as raised:
+                verify_canonical_github_origin(
+                    "MetaInFLow/example",
+                    canonical,
+                    runner=lambda args, cwd=None: completed(returncode=1, stderr=detail),
+                )
+            self.assertNotIn(credential, str(raised.exception))
+            self.assertNotIn("oauth2", str(raised.exception))
+
 
 class IsolatedPublishTest(unittest.TestCase):
+    def initialize_remote_repo(self, root: Path, files: dict[str, str]):
+        remote = root / "remote.git"
+        canonical = root / "canonical"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(canonical)], check=True)
+        for relative, content in files.items():
+            path = canonical / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(canonical), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(canonical),
+                "-c", "user.name=EvoZeus Test",
+                "-c", "user.email=evozeus@example.invalid",
+                "commit", "-qm", "fixture",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(canonical), "remote", "add", "origin", str(remote)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(canonical), "push", "-q", "-u", "origin", "main"],
+            check=True,
+        )
+        return remote, canonical
+
+    @staticmethod
+    def publish_target(canonical: Path, repo: str = "MetaInFLow/example") -> dict:
+        return {
+            "repo": repo,
+            "target": str(canonical),
+            "wrapper_version": "v0.12.1",
+            "github": {
+                "viewer": "anthonyf",
+                "permission": "ADMIN",
+                "is_admin": True,
+                "default_branch": "main",
+                "url": f"https://github.com/{repo}",
+            },
+        }
+
     def test_publishes_from_isolated_worktree_and_preserves_canonical_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -384,6 +472,96 @@ class IsolatedPublishTest(unittest.TestCase):
 
             self.assertEqual(report["status"], "up_to_date")
             self.assertFalse(Path(report["worktree"]).exists())
+
+    def test_publish_accepts_a_declared_legacy_source_deletion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, canonical = self.initialize_remote_repo(
+                root,
+                {"legacy-wrapper.json": "legacy\n", "SKILL.md": "# Business Skill\n"},
+            )
+
+            def migrate(worktree, latest_version, **kwargs):
+                (worktree / "legacy-wrapper.json").unlink()
+                (worktree / "current-wrapper.json").write_text(
+                    latest_version + "\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "writes": True,
+                    "changed_files": ["legacy-wrapper.json", "current-wrapper.json"],
+                }
+
+            report = publish_target_upgrade(
+                self.publish_target(canonical),
+                home=root / "home",
+                wrapper_root=root / "wrapper",
+                latest_version="v0.13.0",
+                run_id="upgrade_source_deletion",
+                migrator=migrate,
+                existing_pr_resolver=lambda repo, branch: None,
+                pr_creator=lambda **kwargs: "https://github.com/MetaInFLow/example/pull/3",
+                origin_verifier=lambda repo, checkout: repo,
+            )
+
+            self.assertEqual(report["status"], "published")
+            self.assertEqual(
+                set(report["changed_files"]),
+                {"legacy-wrapper.json", "current-wrapper.json"},
+            )
+            published = subprocess.check_output(
+                ["git", "--git-dir", str(remote), "show", f"{report['commit']}:current-wrapper.json"],
+                text=True,
+            )
+            self.assertEqual(published, "v0.13.0\n")
+
+    def test_reuses_deterministic_local_and_remote_branch_with_exact_lease(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, canonical = self.initialize_remote_repo(
+                root,
+                {"SKILL.md": "# Business Skill\n"},
+            )
+            migration_number = 0
+
+            def migrate(worktree, latest_version, **kwargs):
+                nonlocal migration_number
+                migration_number += 1
+                (worktree / "upgrade.txt").write_text(
+                    f"{latest_version} run {migration_number}\n",
+                    encoding="utf-8",
+                )
+                return {"writes": True, "changed_files": ["upgrade.txt"]}
+
+            arguments = {
+                "target": self.publish_target(canonical),
+                "home": root / "home",
+                "wrapper_root": root / "wrapper",
+                "latest_version": "v0.13.0",
+                "migrator": migrate,
+                "existing_pr_resolver": lambda repo, branch: None,
+                "pr_creator": lambda **kwargs: "https://github.com/MetaInFLow/example/pull/4",
+                "origin_verifier": lambda repo, checkout: repo,
+            }
+            first = publish_target_upgrade(run_id="upgrade_reuse_1", **arguments)
+            second = publish_target_upgrade(run_id="upgrade_reuse_2", **arguments)
+
+            self.assertEqual(first["status"], "published")
+            self.assertEqual(second["status"], "published")
+            self.assertNotEqual(first["commit"], second["commit"])
+            remote_head = subprocess.check_output(
+                [
+                    "git",
+                    "--git-dir",
+                    str(remote),
+                    "rev-parse",
+                    "refs/heads/evozeus/harness-v0.12.1-to-v0.13.0",
+                ],
+                text=True,
+            ).strip()
+            self.assertEqual(remote_head, second["commit"])
+            self.assertFalse(Path(first["worktree"]).exists())
+            self.assertFalse(Path(second["worktree"]).exists())
 
 
 if __name__ == "__main__":

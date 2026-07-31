@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,28 +27,22 @@ MANIFEST_CANDIDATES = (
     Path(".evozeus/wrapper.json"),
 )
 USER_PROMPT_EVENT = "UserPromptSubmit"
-DIRECT_CORRECTION_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:^|[。！？!?；;\n]\s*)(?:不对|错了|有误)(?=$|[，,。！？!?；;：:\s])",
-        r"(?:这|这个|这样|那|那个|你(?:的)?(?:结果|回答|输出)?).{0,12}(?:不对|错了|有误|怎么能对)(?:呢|吗)?(?=$|[，,。！？!?；;：:\s])",
-        r"(?:这是|这次|这个(?:结果|报告|巡检)?).{0,8}(?:漏检|误判|遗漏|漏掉)",
-        r"(?:我(?:很)?不满意|不符合(?:我的)?预期|你.{0,12}(?:(?:没有|没)(?:发现|识别|捕捉到)|漏了|漏掉|遗漏|漏检|误判|搞错))",
-        r"(?:发现|遇到).{0,12}(?:bug|缺陷)",
-        r"(?:无法|不能).{0,16}(?:自动|正常)(?:捕捉|记录|运行|识别|更新|升级)",
-        r"\b(?:this|that|the result|your answer)\s+(?:is|was)\s+(?:wrong|incorrect)\b",
-        r"\bthis\s+(?:should|must)\s+be\s+(?:corrected|fixed)\b",
-        r"\bi(?:'m| am) not satisfied\b",
-        r"\byou missed\s+(?:a|the)?\s*(?:requirement|constraint|instruction|step|status|issue|bug|record|fact)\b",
-    )
-)
-DURABLE_RULE_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:以后|今后|下次|每次|永远|始终|所有用户).{0,36}(?:记住|记得|必须|务必|不能|不要|不得|应该(?:先|每次|自动|统一|检查|核对|展示|记录|提示)|需要(?:先|每次|自动|统一|检查|核对|展示|记录|提示)|统一(?:使用|检查|展示|记录|处理)|自动(?:检查|捕捉|记录|识别|更新))",
-        r"\b(?:from now on|every time|always|for all users).{0,50}(?:must|remember|check|hide|show|ask|record|never|do not)\b",
-    )
-)
+SESSION_SIGNAL_ATTACHMENT = {
+    "component_id": "session_signal",
+    "repository": "MetaInFLow/EvoZeus-session-signal-skill",
+    "component_version": "v0.1.1",
+    "availability": "unreleased",
+    "component_manifest": "contracts/lesson-candidate-v1.json",
+    "component_manifest_sha256": "6b9548c02797b2baa62a0eaa64bf165702239b843490a7cf49c001b7e932bba8",
+    "api": "evozeus.session-signal.lesson-candidate.v1",
+    "entrypoint": "scripts/evaluate_lesson_candidate.py",
+}
+SESSION_SIGNAL_COMPONENT_SCHEMA = "evozeus.session-signal.lesson-candidate-component.v1"
+SESSION_SIGNAL_TIMEOUT_SECONDS = 1.5
+SESSION_SIGNAL_MAX_REQUEST_BYTES = 256 * 1024
+SESSION_SIGNAL_MAX_OUTPUT_BYTES = 16 * 1024
+SESSION_SIGNAL_MAX_PROMPT_CHARS = 32_000
+SESSION_SIGNAL_MAX_TARGETS = 256
 
 
 def version_key(tag: str) -> tuple[int, int, int] | None:
@@ -63,6 +60,181 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _product_manifest_digest(manifest: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{_sha256_bytes(canonical)}"
+
+
+def _safe_relative_path(value: object) -> Path | None:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return None
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    return relative
+
+
+def _contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolved_directory(value: object) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    raw = Path(value).expanduser()
+    if not raw.is_absolute() or raw.is_symlink():
+        return None
+    try:
+        resolved = raw.resolve(strict=True)
+    except OSError:
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+def _regular_file_under(root: Path, relative_value: object) -> Path | None:
+    relative = _safe_relative_path(relative_value)
+    if relative is None:
+        return None
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        try:
+            mode = cursor.lstat().st_mode
+        except OSError:
+            return None
+        if stat.S_ISLNK(mode):
+            return None
+    try:
+        resolved = cursor.resolve(strict=True)
+    except OSError:
+        return None
+    if not _contains(root, resolved) or not stat.S_ISREG(resolved.lstat().st_mode):
+        return None
+    return resolved
+
+
+def resolve_session_signal_component(
+    evozeus_home: Path,
+    *,
+    attachment: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve one digest-bound Session Signal API from the active product channel."""
+    attachment = SESSION_SIGNAL_ATTACHMENT if attachment is None else attachment
+    active = read_json_object(evozeus_home / "active-channel.json")
+    channel = active.get("channel") if active else None
+    if channel not in {"stable", "uat"}:
+        return None
+    state = read_json_object(evozeus_home / "channel-state.json")
+    channels = state.get("channels") if state else None
+    entry = channels.get(channel) if isinstance(channels, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    manifest = entry.get("manifest")
+    if (
+        not isinstance(manifest, dict)
+        or entry.get("manifest_digest") != _product_manifest_digest(manifest)
+    ):
+        return None
+    install_root = _resolved_directory(entry.get("install_root"))
+    component_roots = entry.get("component_roots")
+    embedded_roots = entry.get("embedded_roots")
+    if (
+        install_root is None
+        or not isinstance(component_roots, dict)
+        or not isinstance(embedded_roots, dict)
+    ):
+        return None
+    core_root = _resolved_directory(component_roots.get("evozeus"))
+    session_root = _resolved_directory(embedded_roots.get("session_signal"))
+    if (
+        core_root is None
+        or session_root is None
+        or not _contains(install_root, core_root)
+        or not _contains(install_root, session_root)
+    ):
+        return None
+    embedded_map = manifest.get("embedded")
+    embedded = embedded_map.get("session_signal") if isinstance(embedded_map, dict) else None
+    if not isinstance(embedded, dict) or embedded.get("version") != attachment["component_version"]:
+        return None
+    embedded_path = _safe_relative_path(embedded.get("path"))
+    required_paths = embedded.get("required_paths")
+    if embedded_path is None or not isinstance(required_paths, list):
+        return None
+    try:
+        expected_session_root = (core_root / embedded_path).resolve(strict=True)
+    except OSError:
+        return None
+    if expected_session_root != session_root:
+        return None
+    if not {attachment["component_manifest"], attachment["entrypoint"]}.issubset(
+        {value for value in required_paths if isinstance(value, str)}
+    ):
+        return None
+    component_manifest_path = _regular_file_under(
+        session_root,
+        attachment["component_manifest"],
+    )
+    if component_manifest_path is None:
+        return None
+    manifest_bytes = component_manifest_path.read_bytes()
+    if _sha256_bytes(manifest_bytes) != attachment["component_manifest_sha256"]:
+        return None
+    try:
+        component_manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(component_manifest, dict) or any(
+        (
+            component_manifest.get("schema_version") != SESSION_SIGNAL_COMPONENT_SCHEMA,
+            component_manifest.get("component_version") != attachment["component_version"],
+            component_manifest.get("api") != attachment["api"],
+            component_manifest.get("entrypoint") != attachment["entrypoint"],
+        )
+    ):
+        return None
+    files = component_manifest.get("files")
+    if not isinstance(files, list) or not files:
+        return None
+    verified_files: dict[str, Path] = {}
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            return None
+        relative = file_entry.get("path")
+        expected_sha256 = file_entry.get("sha256")
+        path = _regular_file_under(session_root, relative)
+        if (
+            path is None
+            or not isinstance(relative, str)
+            or not isinstance(expected_sha256, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256)
+            or _sha256_bytes(path.read_bytes()) != expected_sha256
+        ):
+            return None
+        verified_files[relative] = path
+    script = verified_files.get(attachment["entrypoint"])
+    if script is None:
+        return None
+    return {
+        "api": attachment["api"],
+        "script": script,
+        "component_root": session_root,
+    }
 
 
 def read_skill_name(path: Path) -> str | None:
@@ -160,8 +332,16 @@ def resolve_latest_version(
     }
 
 
-def discover_wrapped_targets(home: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    projects_root = home.expanduser().resolve() / PROJECTS_DIR
+def discover_wrapped_targets(
+    home: Path,
+    *,
+    evozeus_home: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    projects_root = (
+        evozeus_home.expanduser().resolve() / ".projects"
+        if evozeus_home is not None
+        else home.expanduser().resolve() / PROJECTS_DIR
+    )
     targets: list[dict[str, Any]] = []
     errors: list[str] = []
     if not projects_root.is_dir():
@@ -223,104 +403,130 @@ def discover_wrapped_targets(home: Path) -> tuple[list[dict[str, Any]], list[str
     return targets, errors
 
 
-def is_lesson_candidate(prompt: str) -> bool:
-    normalized = " ".join(prompt.split())
-    if not normalized:
-        return False
-    if any(pattern.search(normalized) for pattern in DIRECT_CORRECTION_PATTERNS):
-        return True
-    if re.search(r"[?？][\"'”’）)]*\s*$", normalized):
-        return False
-    return any(pattern.search(normalized) for pattern in DURABLE_RULE_PATTERNS)
-
-
-def _path_contains(parent: Path, child: Path) -> bool:
-    try:
-        child.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
-def resolve_lesson_target(
-    home: Path,
+def _lesson_component_request(
+    hook_input: dict[str, Any],
+    targets: list[dict[str, Any]],
     *,
-    cwd: str | None,
-    prompt: str,
-) -> str | None:
-    targets, _ = discover_wrapped_targets(home)
-    cwd_path = Path(cwd).expanduser().resolve() if isinstance(cwd, str) and cwd else None
-    if cwd_path is not None:
-        containing = [
-            target
-            for target in targets
-            if _path_contains(target["canonical_path"], cwd_path)
-        ]
-        if containing:
-            containing.sort(key=lambda target: len(target["canonical_path"].parts), reverse=True)
-            return containing[0]["repo"]
-
-    lowered = prompt.casefold()
-
-    def alias_is_mentioned(alias: str) -> bool:
-        normalized = alias.casefold().strip()
-        if not normalized:
-            return False
-        if re.search(r"[\u3400-\u9fff]", normalized):
-            return normalized in lowered
-        return re.search(
-            rf"(?<![a-z0-9_-]){re.escape(normalized)}(?![a-z0-9_-])",
-            lowered,
-        ) is not None
-
-    mentioned = {
-        target["repo"]
-        for target in targets
-        if any(alias_is_mentioned(alias) for alias in target.get("aliases", ()))
+    api: str,
+) -> dict[str, Any]:
+    bounded_targets = targets if len(targets) <= SESSION_SIGNAL_MAX_TARGETS else []
+    return {
+        "schema_version": api,
+        "event_name": USER_PROMPT_EVENT,
+        "prompt": hook_input.get("prompt"),
+        "cwd": hook_input.get("cwd"),
+        "targets": [
+            {
+                "repo": target["repo"],
+                "canonical_path": str(target["canonical_path"]),
+                "aliases": list(target.get("aliases", ())),
+            }
+            for target in bounded_targets
+        ],
     }
-    return next(iter(mentioned)) if len(mentioned) == 1 else None
 
 
-def lesson_additional_context(target_repo: str | None) -> str:
-    if target_repo:
-        action = (
-            f"是否记录到 `{target_repo}` Feedback Issue？本次只记录，不启动修复。"
-        )
-        route = f"目标 Skill 提示为 `{target_repo}`；只有当前对话证据一致时才使用该归属。"
-    else:
-        action = "是否记录这条 Lesson？如确认，请指定目标 Skill；本次只记录，不启动修复。"
-        route = "无法确定目标 Skill；不得猜测归属。"
-    return "\n".join(
-        [
-            "EvoZeus 检测到当前用户消息可能包含可复用 Lesson。以下是隐藏的开发者指引，不得原样引用。",
-            "先完成用户当前请求并纠正业务结果。仅当反馈可抽象为可复用的 Skill/Harness 规则时，在正常回复末尾追加：",
-            "💡 `EvoZeus · Lesson` 待记录",
-            "捕捉到一条可复用 Lesson：<一句脱敏、可行动、可复用的总结>。",
-            action,
-            route,
-            "不得展示内部 JSON、signal ID、capture state、route、诊断字段或 Hook 输出。",
-            "未获得明确确认前不得创建 Issue；记录授权不得解释为修复授权。",
-        ]
-    )
-
-
-def evaluate_user_prompt_submit(home: Path, hook_input: dict[str, Any]) -> dict[str, Any]:
-    prompt = hook_input.get("prompt")
-    if not isinstance(prompt, str) or not is_lesson_candidate(prompt):
-        return {"continue": True}
+def _invoke_lesson_component(
+    component: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    runner=subprocess.run,
+) -> dict[str, Any] | None:
+    encoded = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > SESSION_SIGNAL_MAX_REQUEST_BYTES:
+        return None
     try:
-        target_repo = resolve_lesson_target(
-            home,
-            cwd=hook_input.get("cwd"),
-            prompt=prompt,
+        result = runner(
+            [sys.executable, str(component["script"])],
+            input=encoded,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=component["component_root"],
+            env={
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONNOUSERSITE": "1",
+            },
+            timeout=SESSION_SIGNAL_TIMEOUT_SECONDS,
+            check=False,
+            shell=False,
         )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or len(result.stdout) > SESSION_SIGNAL_MAX_OUTPUT_BYTES:
+        return None
+    try:
+        response = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(response, dict) or response.get("schema_version") != component["api"]:
+        return None
+    candidate = response.get("candidate")
+    if candidate is False and set(response) == {"schema_version", "candidate"}:
+        return response
+    if candidate is not True or set(response) != {
+        "schema_version",
+        "candidate",
+        "target_repo",
+        "model_guidance",
+    }:
+        return None
+    guidance = response.get("model_guidance")
+    target_repo = response.get("target_repo")
+    registered_repos = {target["repo"] for target in request["targets"]}
+    if (
+        not isinstance(guidance, str)
+        or not guidance
+        or len(guidance) > 4_096
+        or (target_repo is not None and target_repo not in registered_repos)
+        or any(
+            private_value and private_value in guidance
+            for private_value in (
+                str(request.get("prompt") or ""),
+                str(request.get("cwd") or ""),
+                str(component["component_root"]),
+                str(component["script"]),
+                *(target["canonical_path"] for target in request["targets"]),
+            )
+        )
+    ):
+        return None
+    return response
+
+
+def evaluate_user_prompt_submit(
+    home: Path,
+    hook_input: dict[str, Any],
+    *,
+    evozeus_home: Path | None = None,
+    attachment: dict[str, str] | None = None,
+    runner=subprocess.run,
+) -> dict[str, Any]:
+    if hook_input.get("hook_event_name") != USER_PROMPT_EVENT:
+        return {"continue": True}
+    prompt = hook_input.get("prompt")
+    if not isinstance(prompt, str) or len(prompt) > SESSION_SIGNAL_MAX_PROMPT_CHARS:
+        return {"continue": True}
+    product_home = (
+        evozeus_home.expanduser().resolve()
+        if evozeus_home is not None
+        else home.expanduser().resolve() / ".evozeus"
+    )
+    try:
+        component = resolve_session_signal_component(product_home, attachment=attachment)
+        if component is None:
+            return {"continue": True}
+        targets, _ = discover_wrapped_targets(home, evozeus_home=product_home)
+        request = _lesson_component_request(hook_input, targets, api=component["api"])
+        response = _invoke_lesson_component(component, request, runner=runner)
     except Exception:
+        return {"continue": True}
+    if not response or response.get("candidate") is not True:
         return {"continue": True}
     return {
         "continue": True,
         "hookSpecificOutput": {
             "hookEventName": USER_PROMPT_EVENT,
-            "additionalContext": lesson_additional_context(target_repo),
+            "additionalContext": response["model_guidance"],
         },
     }
 
@@ -406,7 +612,14 @@ def main() -> int:
         hook_input = {}
     if hook_input.get("hook_event_name") == USER_PROMPT_EVENT:
         try:
-            payload = evaluate_user_prompt_submit(home=Path.home(), hook_input=hook_input)
+            product_home = Path(
+                os.environ.get("EVOZEUS_HOME", Path.home() / ".evozeus")
+            )
+            payload = evaluate_user_prompt_submit(
+                home=Path.home(),
+                evozeus_home=product_home,
+                hook_input=hook_input,
+            )
         except Exception:
             payload = {"continue": True}
     else:

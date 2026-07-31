@@ -471,6 +471,7 @@ def _registered_upgrade_targets(home: Path) -> tuple[list[dict[str, Any]], list[
     errors: list[str] = []
     if not projects_root.is_dir():
         return targets, errors
+    lifecycle = _lifecycle_module()
     for owner_dir in sorted(projects_root.iterdir()):
         if not owner_dir.is_dir():
             continue
@@ -488,6 +489,24 @@ def _registered_upgrade_targets(home: Path) -> tuple[list[dict[str, Any]], list[
                 continue
             if not canonical.is_dir():
                 errors.append(f"project pointer target is not a directory: {owner_dir.name}/{pointer.name}")
+                continue
+            try:
+                repo_root = lifecycle.independent_repo_root(canonical)
+            except ValueError as exc:
+                errors.append(f"invalid Harness repository boundary {owner_dir.name}/{pointer.name}: {exc}")
+                continue
+            if canonical != repo_root:
+                errors.append(
+                    "project pointer must resolve to the independent Git repository root: "
+                    f"{owner_dir.name}/{pointer.name}; repo_root={repo_root}"
+                )
+                continue
+            nested = lifecycle.nested_harness_manifests(repo_root)
+            if nested:
+                errors.append(
+                    f"nested Harness manifests are forbidden in {owner_dir.name}/{pointer.name}: "
+                    + ", ".join(nested)
+                )
                 continue
             manifest_path = canonical / TARGET_MANIFEST
             if not manifest_path.is_file():
@@ -649,15 +668,6 @@ def plan_upgrade_all(
             "targets": [],
         }
 
-    registered, discovery_errors = _registered_upgrade_targets(home)
-    if discovery_errors:
-        return {
-            "stage": "harness_upgrade_all",
-            "status": "blocked",
-            "writes": False,
-            "errors": discovery_errors,
-            "targets": [],
-        }
     latest_resolution = _resolve_authoritative_upgrade_latest(home, latest_resolver)
     authoritative_latest = latest_resolution.get("version")
     if authoritative_latest != latest_version:
@@ -671,6 +681,15 @@ def plan_upgrade_all(
             ],
             "latest_version": latest_version,
             "latest_source": latest_resolution.get("source", "unavailable"),
+            "targets": [],
+        }
+    registered, discovery_errors = _registered_upgrade_targets(home)
+    if discovery_errors:
+        return {
+            "stage": "harness_upgrade_all",
+            "status": "blocked",
+            "writes": False,
+            "errors": discovery_errors,
             "targets": [],
         }
     outdated = [
@@ -846,6 +865,7 @@ def apply_upgrade_all(
     *,
     approve: bool = False,
     latest_resolver=None,
+    admin_resolver=None,
 ) -> dict[str, Any]:
     wrapper_root = wrapper_root.expanduser().resolve()
     plan = plan_upgrade_all(
@@ -860,6 +880,22 @@ def apply_upgrade_all(
         return {**plan, "status": "approval_required"}
 
     home = home.expanduser().resolve()
+    lifecycle = _lifecycle_module()
+    resolve_admin = admin_resolver or (
+        lambda target, repo: lifecycle.require_repo_admin(Path(target), repo)
+    )
+    authorities: list[dict[str, Any]] = []
+    try:
+        for item in plan["targets"]:
+            authorities.append(resolve_admin(item["target"], item["repo"]))
+    except ValueError as exc:
+        return {
+            **plan,
+            "status": "blocked",
+            "writes": False,
+            "errors": [str(exc)],
+            "administrator_authorities": authorities,
+        }
     refresh_installed_global_hook = read_global_hook_status(home)["any_registration_installed"]
     backup_root = home / HARNESS_UPGRADE_BACKUPS / _utc_transaction_id()
     snapshots: list[dict[str, Any]] = []
@@ -873,7 +909,6 @@ def apply_upgrade_all(
             )
         )
 
-    lifecycle = _lifecycle_module()
     results: list[dict[str, Any]] = []
     global_hook_refresh: dict[str, Any] = {
         "status": "not_installed",
@@ -916,4 +951,5 @@ def apply_upgrade_all(
         "errors": [],
         "results": results,
         "global_hook_refresh": global_hook_refresh,
+        "administrator_authorities": authorities,
     }

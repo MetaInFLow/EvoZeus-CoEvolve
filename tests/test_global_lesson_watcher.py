@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.evozeus_wrapper_global_hook import (
@@ -30,7 +34,7 @@ class GlobalLessonWatcherTest(unittest.TestCase):
         spec.loader.exec_module(self.dispatcher_module)
 
     def test_patch_version_identifies_the_new_harness(self):
-        self.assertEqual(WRAPPER_VERSION, "v0.13.1")
+        self.assertEqual(WRAPPER_VERSION, "v0.14.0")
 
     def create_wrapped_target(self, home: Path, name: str, version: str = "v0.13.0") -> Path:
         target = home.parent / f"canonical-{name}"
@@ -51,26 +55,137 @@ class GlobalLessonWatcherTest(unittest.TestCase):
         pointer.symlink_to(target)
         return target
 
-    def run_prompt_hook(self, home: Path, cwd: Path, prompt: str) -> dict[str, object]:
-        result = subprocess.run(
-            [sys.executable, str(self.dispatcher_template)],
-            input=json.dumps(
-                {
-                    "session_id": "thread-test",
-                    "turn_id": "turn-test",
-                    "hook_event_name": "UserPromptSubmit",
-                    "cwd": str(cwd),
-                    "prompt": prompt,
-                }
+    def create_component_fixture(self, home: Path) -> dict[str, object]:
+        product_home = home / ".evozeus"
+        install_root = product_home / "releases" / "fixture"
+        core_root = install_root / "evozeus"
+        session_root = core_root / "packs" / "session-signal"
+        script = session_root / "scripts" / "evaluate_lesson_candidate.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            textwrap.dedent(
+                """\
+                import json
+                import sys
+                import time
+
+                request = json.loads(sys.stdin.read())
+                prompt = request.get("prompt")
+                if prompt == "timeout":
+                    time.sleep(5)
+                if prompt == "invalid-json":
+                    sys.stdout.write("{")
+                elif prompt == "error":
+                    raise SystemExit(3)
+                elif prompt in {"candidate-assigned", "candidate-unassigned"}:
+                    target = None
+                    if prompt == "candidate-assigned" and request.get("targets"):
+                        target = request["targets"][0]["repo"]
+                    print(json.dumps({
+                        "schema_version": "evozeus.session-signal.lesson-candidate.v1",
+                        "candidate": True,
+                        "target_repo": target,
+                        "model_guidance": "Model-only Lesson guidance. Ask before record; do not start a fix.",
+                    }))
+                else:
+                    print(json.dumps({
+                        "schema_version": "evozeus.session-signal.lesson-candidate.v1",
+                        "candidate": False,
+                    }))
+                """
             ),
-            text=True,
-            capture_output=True,
-            cwd=cwd,
-            env={**os.environ, "HOME": str(home)},
-            check=False,
+            encoding="utf-8",
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        component_manifest = {
+            "schema_version": "evozeus.session-signal.lesson-candidate-component.v1",
+            "component_version": "v0.1.1",
+            "api": "evozeus.session-signal.lesson-candidate.v1",
+            "entrypoint": "scripts/evaluate_lesson_candidate.py",
+            "files": [
+                {
+                    "path": "scripts/evaluate_lesson_candidate.py",
+                    "sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+                }
+            ],
+        }
+        component_manifest_path = session_root / "contracts" / "lesson-candidate-v1.json"
+        component_manifest_path.parent.mkdir(parents=True)
+        component_manifest_path.write_text(
+            json.dumps(component_manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        attachment = {
+            **self.dispatcher_module.SESSION_SIGNAL_ATTACHMENT,
+            "component_manifest_sha256": hashlib.sha256(
+                component_manifest_path.read_bytes()
+            ).hexdigest(),
+        }
+        product_manifest = {
+            "schema_version": "evozeus.product-channel.v2",
+            "product_version": "v0.5.0",
+            "channel": "uat",
+            "generated_at": "2026-07-31T00:00:00Z",
+            "components": {},
+            "embedded": {
+                "session_signal": {
+                    "version": "v0.1.1",
+                    "path": "packs/session-signal",
+                    "required_paths": [
+                        "contracts/lesson-candidate-v1.json",
+                        "scripts/evaluate_lesson_candidate.py",
+                    ],
+                }
+            },
+            "compatibility": {},
+        }
+        product_home.mkdir(parents=True, exist_ok=True)
+        (product_home / "active-channel.json").write_text(
+            json.dumps({"channel": "uat"}),
+            encoding="utf-8",
+        )
+        state_path = product_home / "channel-state.json"
+        state = {
+            "channels": {
+                "uat": {
+                    "manifest": product_manifest,
+                    "manifest_digest": self.dispatcher_module._product_manifest_digest(
+                        product_manifest
+                    ),
+                    "install_root": str(install_root),
+                    "component_roots": {"evozeus": str(core_root)},
+                    "embedded_roots": {"session_signal": str(session_root)},
+                }
+            }
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        return {
+            "attachment": attachment,
+            "product_home": product_home,
+            "state_path": state_path,
+            "session_root": session_root,
+            "script": script,
+            "component_manifest_path": component_manifest_path,
+        }
+
+    def run_prompt_hook(
+        self,
+        home: Path,
+        cwd: Path,
+        prompt: str,
+        fixture: dict[str, object],
+    ) -> dict[str, object]:
+        return self.dispatcher_module.evaluate_user_prompt_submit(
+            home,
+            {
+                "session_id": "thread-test",
+                "turn_id": "turn-test",
+                "hook_event_name": "UserPromptSubmit",
+                "cwd": str(cwd),
+                "prompt": prompt,
+            },
+            evozeus_home=fixture["product_home"],
+            attachment=fixture["attachment"],
+        )
 
     def test_install_registers_prompt_watcher_without_replacing_other_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +280,17 @@ class GlobalLessonWatcherTest(unittest.TestCase):
             self.assertTrue(status["session_registration_installed"])
             self.assertFalse(status["prompt_registration_installed"])
 
+            refreshed = apply_global_hook_install(
+                home=home,
+                wrapper_root=Path.cwd(),
+                approve=True,
+            )
+            current = read_global_hook_status(home)
+
+            self.assertEqual(refreshed["registration_action"], "refresh")
+            self.assertEqual(current["status"], "installed")
+            self.assertTrue(current["prompt_registration_installed"])
+
     def test_uninstall_removes_only_evozeus_handlers_from_both_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -212,151 +338,53 @@ class GlobalLessonWatcherTest(unittest.TestCase):
 
             self.assertEqual(json.loads(hooks_path.read_text(encoding="utf-8")), original)
 
-    def test_reusable_correction_in_normal_chat_injects_record_only_lesson_guidance(self):
+    def test_active_component_candidate_returns_only_model_guidance(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             target = self.create_wrapped_target(home, "metainflow-dev-tasks")
+            fixture = self.create_component_fixture(home)
 
             payload = self.run_prompt_hook(
                 home,
                 target,
-                "这样的 log 怎么能对呢？应该在正常 chat 里提示捕捉到 Lesson，不能展示 JSON。",
+                "candidate-assigned",
+                fixture,
             )
-            context = payload["hookSpecificOutput"]["additionalContext"]
-
-            self.assertTrue(payload["continue"])
-            self.assertEqual(
-                payload["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit"
-            )
-            self.assertIn("先完成用户当前请求", context)
-            self.assertIn("💡 `EvoZeus · Lesson` 待记录", context)
-            self.assertIn("本次只记录，不启动修复", context)
-            self.assertIn("MetaInFLow/metainflow-dev-tasks", context)
-            self.assertIn("不得展示内部 JSON", context)
             serialized = json.dumps(payload, ensure_ascii=False)
-            self.assertNotIn("should_capture", serialized)
+
+            self.assertEqual(
+                payload,
+                {
+                    "continue": True,
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": (
+                            "Model-only Lesson guidance. Ask before record; do not start a fix."
+                        ),
+                    },
+                },
+            )
+            self.assertNotIn("candidate-assigned", serialized)
+            self.assertNotIn(str(target), serialized)
             self.assertNotIn("signal_id", serialized)
-            self.assertNotIn("capture_state", serialized)
 
-    def test_direct_correction_and_missed_check_phrases_trigger(self):
+    def test_component_neutral_and_unassigned_results_preserve_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             cwd = Path(tmp) / "workspace"
             cwd.mkdir()
+            fixture = self.create_component_fixture(home)
 
-            for prompt in (
-                "不对，负责人已经离职了。",
-                "错了，正确答案是 B。",
-                "这是漏检，需要补上。",
-            ):
-                with self.subTest(prompt=prompt):
-                    payload = self.run_prompt_hook(home, cwd, prompt)
-                    self.assertIn(
-                        "EvoZeus · Lesson",
-                        payload["hookSpecificOutput"]["additionalContext"],
-                    )
+            neutral = self.run_prompt_hook(home, cwd, "neutral", fixture)
+            unassigned = self.run_prompt_hook(home, cwd, "candidate-unassigned", fixture)
 
-    def test_neutral_prompt_does_not_inject_lesson_guidance(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            target = self.create_wrapped_target(home, "neutral-skill")
-
-            payload = self.run_prompt_hook(home, target, "帮我总结今天的项目进展。")
-
-            self.assertEqual(payload, {"continue": True})
-
-    def test_generic_question_with_should_language_does_not_trigger(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "workspace"
-            cwd.mkdir()
-
-            payload = self.run_prompt_hook(home, cwd, "这个项目下一步应该怎么做？")
-
-            self.assertEqual(payload, {"continue": True})
-
-    def test_no_issue_found_status_sentence_does_not_trigger(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "workspace"
-            cwd.mkdir()
-
-            payload = self.run_prompt_hook(home, cwd, "今天巡检没有发现问题，继续观察。")
-
-            self.assertEqual(payload, {"continue": True})
-
-    def test_ambiguous_neutral_phrases_do_not_trigger(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "workspace"
-            cwd.mkdir()
-
-            for prompt in (
-                "这个政策哪里不合理？",
-                "这个项目采用不对称加密。",
-                "这个变量有误差，需要计算。",
-                "We should have three meetings this week.",
-                "You missed the train because it left early.",
-                "所有用户看到了什么提示？",
-                "以后你知道天气会怎么变化吗？",
-                "所有用户应该怎么登录？",
-                "所有用户必须怎么登录？",
-                "以后必须怎么处理？",
-                "下次先去哪里吃饭？",
-                "下次需要准备什么材料？",
-                "下次务必带什么材料？",
-                "For all users, must the password contain a number?",
-            ):
-                with self.subTest(prompt=prompt):
-                    self.assertEqual(self.run_prompt_hook(home, cwd, prompt), {"continue": True})
-
-    def test_direct_missed_fact_correction_triggers(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "workspace"
-            cwd.mkdir()
-
-            payload = self.run_prompt_hook(
-                home,
-                cwd,
-                "你没有发现负责人已经离职，这个巡检漏掉了关键状态。",
-            )
-
-            self.assertIn("EvoZeus · Lesson", payload["hookSpecificOutput"]["additionalContext"])
-
-    def test_future_reminder_rule_triggers_without_explicit_skill_invocation(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "workspace"
-            cwd.mkdir()
-
-            payload = self.run_prompt_hook(
-                home,
-                cwd,
-                "以后也要知道，如果没有开早会，记得去看飞书私信。",
-            )
-
-            self.assertIn("EvoZeus · Lesson", payload["hookSpecificOutput"]["additionalContext"])
-
-    def test_explicit_registered_skill_name_routes_from_consumer_workspace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            cwd = Path(tmp) / "consumer"
-            cwd.mkdir()
-            self.create_wrapped_target(home, "metainflow-dev-tasks")
-
-            payload = self.run_prompt_hook(
-                home,
-                cwd,
-                "metainflow-dev-tasks 这个输出不对，以后必须隐藏内部字段。",
-            )
-
+            self.assertEqual(neutral, {"continue": True})
             self.assertIn(
-                "MetaInFLow/metainflow-dev-tasks",
-                payload["hookSpecificOutput"]["additionalContext"],
+                "Model-only Lesson guidance",
+                unassigned["hookSpecificOutput"]["additionalContext"],
             )
 
-    def test_declared_skill_name_routes_when_it_differs_from_repo_slug(self):
+    def test_component_receives_registered_target_inventory(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             cwd = Path(tmp) / "consumer"
@@ -366,72 +394,342 @@ class GlobalLessonWatcherTest(unittest.TestCase):
                 "---\nname: project-management-assistant\n---\n# Project management\n",
                 encoding="utf-8",
             )
+            fixture = self.create_component_fixture(home)
+            captured: dict[str, object] = {}
 
-            payload = self.run_prompt_hook(
+            def runner(command, **kwargs):
+                captured.update({"command": command, **kwargs})
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "schema_version": "evozeus.session-signal.lesson-candidate.v1",
+                            "candidate": False,
+                        }
+                    ).encode(),
+                    stderr=b"",
+                )
+
+            payload = self.dispatcher_module.evaluate_user_prompt_submit(
                 home,
-                cwd,
-                "project-management-assistant 这个结果不对，漏了离职负责人。",
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": str(cwd),
+                    "prompt": "opaque user turn",
+                },
+                evozeus_home=fixture["product_home"],
+                attachment=fixture["attachment"],
+                runner=runner,
+            )
+            request = json.loads(captured["input"].decode())
+
+            self.assertEqual(payload, {"continue": True})
+            self.assertEqual(request["event_name"], "UserPromptSubmit")
+            self.assertEqual(request["schema_version"], fixture["attachment"]["api"])
+            self.assertEqual(request["targets"][0]["repo"], "MetaInFLow/project-management-repo")
+            self.assertIn("project-management-assistant", request["targets"][0]["aliases"])
+            self.assertEqual(captured["shell"], False)
+            self.assertEqual(captured["timeout"], 1.5)
+            self.assertEqual(
+                captured["env"],
+                {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"},
             )
 
-            self.assertIn(
-                "MetaInFLow/project-management-repo",
-                payload["hookSpecificOutput"]["additionalContext"],
-            )
-
-    def test_short_repo_slug_does_not_match_inside_another_word(self):
+    def test_component_resolution_requires_verified_manifest_and_root_containment(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
-            cwd = Path(tmp) / "consumer"
+            fixture = self.create_component_fixture(home)
+            state = json.loads(fixture["state_path"].read_text(encoding="utf-8"))
+
+            state["channels"]["uat"]["manifest"]["embedded"]["session_signal"][
+                "version"
+            ] = "v0.1.0"
+            state["channels"]["uat"]["manifest_digest"] = (
+                self.dispatcher_module._product_manifest_digest(
+                    state["channels"]["uat"]["manifest"]
+                )
+            )
+            fixture["state_path"].write_text(json.dumps(state), encoding="utf-8")
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+            state["channels"]["uat"]["manifest"]["embedded"]["session_signal"][
+                "version"
+            ] = "v0.1.1"
+            state["channels"]["uat"]["manifest_digest"] = "sha256:" + "0" * 64
+            fixture["state_path"].write_text(json.dumps(state), encoding="utf-8")
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+            state["channels"]["uat"]["manifest_digest"] = (
+                self.dispatcher_module._product_manifest_digest(
+                    state["channels"]["uat"]["manifest"]
+                )
+            )
+            state["channels"]["uat"]["install_root"] = str(Path(tmp) / "other-root")
+            (Path(tmp) / "other-root").mkdir()
+            fixture["state_path"].write_text(json.dumps(state), encoding="utf-8")
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+    def test_component_resolution_rejects_missing_or_damaged_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            fixture = self.create_component_fixture(home)
+            component_manifest_path = fixture["component_manifest_path"]
+            original_manifest = component_manifest_path.read_bytes()
+
+            component_manifest_path.write_bytes(original_manifest + b" ")
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+            component_manifest_path.write_bytes(original_manifest)
+            fixture["script"].unlink()
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+    def test_component_resolution_rejects_symlinked_entrypoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            fixture = self.create_component_fixture(home)
+            script = fixture["script"]
+            outside = Path(tmp) / "outside.py"
+            outside.write_bytes(script.read_bytes())
+            script.unlink()
+            script.symlink_to(outside)
+
+            self.assertIsNone(
+                self.dispatcher_module.resolve_session_signal_component(
+                    fixture["product_home"], attachment=fixture["attachment"]
+                )
+            )
+
+    def test_missing_timeout_error_and_invalid_output_are_silent_fail_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            cwd = Path(tmp) / "private-workspace"
             cwd.mkdir()
-            self.create_wrapped_target(home, "app")
 
-            payload = self.run_prompt_hook(
-                home,
-                cwd,
-                "What happened is wrong; this should be corrected.",
+            self.assertEqual(
+                self.dispatcher_module.evaluate_user_prompt_submit(
+                    home,
+                    {
+                        "hook_event_name": "UserPromptSubmit",
+                        "cwd": str(cwd),
+                        "prompt": "PRIVATE-MISSING-COMPONENT",
+                    },
+                ),
+                {"continue": True},
             )
+            fixture = self.create_component_fixture(home)
+            for prompt in ("timeout", "error", "invalid-json"):
+                with self.subTest(prompt=prompt):
+                    payload = self.run_prompt_hook(home, cwd, prompt, fixture)
+                    self.assertEqual(payload, {"continue": True})
+                    self.assertNotIn(
+                        str(cwd),
+                        json.dumps(payload, ensure_ascii=False),
+                    )
 
-            self.assertIn(
-                "无法确定目标 Skill",
-                payload["hookSpecificOutput"]["additionalContext"],
-            )
-
-    def test_prompt_watcher_fails_open_when_target_registry_is_invalid(self):
+    def test_oversized_inventory_degrades_to_unassigned_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             cwd = Path(tmp) / "workspace"
             cwd.mkdir()
-            invalid_pointer = home / ".evozeus" / ".projects" / "MetaInFLow" / "invalid"
-            invalid_pointer.mkdir(parents=True)
+            fixture = self.create_component_fixture(home)
+            oversized = [
+                {
+                    "repo": f"MetaInFLow/target-{index}",
+                    "canonical_path": Path(tmp) / f"target-{index}",
+                    "aliases": (f"target-{index}",),
+                }
+                for index in range(self.dispatcher_module.SESSION_SIGNAL_MAX_TARGETS + 1)
+            ]
 
-            payload = self.run_prompt_hook(
-                home,
-                cwd,
-                "这个结果不对，以后每次都应该先核对实时负责人状态。",
+            with patch.object(
+                self.dispatcher_module,
+                "discover_wrapped_targets",
+                return_value=(oversized, []),
+            ):
+                payload = self.run_prompt_hook(
+                    home,
+                    cwd,
+                    "candidate-unassigned",
+                    fixture,
+                )
+
+            self.assertIn(
+                "Model-only Lesson guidance",
+                payload["hookSpecificOutput"]["additionalContext"],
             )
-            context = payload["hookSpecificOutput"]["additionalContext"]
 
-            self.assertTrue(payload["continue"])
-            self.assertIn("无法确定目标 Skill", context)
-            self.assertNotIn(str(cwd), json.dumps(payload, ensure_ascii=False))
+    def test_oversized_prompt_does_not_launch_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            fixture = self.create_component_fixture(home)
+
+            def runner(*_args, **_kwargs):
+                self.fail("oversized prompt must stop before subprocess launch")
+
+            payload = self.dispatcher_module.evaluate_user_prompt_submit(
+                home,
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": str(Path(tmp) / "workspace"),
+                    "prompt": "x" * (
+                        self.dispatcher_module.SESSION_SIGNAL_MAX_PROMPT_CHARS + 1
+                    ),
+                },
+                evozeus_home=fixture["product_home"],
+                attachment=fixture["attachment"],
+                runner=runner,
+            )
+
+            self.assertEqual(payload, {"continue": True})
+
+    @unittest.skipUnless(
+        os.environ.get("EVOZEUS_TEST_SESSION_SIGNAL_ROOT"),
+        "requires an explicit Session Signal companion checkout",
+    )
+    def test_real_companion_hook_smoke_in_isolated_home(self):
+        source = Path(os.environ["EVOZEUS_TEST_SESSION_SIGNAL_ROOT"]).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            product_home = home / ".evozeus"
+            install_root = product_home / "releases" / "fixture"
+            core_root = install_root / "evozeus"
+            session_root = core_root / "packs" / "session-signal"
+            for relative in ("contracts", "scripts", "src"):
+                shutil.copytree(source / relative, session_root / relative)
+            product_manifest = {
+                "schema_version": "evozeus.product-channel.v2",
+                "product_version": "v0.5.0",
+                "channel": "uat",
+                "generated_at": "2026-07-31T00:00:00Z",
+                "components": {},
+                "embedded": {
+                    "session_signal": {
+                        "version": "v0.1.1",
+                        "path": "packs/session-signal",
+                        "required_paths": [
+                            "contracts/lesson-candidate-v1.json",
+                            "scripts/evaluate_lesson_candidate.py",
+                        ],
+                    }
+                },
+                "compatibility": {},
+            }
+            product_home.mkdir(parents=True, exist_ok=True)
+            (product_home / "active-channel.json").write_text(
+                json.dumps({"channel": "uat"}),
+                encoding="utf-8",
+            )
+            (product_home / "channel-state.json").write_text(
+                json.dumps(
+                    {
+                        "channels": {
+                            "uat": {
+                                "manifest": product_manifest,
+                                "manifest_digest": (
+                                    self.dispatcher_module._product_manifest_digest(
+                                        product_manifest
+                                    )
+                                ),
+                                "install_root": str(install_root),
+                                "component_roots": {"evozeus": str(core_root)},
+                                "embedded_roots": {
+                                    "session_signal": str(session_root)
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            target = self.create_wrapped_target(home, "real-companion-target")
+
+            def tree_snapshot() -> dict[str, str]:
+                return {
+                    path.relative_to(root).as_posix(): hashlib.sha256(
+                        path.read_bytes()
+                    ).hexdigest()
+                    for path in root.rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                }
+
+            def invoke(prompt: str) -> dict[str, object]:
+                result = subprocess.run(
+                    [sys.executable, str(self.dispatcher_template)],
+                    input=json.dumps(
+                        {
+                            "hook_event_name": "UserPromptSubmit",
+                            "cwd": str(target),
+                            "prompt": prompt,
+                        }
+                    ),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=target,
+                    env={
+                        **os.environ,
+                        "HOME": str(home),
+                        "EVOZEUS_HOME": str(product_home),
+                    },
+                    timeout=5,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            before = tree_snapshot()
+            correction = invoke("你漏检了回滚要求，是否可以补上？")
+            neutral = invoke("请总结今天的项目进展。")
+            ambiguous = invoke("这个结果是不是不对？")
+            after = tree_snapshot()
+
+            context = correction["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("EvoZeus · Lesson", context)
+            self.assertIn("MetaInFLow/real-companion-target", context)
+            self.assertNotIn("你漏检了回滚要求", json.dumps(correction, ensure_ascii=False))
+            self.assertNotIn(str(target), json.dumps(correction, ensure_ascii=False))
+            self.assertEqual(neutral, {"continue": True})
+            self.assertEqual(ambiguous, {"continue": True})
+            self.assertEqual(before, after)
 
     def test_prompt_watcher_fails_open_on_unexpected_runtime_exception(self):
         with patch.object(
             self.dispatcher_module,
-            "discover_wrapped_targets",
-            side_effect=OSError("private path must not leak"),
+            "resolve_session_signal_component",
+            side_effect=OSError("private path and component JSON must not leak"),
         ):
             payload = self.dispatcher_module.evaluate_user_prompt_submit(
                 Path("/private/home"),
                 {
                     "hook_event_name": "UserPromptSubmit",
                     "cwd": "/private/workspace",
-                    "prompt": "不对，这次漏检了负责人状态。",
+                    "prompt": "PRIVATE-PROMPT",
                 },
             )
 
         self.assertEqual(payload, {"continue": True})
-        self.assertNotIn("private", json.dumps(payload, ensure_ascii=False))
+        self.assertNotIn("private", json.dumps(payload, ensure_ascii=False).casefold())
 
 
 if __name__ == "__main__":

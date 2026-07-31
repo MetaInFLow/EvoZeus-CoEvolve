@@ -8,6 +8,7 @@ from pathlib import Path
 
 from evozeus_wrapper_lifecycle import (
     REQUIRED_WRAPPER_FILES,
+    TARGET_HARNESS_SKILL,
     apply_reinstall,
     detect_target_architecture,
     diagnose_environment,
@@ -18,6 +19,8 @@ from evozeus_wrapper_lifecycle import (
     plan_target_layout_migration,
     plan_feedback_audit,
     classify_pr_permission,
+    require_repo_admin,
+    resolve_harness_target,
     run_command,
     stage_label,
 )
@@ -41,6 +44,29 @@ def print_report(report: dict, as_json: bool, stage: str) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
+def repository_target(path: str) -> tuple[Path, dict] | tuple[None, dict]:
+    try:
+        boundary = resolve_harness_target(Path(path))
+    except ValueError as exc:
+        return None, {
+            "stage": "repository_boundary",
+            "status": "blocked",
+            "writes": False,
+            "errors": [str(exc)],
+        }
+    if not boundary["eligible"]:
+        return None, {
+            "stage": "repository_boundary",
+            "status": "blocked",
+            "writes": False,
+            "repository_boundary": boundary,
+            "errors": [
+                "nested Evolution Harness detected; move or migrate it to the independent Git repository root"
+            ],
+        }
+    return Path(boundary["repo_root"]), boundary
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run staged EvoZeus-CoEvolve lifecycle commands.")
     sub = parser.add_subparsers(dest="group", required=True)
@@ -59,7 +85,12 @@ def main() -> int:
     skill_diag.add_argument("--workspace-root", action="append", default=[], help="Additional local workspace root to inspect.")
     skill_diag.add_argument("--json", action="store_true", help="Emit machine-readable JSON only.")
     skill_transform = skill_sub.add_parser("transform", help="Plan or verify target Skill transform.")
-    skill_transform.add_argument("--mode", required=True, choices=["bootstrap", "adopt", "repair", "verify"])
+    skill_transform.add_argument(
+        "--mode",
+        required=True,
+        choices=["attach", "adopt", "bootstrap", "repair", "verify"],
+        help="attach is the preferred first Harness plan; adopt/bootstrap remain compatibility aliases.",
+    )
     skill_transform.add_argument("--target", required=True, help="Path to target Skill folder.")
     skill_transform.add_argument("--repo", help="GitHub repo in OWNER/REPO format.")
     skill_transform.add_argument("--visibility", choices=["public", "private"], help="Target repo visibility.")
@@ -131,7 +162,7 @@ def main() -> int:
     harness_sub = harness.add_subparsers(dest="command", required=True)
     upgrade_check = harness_sub.add_parser("upgrade-check", help="Check target wrapper harness version.")
     upgrade_check.add_argument("--target", required=True)
-    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.13.1.")
+    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.14.0.")
     upgrade_check.add_argument("--managed-dirty", action="store_true")
     upgrade_check.add_argument("--json", action="store_true")
     upgrade = harness_sub.add_parser("upgrade", help="Plan wrapper harness upgrade.")
@@ -158,9 +189,10 @@ def main() -> int:
         default=str(Path(__file__).resolve().parents[1]),
         help="Canonical EvoZeus-CoEvolve source path.",
     )
-    upgrade_all.add_argument("--dry-run", action="store_true")
-    upgrade_all.add_argument("--approve", action="store_true")
-    upgrade_all.add_argument(
+    upgrade_all_mode = upgrade_all.add_mutually_exclusive_group()
+    upgrade_all_mode.add_argument("--dry-run", action="store_true")
+    upgrade_all_mode.add_argument("--approve", action="store_true")
+    upgrade_all_mode.add_argument(
         "--publish",
         action="store_true",
         help="Require GitHub ADMIN permission and publish one isolated upgrade PR per eligible repo.",
@@ -172,16 +204,24 @@ def main() -> int:
         print_report(diagnose_environment(Path.home()), args.json, "environment")
         return 0
     if args.group == "skill" and args.command == "diagnose":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "target_skill")
+            return 1
         report = diagnose_skill(
-            target=Path(args.target),
+            target=target,
             repo=args.repo,
             skill_name=args.skill_name,
             workspace_roots=[Path(path) for path in args.workspace_root],
         )
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "target_skill")
         return 0
     if args.group == "skill" and args.command == "transform":
-        target = Path(args.target)
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "transform")
+            return 1
         if args.mode == "verify":
             preflight = Path(__file__).resolve().parent / "evozeus_wrapper_preflight.py"
             result = run_command([sys.executable, str(preflight), "structure", "--target", str(target)])
@@ -192,6 +232,7 @@ def main() -> int:
                             "stage": "target_skill_transform",
                             "mode": "verify",
                             "target": str(target),
+                            "repository_boundary": boundary,
                             "returncode": result["returncode"],
                             "stdout": result["stdout"],
                             "stderr": result["stderr"],
@@ -215,15 +256,15 @@ def main() -> int:
         surface_planned_files = []
         if instruction_surface:
             surface_planned_files = [
-                f"{instruction_surface} EvoZeus-CoEvolve status check section",
-                f"{instruction_surface} self-evolution section",
-                f"{instruction_surface} EvoZeus-CoEvolve section",
+                f"{instruction_surface} canonical Harness Skill activation block",
+                TARGET_HARNESS_SKILL,
             ]
-        planned_files = REQUIRED_WRAPPER_FILES + surface_planned_files
+        planned_files = list(dict.fromkeys(REQUIRED_WRAPPER_FILES + surface_planned_files))
         report = {
             "stage": "target_skill_transform",
             "mode": args.mode,
             "target": str(target),
+            "repository_boundary": boundary,
             "repo": args.repo,
             "visibility": args.visibility,
             "writes": False,
@@ -235,7 +276,7 @@ def main() -> int:
             "evolution_surface": architecture["evolution_surface"],
             "planned_files": planned_files,
             "version_rule": (
-                "bootstrap uses v0.1.0 as the first Skill release; adopt/repair must preserve the existing "
+                "the independent target repository must already exist; attach/adopt/repair preserve its "
                 "GitHub latest release or owner-confirmed CHANGELOG version"
             ),
         }
@@ -294,15 +335,20 @@ def main() -> int:
         print_report(report, args.json, "loop")
         return 0
     if args.group == "loop" and args.command == "audit":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
         try:
             report = plan_feedback_audit(
-                target=Path(args.target),
+                target=target,
                 user_input=args.user_input,
                 context=args.context,
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
         return 0
     if args.group == "loop" and args.command == "issue-to-pr":
@@ -318,46 +364,65 @@ def main() -> int:
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade-check":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
         report = plan_harness_upgrade(
-            target=Path(args.target),
+            target=target,
             latest_version=args.latest_version,
             managed_dirty=args.managed_dirty,
         )
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
         if args.dry_run:
             report = plan_harness_upgrade(
-                target=Path(args.target),
+                target=target,
                 latest_version=args.latest_version,
                 managed_dirty=args.managed_dirty,
             )
         else:
             try:
+                authority = require_repo_admin(target)
                 report = migrate_target_layout(
-                    target=Path(args.target),
+                    target=target,
                     latest_version=args.latest_version,
                 )
+                report["administrator_authority"] = authority
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "migrate-layout":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
         try:
             if args.dry_run:
                 report = plan_target_layout_migration(
-                    target=Path(args.target),
+                    target=target,
                     latest_version=args.latest_version,
                 )
             else:
+                authority = require_repo_admin(target)
                 report = migrate_target_layout(
-                    target=Path(args.target),
+                    target=target,
                     latest_version=args.latest_version,
                 )
+                report["administrator_authority"] = authority
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade-all":

@@ -57,6 +57,28 @@ TARGET_MIGRATIONS_README = f"{TARGET_EVOINFRA_DIR}/docs/migrations/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
+HARNESS_SKILL_VERSION = "v1.0.0"
+HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
+HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+HARNESS_SKILL_REQUIRED_TERMS = (
+    TARGET_WRAPPER_MANIFEST,
+    TARGET_NOTICE_POLICY,
+    "prompt_runtime_check",
+    "bootstrap_skill",
+    "integration.capabilities",
+    "SkillInvoke",
+    "runtime-only install",
+    "doctor --target .",
+    "identity --json",
+    "Feedback Issue",
+    "Issue-to-PR",
+    "Harness 维护",
+    "UAT",
+    "Release",
+    "rollback",
+    "普通 Skill 调用不授权",
+)
 
 REQUIRED_WRAPPER_FILES = [
     TARGET_CHANGELOG,
@@ -79,6 +101,7 @@ REQUIRED_WRAPPER_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_HARNESS_SKILL,
 ]
 
 WRAPPER_MANAGED_FILES = [
@@ -101,6 +124,7 @@ WRAPPER_MANAGED_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_HARNESS_SKILL,
 ]
 
 LEGACY_LAYOUT_FILE_MAP = (
@@ -124,8 +148,6 @@ LEGACY_LAYOUT_TREE_MAP = (
 WRAPPER_REPO = "MetaInFLow/EvoZeus-CoEvolve"
 INITIAL_SKILL_VERSION = "v0.1.0"
 VERSION_HEADER_RE = re.compile(r"^##\s+\[?(v\d+\.\d+\.\d+)\]?\b", re.MULTILINE)
-SKILL_STATUS_SECTION = "SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)"
-SKILL_WRAPPER_SECTION = "SKILL.md EvoZeus-CoEvolve section or migration note (append only)"
 STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
 LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
@@ -366,12 +388,12 @@ def diagnose_skill_version(
 
     if repo_exists is False:
         return {
-            "status": "new_repo_initial_release",
-            "current_tag": INITIAL_SKILL_VERSION,
+            "status": "repository_required",
+            "current_tag": None,
             "changelog_tag": changelog_tag,
             "latest_release_tag": None,
-            "rule": "new bootstrap repos use v0.1.0 as the first Skill release",
-            "requires_owner_choice": False,
+            "rule": "create and publish the independent repository before attaching a Harness",
+            "requires_owner_choice": True,
         }
 
     if repo_exists is None:
@@ -520,11 +542,112 @@ def target_canonical_path(target: Path, runner=run_command) -> str:
     return str(target.expanduser().resolve())
 
 
+def independent_repo_root(target: Path, runner=run_command) -> Path:
+    """Return the one repository root allowed to own an Evolution Harness."""
+    requested = target.expanduser().resolve()
+    if not requested.is_dir():
+        raise ValueError(f"target must be an existing directory: {requested}")
+    result = runner(["git", "-C", str(requested), "rev-parse", "--show-toplevel"])
+    if result["returncode"] != 0 or not result.get("stdout", "").strip():
+        raise ValueError(
+            "Evolution Harness requires an independent Git repository; "
+            f"no Git repository contains target: {requested}"
+        )
+    root = Path(result["stdout"].strip()).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"resolved Git repository root is unavailable: {root}")
+    return root
+
+
+def nested_harness_manifests(repo_root: Path) -> list[str]:
+    """List active Harness manifests below the repository root boundary."""
+    repo_root = repo_root.expanduser().resolve()
+    patterns = (
+        f"**/{TARGET_EVOINFRA_DIR}/wrapper.json",
+        f"**/{LEGACY_TARGET_EVOINFRA_DIR}/wrapper.json",
+        f"**/{OLDEST_TARGET_EVOINFRA_DIR}/wrapper.json",
+    )
+    allowed_root_manifests = {
+        repo_root / TARGET_WRAPPER_MANIFEST,
+        repo_root / LEGACY_TARGET_WRAPPER_MANIFEST,
+        repo_root / OLDEST_TARGET_WRAPPER_MANIFEST,
+    }
+    found: set[str] = set()
+    for pattern in patterns:
+        for path in repo_root.glob(pattern):
+            if path in allowed_root_manifests:
+                continue
+            if ".git" in path.parts:
+                continue
+            found.add(path.relative_to(repo_root).as_posix())
+    return sorted(found)
+
+
+def resolve_harness_target(target: Path, runner=run_command) -> dict[str, Any]:
+    """Normalize any path inside a repo to the repo-owned Harness boundary."""
+    requested = target.expanduser().resolve()
+    repo_root = independent_repo_root(requested, runner)
+    nested = nested_harness_manifests(repo_root)
+    return {
+        "requested_target": str(requested),
+        "repo_root": str(repo_root),
+        "requested_is_repo_root": requested == repo_root,
+        "nested_harness_manifests": nested,
+        "eligible": not nested,
+        "rule": "Only an independent Git repository root may own one Evolution Harness.",
+    }
+
+
 def git_origin_repo(path: Path, runner=run_command) -> str | None:
     remote_result = runner(["git", "-C", str(path), "remote", "get-url", "origin"])
     if remote_result["returncode"] != 0:
         return None
     return repo_from_remote(remote_result.get("stdout", ""))
+
+
+def require_repo_admin(
+    target: Path,
+    expected_repo: str | None = None,
+    runner=run_command,
+) -> dict[str, Any]:
+    """Require administrator authority before any Harness mutation or upload."""
+    repo_root = independent_repo_root(target, runner)
+    origin_repo = git_origin_repo(repo_root, runner)
+    if not origin_repo:
+        raise ValueError("Harness maintenance requires a GitHub origin on the target repository")
+    if expected_repo and origin_repo.lower() != expected_repo.lower():
+        raise ValueError(
+            "target GitHub origin does not match the requested repository: "
+            f"origin={origin_repo}; requested={expected_repo}"
+        )
+    result = runner(
+        [
+            "gh",
+            "repo",
+            "view",
+            origin_repo,
+            "--json",
+            "nameWithOwner,viewerPermission,url,visibility",
+        ]
+    )
+    if result["returncode"] != 0:
+        detail = (result.get("stderr") or result.get("stdout") or "GitHub access check failed").strip()
+        raise ValueError(f"cannot verify target repository administrator authority: {detail}")
+    data = parse_repo_view(result.get("stdout") or "")
+    permission = data.get("viewerPermission")
+    if permission != "ADMIN":
+        raise ValueError(
+            "Harness mutation and upload require ADMIN permission on the target repository; "
+            f"current permission={permission or 'unknown'}"
+        )
+    return {
+        "repo_root": str(repo_root),
+        "repository": data.get("nameWithOwner") or origin_repo,
+        "url": data.get("url"),
+        "visibility": data.get("visibility"),
+        "viewer_permission": permission,
+        "verified": True,
+    }
 
 
 def describe_install_path(path: Path, target: Path) -> dict[str, Any]:
@@ -771,6 +894,8 @@ def classify_integration_mode(
             "covers_skill_invocation": False,
             "persistence": "none_before_confirmation",
             "failure_mode": "fail_open",
+            "method_owner": "MetaInFLow/EvoZeus-session-signal-skill",
+            "component_api": "evozeus.session-signal.lesson-candidate.v1",
         },
         "skill_entry_preflight": {
             "installed": skill_entry_preflight_installed,
@@ -901,6 +1026,8 @@ def surface_has_status_check(path: Path) -> bool:
     if not path.exists() or not path.is_file():
         return False
     text = path.read_text(encoding="utf-8")
+    if _has_canonical_harness_entry(text):
+        return True
     if text.startswith("---\n"):
         end = text.find("\n---\n", 4)
         if end != -1:
@@ -919,9 +1046,12 @@ def surface_has_status_check(path: Path) -> bool:
 def safe_target_relative_file(target: Path, raw: object) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
+    if re.match(r"^[A-Za-z]:[\\/]", raw) or "\\" in raw:
+        return None
     relative = Path(raw)
     if relative.is_absolute() or ".." in relative.parts:
         return None
+    target = target.expanduser().resolve()
     candidate = target / relative
     cursor = candidate
     while cursor != target:
@@ -999,7 +1129,7 @@ def assess_component_gaps(target: Path, evolution_surface: dict[str, Any]) -> di
     if not selected:
         missing_concepts.append("evolution surface diagnosis result")
     elif not selected.get("has_wrapper_status_check"):
-        missing_concepts.append(f"{selected['path']} EvoZeus-CoEvolve status check")
+        missing_concepts.append(f"{selected['path']} canonical Harness Skill activation block")
     if not (target / TARGET_CHANGELOG).exists():
         missing_concepts.append("Skill or kit release changelog")
     if not wrapper_manifest_path(target).exists():
@@ -1438,8 +1568,8 @@ def build_onboarding_contract(
     quoted_skill_name = shlex.quote(skill_name)
 
     child_verification = (
-        "Run the child structure preflight, review and trust its hook with /hooks, then pass a "
-        "consumer-project smoke test."
+        "Run the parent repository structure preflight and pass a child consumer-project smoke test. "
+        "Create a separate Harness only after the child becomes an independent Git repository."
         if generates_child_skills
         else "not_applicable"
     )
@@ -1476,8 +1606,10 @@ def build_onboarding_contract(
         "generated_child_skills": {
             "supported": generates_child_skills,
             "hooks_inherited": False,
-            "attachment": "separate_wrapper_lifecycle" if generates_child_skills else "not_applicable",
-            "trust_review": "/hooks" if generates_child_skills else "not_applicable",
+            "repo_harness_inherited": generates_child_skills,
+            "attachment": "inherited_repo_harness" if generates_child_skills else "not_applicable",
+            "separate_harness_boundary": "independent_git_repository",
+            "trust_review": "parent_repo_host_adapter" if generates_child_skills else "not_applicable",
             "verification": child_verification,
         },
     }
@@ -1499,7 +1631,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 
 本段是 Skill 入口 preflight。Agent 选中本 Skill 后、进入业务主链路前执行；它基本绑定当前 Skill，但依赖 instruction compliance，不是 native Skill invocation hook。
 
-`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；`global_prompt_lesson_watcher` 在普通 Chat 每轮识别高置信 Lesson 候选；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把这些能力描述成 per-Skill native invocation hook。
+`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；`global_prompt_lesson_watcher` 把普通 Chat 用户轮次转发给活动产品渠道内已验证的 Session Signal 组件；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把这些能力描述成 per-Skill native invocation hook。
 
 若当前只是 runtime-only install，缺少维护资产时不要把安装副本当作事实源，回 canonical repo 处理 wrapper harness 或 Skill release。
 
@@ -1525,7 +1657,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 5. EvoZeus Notice
    - 渲染入口：`python3 {TARGET_NOTICE_SCRIPT} render --kind <kind> --state <state> --message <message> [--action <action>] [--json]`。
    - 配置事实源：`{TARGET_NOTICE_POLICY}`。普通业务进度不展示 EvoZeus Tag。
-   - 受信任的 global prompt watcher 可以在普通 Chat 自动发现高置信候选，无需先 `@Skill`。先完成当前业务纠正；Lesson 成立时在同一响应末尾只显示自然语言 Notice。
+   - 受信任的 global prompt watcher 可以把普通 Chat 用户轮次与注册目标 inventory 交给活动产品渠道内已验证的 Session Signal companion，无需先 `@Skill`。先完成当前业务纠正；companion 返回 Lesson guidance 时，在同一响应末尾只显示自然语言 Notice。
    - 需要确定路由或准备 Issue 时再运行 feedback audit，并通过 `--context` 传入一句脱敏、可复用、可行动的 Lesson 摘要。Audit JSON、signal id、capture state、route 和 Issue draft 仅供内部诊断，不得展示给用户。
    - Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。
    - Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。
@@ -1544,8 +1676,9 @@ def build_wrapper_manifest(
     onboarding: dict[str, Any] | None = None,
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    effective_managed_files = list(dict.fromkeys([*managed_files, TARGET_HARNESS_SKILL]))
     default_hook_files = []
-    if CODEX_HOOKS_CONFIG in managed_files and CODEX_START_HOOK_SCRIPT in managed_files:
+    if CODEX_HOOKS_CONFIG in effective_managed_files and CODEX_START_HOOK_SCRIPT in effective_managed_files:
         default_hook_files = [CODEX_HOOKS_CONFIG, CODEX_START_HOOK_SCRIPT]
     effective_integration = integration or classify_integration_mode(
         target_kind="single_skill",
@@ -1569,7 +1702,11 @@ def build_wrapper_manifest(
         "target_infra_dir": TARGET_EVOINFRA_DIR,
         "legacy_layout_dirs": [LEGACY_TARGET_EVOINFRA_DIR, OLDEST_TARGET_EVOINFRA_DIR],
         "canonical_repo": repo,
-        "managed_files": managed_files,
+        "instruction_surface": instruction_surface or "SKILL.md",
+        "harness_skill_path": TARGET_HARNESS_SKILL,
+        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_managed": True,
+        "managed_files": effective_managed_files,
         "install_links": install_links,
         "dashboard": dashboard if dashboard is not None else build_dashboard_contract(),
         "onboarding": (
@@ -1595,8 +1732,6 @@ def build_wrapper_manifest(
         },
         "integration": effective_integration,
     }
-    if instruction_surface:
-        manifest["instruction_surface"] = instruction_surface
     return manifest
 
 
@@ -2045,6 +2180,180 @@ def _write_text_preserving_newlines(path: Path, text: str) -> None:
         stream.write(text)
 
 
+def build_harness_activation_block(newline: str = "\n") -> str:
+    """Return the entire wrapper-owned target entry contract."""
+    return newline.join(
+        [
+            HARNESS_ENTRY_BEGIN,
+            "**CRITICAL — 进入业务主链路前 MUST 使用 Read 工具读取并执行",
+            f"[{TARGET_HARNESS_SKILL}]({TARGET_HARNESS_SKILL})。**",
+            HARNESS_ENTRY_END,
+        ]
+    )
+
+
+def _harness_entry_pattern() -> re.Pattern[str]:
+    return re.compile(
+        rf"{re.escape(HARNESS_ENTRY_BEGIN)}.*?{re.escape(HARNESS_ENTRY_END)}(?:\r?\n)*",
+        re.DOTALL,
+    )
+
+
+def _consume_following_newlines(text: str, offset: int) -> int:
+    """Include wrapper-owned blank-line separators after a proven terminal."""
+    while offset < len(text) and text[offset] in "\r\n":
+        offset += 1
+    return offset
+
+
+def _wrapper_owned_section_analysis(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[str]]:
+    """Find proven wrapper spans and report owned sections with unproven endings."""
+    spans: list[tuple[int, int]] = []
+    conflicts: list[str] = []
+    signatures = {
+        STATUS_SECTION_HEADING: (("Skill 入口 preflight", TARGET_WRAPPER_MANIFEST),),
+        LEGACY_STATUS_SECTION_HEADING: (("Skill 入口 preflight", "wrapper"),),
+        EVOLUTION_SECTION_HEADING: (
+            ("本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环",),
+            ("本 Skill 已由 EvoZeus-wrapper 接入自进化闭环",),
+        ),
+        WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-CoEvolve 追加",),),
+        LEGACY_WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-wrapper 追加",),),
+    }
+    terminal_patterns = {
+        STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        LEGACY_STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        EVOLUTION_SECTION_HEADING: r"(?m)^Wrapper harness version:[^\r\n]*(?:\r?\n|$)",
+        WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
+        LEGACY_WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
+    }
+    headings = _markdown_headings(text)
+    for index, (start, level, heading) in enumerate(headings):
+        end = next(
+            (
+                next_start
+                for next_start, next_level, _ in headings[index + 1 :]
+                if next_level <= level
+            ),
+            len(text),
+        )
+        span = (start, end)
+        accepted_signatures = signatures.get(heading)
+        if accepted_signatures:
+            section = text[start:end]
+            if any(
+                all(term in section for term in required_terms)
+                for required_terms in accepted_signatures
+            ):
+                terminator = re.search(terminal_patterns[heading], section)
+                if not terminator:
+                    conflicts.append(
+                        f"{heading} has a wrapper ownership signature but no terminal signature; "
+                        "restore the managed section or use an approved manual repair"
+                    )
+                    continue
+                span_end = _consume_following_newlines(
+                    text,
+                    start + terminator.end(),
+                )
+                span = (start, span_end)
+                spans.append(span)
+            continue
+        if not (
+            heading.startswith("## EvoZeus-CoEvolve Migration Note:")
+            or heading.startswith("## EvoZeus-CoEvolve Version Refresh Note:")
+            or heading.startswith("## EvoZeus-wrapper Migration Note:")
+            or heading.startswith("## EvoZeus-wrapper Version Refresh Note:")
+        ):
+            continue
+        section = text[start:end]
+        if "Wrapper harness:" not in section or "- Layout:" not in section:
+            continue
+        terminator = re.search(
+            r"(?m)^- Target business rules were preserved\.[ \t]*(?:\r?\n|$)",
+            section,
+        )
+        if not terminator:
+            conflicts.append(
+                f"{heading} has a wrapper ownership signature but no terminal signature; "
+                "restore the managed note or use an approved manual repair"
+            )
+            continue
+        span_end = _consume_following_newlines(
+            text,
+            start + terminator.end(),
+        )
+        spans.append((start, span_end))
+    return sorted(set(spans)), list(dict.fromkeys(conflicts))
+
+
+def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
+    return _wrapper_owned_section_analysis(text)[0]
+
+
+def _has_canonical_harness_entry(text: str) -> bool:
+    normalized = text.replace("\r\n", "\n")
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
+    content = normalized[_frontmatter_end(normalized) :].lstrip()
+    lines = content.splitlines()
+    precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
+        lines
+        and lines[0].startswith("# ")
+        and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
+    )
+    return (
+        normalized.count(HARNESS_ENTRY_BEGIN) == 1
+        and normalized.count(HARNESS_ENTRY_END) == 1
+        and build_harness_activation_block() in normalized
+        and precedes_business
+        and not owned_spans
+        and not owned_conflicts
+    )
+
+
+def _instruction_insert_index(text: str) -> int:
+    frontmatter_end = _frontmatter_end(text)
+    if frontmatter_end:
+        return frontmatter_end
+    first_line_end = text.find("\n")
+    first_line = text if first_line_end == -1 else text[:first_line_end].rstrip("\r")
+    if first_line.startswith("# "):
+        return len(text) if first_line_end == -1 else first_line_end + 1
+    return 0
+
+
+def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str) -> bool:
+    """Replace proven wrapper-owned legacy blocks with the compact canonical Read block."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    original = _read_text_preserving_newlines(surface)
+    if _has_canonical_harness_entry(original):
+        return False
+
+    updated = _harness_entry_pattern().sub("", original)
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(updated)
+    if owned_conflicts:
+        raise ValueError("cannot safely migrate instruction surface:\n- " + "\n- ".join(owned_conflicts))
+    for start, end in sorted(owned_spans, reverse=True):
+        updated = updated[:start] + updated[end:]
+
+    newline = "\r\n" if "\r\n" in original else "\n"
+    insert_at = _instruction_insert_index(updated)
+    prefix = updated[:insert_at]
+    suffix = updated[insert_at:]
+    before = "" if not prefix or prefix.endswith(newline * 2) else newline if prefix.endswith(newline) else newline * 2
+    after = "" if suffix.startswith(newline * 2) else newline if suffix.startswith(newline) else newline * 2
+    updated = prefix + before + build_harness_activation_block(newline) + after + suffix
+
+    if updated == original:
+        return False
+    _write_text_preserving_newlines(surface, updated)
+    return True
+
+
 def _replace_markdown_section(text: str, heading: str, replacement: str) -> str:
     span = _markdown_section_span(text, heading)
     if span:
@@ -2091,71 +2400,20 @@ def _refresh_migration_instruction_surface(
 ) -> tuple[str, bool]:
     architecture = detect_target_architecture(target)
     surface_rel = manifest.get("instruction_surface") or architecture.get("root_entry") or "SKILL.md"
-    surface = target / surface_rel
-    if not surface.is_file():
-        raise ValueError(f"migration instruction surface is missing: {surface_rel}")
-    original = _read_text_preserving_newlines(surface)
-    canonical_repo = manifest.get("canonical_repo") or "OWNER/REPO"
-    status = build_status_section(
-        {
-            "CURRENT_VERSION": latest_changelog_tag(target) or "unknown",
-            "REPO_NAME": canonical_repo,
-            "WRAPPER_VERSION": latest_wrapper_version,
-        }
-    )
-    status_heading = (
-        STATUS_SECTION_HEADING
-        if _markdown_section_span(original, STATUS_SECTION_HEADING)
-        else LEGACY_STATUS_SECTION_HEADING
-        if _markdown_section_span(original, LEGACY_STATUS_SECTION_HEADING)
-        else STATUS_SECTION_HEADING
-    )
-    updated = _replace_markdown_section(original, status_heading, status)
-    for owned_heading in (
-        EVOLUTION_SECTION_HEADING,
-        WRAPPER_SECTION_HEADING,
-        LEGACY_WRAPPER_SECTION_HEADING,
-    ):
-        updated = _refresh_owned_markdown_section(
-            updated,
-            owned_heading,
-            latest_wrapper_version,
-        )
-    note_kind = "Migration" if layout_migration_required else "Version Refresh"
-    migration_heading = (
-        f"## EvoZeus-CoEvolve {note_kind} Note: "
-        f"{current_wrapper_version or 'unknown'} -> {latest_wrapper_version}"
-    )
-    if not _markdown_section_span(updated, migration_heading):
-        if not updated or updated.endswith("\n\n"):
-            separator = ""
-        elif updated.endswith("\n"):
-            separator = "\n"
-        else:
-            separator = "\n\n"
-        updated = (
-            updated
-            + separator
-            + migration_heading
-            + "\n\n"
-            + f"- Wrapper harness: `{current_wrapper_version or 'unknown'} -> {latest_wrapper_version}`\n"
-            + f"- Layout: `{from_layout} -> {to_layout}`\n"
-            + "- Host hook registration, status prelude, manifest integration, and managed links were refreshed.\n"
-            + "- Target business rules were preserved.\n"
-        )
-    if updated != original:
-        _write_text_preserving_newlines(surface, updated)
-        return surface_rel, True
-    return surface_rel, False
+    if not isinstance(surface_rel, str):
+        raise ValueError("migration instruction_surface must be a relative string")
+    return surface_rel, migrate_instruction_surface_to_harness_entry(target, surface_rel)
 
 
 def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     manifest_status = wrapper_manifest_status(target)
-    if manifest_status["current_manifest_detected"] and not manifest_status["legacy_manifest_detected"]:
-        current_manifest = _read_manifest_json(wrapper_manifest_path(target))
-        if current_manifest.get("layout_version") == 2:
-            return grouped
+    if (
+        manifest_status["current_manifest_detected"]
+        and not manifest_status["legacy_manifest_detected"]
+        and _read_manifest_json(wrapper_manifest_path(target)).get("layout_version") == 2
+    ):
+        return grouped
 
     def add(source: Path, destination: str) -> None:
         if source.is_file():
@@ -2176,6 +2434,49 @@ def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
                 rel = source.relative_to(source_dir)
                 add(source, str(Path(destination_dir) / rel))
     return grouped
+
+
+def _harness_contract_needs_migration(
+    target: Path,
+    manifest: dict[str, Any] | None,
+    instruction_surface: object,
+) -> bool:
+    manifest = manifest or {}
+    managed_files = manifest.get("managed_files")
+    if (
+        manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL
+        or manifest.get("harness_skill_version") != HARNESS_SKILL_VERSION
+        or manifest.get("harness_skill_managed") is not True
+        or not isinstance(managed_files, list)
+        or TARGET_HARNESS_SKILL not in managed_files
+    ):
+        return True
+    harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
+    if harness is None:
+        return True
+    harness_text = _read_text_preserving_newlines(harness)
+    metadata = re.search(
+        r"(?m)^metadata:[ \t]*\r?\n(?P<values>(?:^[ \t]+[^\r\n]*(?:\r?\n|$))*)",
+        harness_text,
+    )
+    if not re.search(
+        r"(?m)^name:[ \t]*[\"']?using-evozeus-harness[\"']?[ \t]*\r?$",
+        harness_text,
+    ):
+        return True
+    if not metadata or not re.search(
+        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
+        metadata.group("values"),
+    ):
+        return True
+    if any(term not in harness_text for term in HARNESS_SKILL_REQUIRED_TERMS):
+        return True
+    if not isinstance(instruction_surface, str):
+        return True
+    surface = safe_target_relative_file(target, instruction_surface)
+    if surface is None:
+        return True
+    return not _has_canonical_harness_entry(_read_text_preserving_newlines(surface))
 
 
 def plan_target_layout_migration(
@@ -2257,20 +2558,75 @@ def plan_target_layout_migration(
             version_refresh_required = version_key(latest_version) > version_key(current_version)
         except ValueError as exc:
             conflicts.append(str(exc))
-    requires_migration = layout_migration_required or version_refresh_required
     codex_hooks_update = None
     instruction_surface = (
         (current_manifest or {}).get("instruction_surface")
         or detect_target_architecture(target).get("root_entry")
         or "SKILL.md"
     )
+    instruction_surface_migration_required = _harness_contract_needs_migration(
+        target,
+        current_manifest,
+        instruction_surface,
+    )
+    requires_migration = (
+        layout_migration_required
+        or version_refresh_required
+        or instruction_surface_migration_required
+    )
     if requires_migration:
         try:
             _, codex_hooks_update = _merge_codex_hooks_config(target)
         except ValueError as exc:
             conflicts.append(str(exc))
-        if not (target / instruction_surface).is_file():
-            conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
+        if not isinstance(instruction_surface, str):
+            conflicts.append("migration instruction_surface must be a relative string")
+        else:
+            surface_file = safe_target_relative_file(target, instruction_surface)
+            if surface_file is None:
+                conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
+            else:
+                surface_text = _read_text_preserving_newlines(surface_file)
+                begin_count = surface_text.count(HARNESS_ENTRY_BEGIN)
+                end_count = surface_text.count(HARNESS_ENTRY_END)
+                markers_out_of_order = bool(
+                    begin_count
+                    and end_count
+                    and surface_text.index(HARNESS_ENTRY_BEGIN)
+                    > surface_text.index(HARNESS_ENTRY_END)
+                )
+                if begin_count != end_count or markers_out_of_order:
+                    conflicts.append(
+                        f"instruction surface has an unbalanced canonical Harness entry: {instruction_surface}"
+                    )
+                _, section_conflicts = _wrapper_owned_section_analysis(surface_text)
+                conflicts.extend(
+                    f"instruction surface {instruction_surface}: {conflict}"
+                    for conflict in section_conflicts
+                )
+        harness_identity_fields = {
+            "harness_skill_path",
+            "harness_skill_version",
+            "harness_skill_managed",
+        }
+        present_identity_fields = harness_identity_fields.intersection(current_manifest or {})
+        if present_identity_fields and present_identity_fields != harness_identity_fields:
+            conflicts.append("manifest canonical Harness Skill identity is incomplete")
+        elif present_identity_fields:
+            harness_path = (current_manifest or {}).get("harness_skill_path")
+            harness_version = (current_manifest or {}).get("harness_skill_version")
+            harness_managed = (current_manifest or {}).get("harness_skill_managed")
+            if harness_path != TARGET_HARNESS_SKILL:
+                conflicts.append(
+                    f"manifest harness_skill_path must use canonical path: {TARGET_HARNESS_SKILL}"
+                )
+            if harness_version != HARNESS_SKILL_VERSION:
+                conflicts.append(
+                    "manifest canonical Harness Skill version is incompatible: "
+                    f"{harness_version}; expected {HARNESS_SKILL_VERSION}"
+                )
+            if harness_managed is not True:
+                conflicts.append("manifest canonical Harness Skill must remain wrapper managed")
     migration_record = (
         f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
         f"{(today or date.today()).isoformat()}-layout-v1-to-v2.md"
@@ -2307,6 +2663,7 @@ def plan_target_layout_migration(
         TARGET_FEEDBACK_POLICY,
         TARGET_AUDIT_RULE,
         TARGET_NOTICE_POLICY,
+        TARGET_HARNESS_SKILL,
         ".github/ISSUE_TEMPLATE/config.yml",
         ".github/workflows/evozeus-wrapper-preflight.yml",
     ]
@@ -2354,6 +2711,7 @@ def plan_target_layout_migration(
         "migration_required": requires_migration,
         "layout_migration_required": layout_migration_required,
         "version_refresh_required": version_refresh_required,
+        "instruction_surface_migration_required": instruction_surface_migration_required,
         "migration_record": migration_record if requires_migration else None,
         "moves": moves,
         "managed_file_refreshes": managed_file_refreshes,
@@ -2463,6 +2821,16 @@ def _refresh_migrated_managed_files(
             wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "notice-policy.json",
             target / TARGET_NOTICE_POLICY,
         ),
+        (
+            wrapper_root
+            / "templates"
+            / "target"
+            / ".evozeus_evoinfra"
+            / "skills"
+            / "using-evozeus-harness"
+            / "SKILL.md",
+            target / TARGET_HARNESS_SKILL,
+        ),
     ]
     refreshed: list[str] = []
     for source, destination in refresh_map:
@@ -2508,10 +2876,11 @@ def migrate_target_layout(
             destination.parent.mkdir(parents=True, exist_ok=True)
             source.replace(destination)
             actions.append(f"move {move['source']} -> {move['destination']}")
-            changed_files.append(move["destination"])
+            changed_files.extend([move["source"], move["destination"]])
         else:
             source.unlink()
             actions.append(f"remove duplicate {move['source']}")
+            changed_files.append(move["source"])
 
     for path in target_infra_text_files(target):
         if rewrite_target_infra_text_file(path):
@@ -2554,7 +2923,7 @@ def migrate_target_layout(
     )
     if surface_changed:
         changed_files.append(instruction_surface)
-        actions.append(f"refresh wrapper status and append refresh note in {instruction_surface}")
+        actions.append(f"write canonical Harness Skill activation block in {instruction_surface}")
     refreshed_contract = build_wrapper_manifest(
         repo=manifest.get("canonical_repo") or "OWNER/REPO",
         wrapper_version=installed_version,
@@ -2580,6 +2949,9 @@ def migrate_target_layout(
     manifest["onboarding"] = refreshed_contract["onboarding"]
     manifest["dashboard"] = refreshed_contract["dashboard"]
     manifest["instruction_surface"] = instruction_surface
+    manifest["harness_skill_path"] = refreshed_contract["harness_skill_path"]
+    manifest["harness_skill_version"] = refreshed_contract["harness_skill_version"]
+    manifest["harness_skill_managed"] = refreshed_contract["harness_skill_managed"]
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     changed_files.append(TARGET_WRAPPER_MANIFEST)
 
@@ -2680,7 +3052,7 @@ def plan_transform_action(harness_state: str, repo_exists: bool | None) -> str:
         raise ValueError(f"unknown harness state: {harness_state}")
     if repo_exists is None:
         return "needs_repo_check"
-    return "adopt" if repo_exists else "bootstrap"
+    return "attach" if repo_exists else "create_repo_first"
 
 
 def classify_install_action(install_path: Path, canonical_path: Path) -> dict[str, Any]:
@@ -2942,12 +3314,7 @@ def plan_harness_upgrade(
     architecture = detect_target_architecture(target)
     manifest_surface = manifest.get("instruction_surface") if manifest else None
     instruction_surface = instruction_surface or manifest_surface or architecture["root_entry"] or "SKILL.md"
-    if instruction_surface == "SKILL.md":
-        root_status_section = SKILL_STATUS_SECTION
-        root_wrapper_section = SKILL_WRAPPER_SECTION
-    else:
-        root_status_section = f"{instruction_surface} EvoZeus-CoEvolve status check section (instruction surface prelude)"
-        root_wrapper_section = f"{instruction_surface} EvoZeus-CoEvolve section or migration note (append only)"
+    root_harness_entry = f"{instruction_surface} canonical Harness Skill activation block"
     current = manifest.get("wrapper_version") if manifest else None
     latest_resolution = resolve_latest_wrapper_release(latest_version)
     latest = latest_resolution["version"]
@@ -2962,13 +3329,14 @@ def plan_harness_upgrade(
     migration_doc = wrapper_migration_doc_path(current, latest, today)
     needs_upgrade = status in {"auto_pr", "needs_merge_review", "requires_confirmation"}
     needs_repair = status in {"missing_manifest", "latest_unknown"}
+    layout_migration = plan_target_layout_migration(target, latest, today)
 
     planned_files: list[str] = []
-    if needs_upgrade or needs_repair:
+    if needs_upgrade or needs_repair or layout_migration["migration_required"]:
         planned_files.extend(
             [
-                root_status_section,
-                root_wrapper_section,
+                root_harness_entry,
+                TARGET_HARNESS_SKILL,
                 TARGET_WRAPPER_MANIFEST,
                 WRAPPER_MIGRATION_README,
             ]
@@ -2982,18 +3350,16 @@ def plan_harness_upgrade(
         if path not in deduped_planned_files:
             deduped_planned_files.append(path)
 
-    layout_migration = plan_target_layout_migration(target, latest, today)
-
-    if layout_migration["migration_required"]:
+    if status == "missing_manifest":
+        recommended_action = "repair_or_adopt_before_upgrade"
+    elif status == "latest_unknown":
+        recommended_action = "provide_latest_wrapper_version"
+    elif layout_migration["migration_required"]:
         recommended_action = "migrate_layout"
     elif status == "up_to_date":
         recommended_action = "none"
     elif status == "local_ahead":
         recommended_action = "do_not_downgrade"
-    elif status == "missing_manifest":
-        recommended_action = "repair_or_adopt_before_upgrade"
-    elif status == "latest_unknown":
-        recommended_action = "provide_latest_wrapper_version"
     elif status == "needs_merge_review":
         recommended_action = "review_managed_file_diffs_before_upgrade"
     elif status == "requires_confirmation":
@@ -3023,7 +3389,9 @@ def plan_harness_upgrade(
         "oldest_infra_dir": OLDEST_TARGET_EVOINFRA_DIR,
         "manifest_path": TARGET_WRAPPER_MANIFEST,
         "legacy_manifest_detected": manifest_status["legacy_manifest_detected"],
-        "migration_required": manifest_status["migration_required"],
+        "migration_required": (
+            manifest_status["migration_required"] or layout_migration["migration_required"]
+        ),
         "manifest_source": manifest_status["manifest_source"],
         "current_version": current,
         "latest_version": latest,
@@ -3036,17 +3404,19 @@ def plan_harness_upgrade(
         "recommended_action": recommended_action,
         "requires_confirmation": status in {"missing_manifest", "latest_unknown", "needs_merge_review", "requires_confirmation"},
         "status_check_first": True,
-        "append_only": True,
+        "append_only": False,
         "evolution_surface_policy": (
-            f"add or refresh the wrapper-owned status prelude in {instruction_surface} before the main chain, then append "
-            "the EvoZeus-CoEvolve section or a migration note; never rewrite target business rules"
+            f"keep one compact canonical Harness Skill activation block in {instruction_surface}; "
+            f"store the full wrapper contract in {TARGET_HARNESS_SKILL}; preserve target business bytes"
         ),
         "integration": integration,
         "integration_policy": (
             "repo_maintenance_hook covers only the canonical repository; global_session_dispatcher checks all "
-            "registered wrapped Skills at SessionStart; global_prompt_lesson_watcher observes high-confidence "
-            "UserPromptSubmit candidates without persisting them; skill_entry_preflight is prompt-compliance fallback; "
-            "none is a native per-Skill invocation hook without a SkillInvoke event"
+            "registered wrapped Skills at SessionStart; global_prompt_lesson_watcher delegates high-confidence "
+            "UserPromptSubmit candidates to the fixed Session Signal component without persisting them; "
+            "skill_entry_preflight is prompt-compliance fallback; "
+            "none is a native per-Skill invocation hook without a SkillInvoke event; the contributor branch "
+            "contract remains tracked by #36 and is consumed after that contract lands"
         ),
         "skill_md_policy": (
             "single Skill targets use SKILL.md; AGENTS.md-root targets use AGENTS.md; hook-controlled bundles use the hook-loaded control Skill"
@@ -3065,8 +3435,8 @@ def plan_harness_upgrade(
             f"If {LEGACY_TARGET_WRAPPER_MANIFEST} or {OLDEST_TARGET_WRAPPER_MANIFEST} exists, run the one-time layout migration.",
             "Diff wrapper-managed files; if they contain local edits, stop for merge review.",
             "Copy or merge wrapper-managed files only.",
-            f"Add the EvoZeus-CoEvolve status check in {instruction_surface} before the target main chain if missing.",
-            f"Append the EvoZeus-CoEvolve section in {instruction_surface} if missing; otherwise append a migration note instead of editing old text.",
+            f"Write {TARGET_HARNESS_SKILL} from the wrapper-managed canonical template.",
+            f"Replace proven wrapper-owned legacy sections in {instruction_surface} with one compact activation block.",
             f"Write a migration record under {TARGET_EVOINFRA_DIR}/docs/migrations/ with from/to wrapper versions, validation, and rollback.",
             f"Update {TARGET_WRAPPER_MANIFEST} wrapper_version after validation passes.",
         ],

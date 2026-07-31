@@ -8,28 +8,52 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - Added an admin-gated Harness `upgrade-all --publish` flow that validates live GitHub `ADMIN` permission per registered repo, migrates eligible targets in isolated worktrees, pushes one upgrade branch per repo, and creates or reuses Pull Requests.
 - Added local batch run and append-only event ledgers under `~/.evozeus/skills/` without storing raw sessions or target business content.
+- Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
+- Added user-level `UserPromptSubmit` registration that delegates normal Chat Lesson candidate evaluation to a fixed Session Signal component; detection remains read-only and fail-open.
+
+### Changed
+
+- Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
+- Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
+- Changed legacy instruction migration to remove only wrapper-owned sections with positive ownership signatures while preserving target business bytes and LF/CRLF newlines.
+
+### Security
+
+- Added strict manifest, canonical-path, frontmatter/version, managed-identity, symlink, path-traversal, and instruction-entry agreement validation.
+- Kept raw prompts, local component paths, subprocess diagnostics, signal identifiers and routing internals out of UserPromptSubmit Hook responses.
+- Redacted credential-bearing canonical origin URLs before publication errors can enter local run ledgers.
 
 ### Safety
 
 - Kept plan mode read-only and required explicit `--publish` before any repo or GitHub write.
 - Rejected canonical checkouts whose `origin` does not match the manifest repo, serialized concurrent batches, preserved canonical checkouts, and prohibited direct default-branch writes.
-
-## [v0.13.1] - 2026-07-28
-
-### Added
-
-- Added a user-level `UserPromptSubmit` Lesson watcher so normal Chat corrections can surface a record-only Lesson candidate without explicitly invoking a target Skill.
-
-### Fixed
-
-- Kept feedback-audit JSON, signal ids, capture states, routing fields, and Hook diagnostics out of the user-facing Lesson contract.
-- Reported legacy SessionStart-only global installations as `upgrade_required` and refreshed them without replacing unrelated hooks.
+- Made dry-run, local approval, and administrator publication mutually exclusive; deterministic upgrade branches now reset locally and update remotely under an exact lease.
 
 ### Verification
 
-- `python3 -m pytest -q` (`177 passed`, `25 subtests passed`).
-- Python compile gate passed for the CLI, bootstrap, global hook lifecycle, target lifecycle, preflight, global dispatcher, target hook, and Lesson watcher tests.
-- Fresh isolated HOME smoke installed both Hook events, injected a record-only Lesson instruction for a correction, and returned zero Lesson context for a neutral prompt.
+- Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
+- Full regression suite passes with `232 passed` and `11 subtests passed`, including the explicit Session Signal companion smoke.
+- A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
+- Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
+- Legacy status, self-evolution, wrapper, and migration-note removal now stops at a type-specific terminal signature. Missing terminals block before writes; following business prose and H3-only sections remain byte-preserved even without an H1/H2 Markdown boundary.
+- UserPromptSubmit integration tests cover verified active-channel discovery, `v0.1.0`, missing/damaged/symlinked components, subprocess timeout, oversized target inventory, neutral/ambiguous turns and zero-persistence execution against the real companion contract.
+- Administrator publication tests cover declared legacy source deletion, credential redaction, and repeated deterministic branch reuse after an earlier PR is no longer open.
+
+## [v0.14.0] - 2026-07-30
+
+### Changed
+
+- Repositioned CoEvolve as EvoZeus's optional evolution extension and Harness SDK for independent Skillware repositories.
+- Enforced one Evolution Harness per independent Git repository root; nested Skills and packages inherit the root Harness.
+- Changed generated child Skill onboarding to inherit the parent Repo Harness unless the child becomes an independent Repo.
+
+### Security
+
+- Required verified GitHub `ADMIN` permission before Harness attachment, mutation, upgrade, or upload while keeping diagnosis and dry-run planning read-only.
+
+### Verification
+
+- Added regression coverage for Repo-root normalization, plain-folder rejection, nested-Harness rejection, and administrator authority.
 
 ## [v0.13.0] - 2026-07-27
 
