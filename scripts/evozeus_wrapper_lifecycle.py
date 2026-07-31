@@ -2295,6 +2295,37 @@ def _frontmatter_end(text: str) -> int:
     else:
         return 0
 
+    flow_candidate = "\n".join(body_lines).strip()
+    if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        quote: str | None = None
+        escaped = False
+        comment = False
+        has_separator = False
+        for character in flow_candidate[1:-1]:
+            if comment:
+                if character in "\r\n":
+                    comment = False
+                continue
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+            elif character == "#":
+                comment = True
+            elif character == ":":
+                has_separator = True
+                break
+        if not flow_candidate[1:-1].strip() or has_separator:
+            return offset
+
     def mapping_key_separator(line: str) -> int | None:
         quote: str | None = None
         escaped = False
@@ -2324,14 +2355,6 @@ def _frontmatter_end(text: str) -> int:
         stripped = line.strip()
         if not stripped or line.lstrip().startswith("#"):
             continue
-        if stripped.startswith("{") and stripped.endswith("}"):
-            try:
-                flow_value = json.loads(stripped)
-            except json.JSONDecodeError:
-                flow_value = None
-            if isinstance(flow_value, dict):
-                saw_mapping_key = True
-                continue
         if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
             saw_mapping_key = True
             continue
