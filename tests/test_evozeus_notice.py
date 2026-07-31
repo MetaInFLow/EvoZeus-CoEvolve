@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,83 @@ from scripts.evozeus_notice import DEFAULT_NOTICE_POLICY, load_notice_policy, re
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
+README = ROOT / "README.md"
+NOTICE_POLICY_TEMPLATE = ROOT / "templates/target/.evozeus_evoinfra/notice-policy.json"
+CANONICAL_EVENT_CONTRACT = (
+    "https://github.com/MetaInFLow/EvoZeus/blob/main/"
+    "docs/reference/user-visible-events.md"
+)
+# Documentation compatibility snapshot only; runtime semantics stay in the Core contract.
+CANONICAL_EVENT_NAMES_SNAPSHOT = (
+    "启动",
+    "受管运行",
+    "Lesson 候选",
+    "Lesson 已记录",
+    "等待确认",
+    "版本状态",
+    "发现更新",
+    "自动更新中",
+    "自动更新完成",
+    "自动更新失败",
+    "进化执行",
+    "UAT 就绪",
+    "正式发布",
+    "回滚",
+    "暂停",
+    "验证完成",
+)
+
+
+def _readme_section(text: str, start: str, end: str) -> str:
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_readme_covers_canonical_user_visible_event_contract() -> None:
+    text = README.read_text(encoding="utf-8")
+    section = _readme_section(
+        text,
+        "## 用户可见事件词典",
+        "### Harness 本地 Notice renderer（已实现）",
+    )
+
+    assert CANONICAL_EVENT_CONTRACT in section
+    assert "普通业务分析和普通工具调用不打标" in section
+    for event_name in CANONICAL_EVENT_NAMES_SNAPSHOT:
+        assert f"| {event_name} |" in section
+
+
+def test_readme_local_notice_matrix_tracks_deployed_policy() -> None:
+    text = README.read_text(encoding="utf-8")
+    section = _readme_section(
+        text,
+        "### Harness 本地 Notice renderer（已实现）",
+        "## 维护者快速开始",
+    )
+    template_policy = load_notice_policy(NOTICE_POLICY_TEMPLATE)
+
+    assert template_policy == DEFAULT_NOTICE_POLICY
+    assert "不生成上表全部 `Core-only` 事件" in section
+
+    documented_rows: dict[tuple[str, str], str] = {}
+    for line in section.splitlines():
+        match = re.match(r"^\| `([^`]+)` / `([^`]+)` \|", line)
+        if match:
+            documented_rows[(match.group(1), match.group(2))] = line
+
+    expected_pairs = {
+        (kind, state)
+        for kind, event in template_policy["events"].items()
+        for state in event["states"]
+    }
+    assert set(documented_rows) == expected_pairs
+
+    for kind, state in expected_pairs:
+        event = template_policy["events"][kind]
+        visual = event["states"][state]
+        row = documented_rows[(kind, state)]
+        assert visual["icon"] in row
+        assert f"<code>{event['tag']}</code>" in row
+        assert visual["label"] in row
 
 
 def test_lesson_pending_renders_compact_evozeus_tag_and_record_only_action() -> None:
