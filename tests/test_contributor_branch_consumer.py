@@ -1069,6 +1069,35 @@ def test_trusted_control_gate_rejects_business_manifest_tampering(tmp_path: Path
         )
 
 
+def test_trusted_control_gate_rejects_symlinked_business_changelog(tmp_path: Path) -> None:
+    trusted = tmp_path / "trusted"
+    candidate = tmp_path / "candidate"
+    base_sha = make_control_checkout(trusted, "v1.0.0", "base")
+    make_control_checkout(candidate, "v1.0.0", "base")
+    outside = tmp_path / "outside-changelog.md"
+    outside.write_text("# Changelog\n\n## Unreleased\n\n- external\n", encoding="utf-8")
+    changelog = candidate / ".evozeus-wrapper/CHANGELOG.md"
+    changelog.unlink()
+    changelog.symlink_to(outside)
+    run(["git", "add", str(changelog.relative_to(candidate))], candidate)
+    run(["git", "commit", "-m", "test: symlink changelog"], candidate)
+    head_sha = run(["git", "rev-parse", "HEAD"], candidate)
+
+    with pytest.raises(SystemExit):
+        check_trusted_pr_checkouts(
+            candidate,
+            trusted,
+            github_head_sha=head_sha,
+            github_base_sha=base_sha,
+            github_repository=REPO,
+            github_head_repo=REPO,
+            github_actor="alice",
+            github_head_ref=TARGET_BRANCH,
+            github_pr_number=7,
+            github_api_runner=lambda *args, **kwargs: pytest.fail("symlink must fail before API lookup"),
+        )
+
+
 def test_trusted_control_gate_rejects_business_hooks_tampering(tmp_path: Path) -> None:
     trusted = tmp_path / "trusted"
     candidate = tmp_path / "candidate"

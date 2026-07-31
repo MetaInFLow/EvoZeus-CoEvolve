@@ -1351,10 +1351,10 @@ def check_trusted_pr_checkouts(
         fail("trusted Harness managed-file source map is incomplete")
     changed: list[str] = []
     for relative_path in expected_managed_files:
-        if relative_path == TARGET_CHANGELOG:
-            continue
         candidate_file = _manifest_relative_file(candidate, relative_path, "candidate PR control file")
         trusted_file = _manifest_relative_file(trusted_root, relative_path, "trusted base control file")
+        if relative_path == TARGET_CHANGELOG:
+            continue
         if candidate_file.read_bytes() != trusted_file.read_bytes():
             changed.append(relative_path)
     if candidate_manifest_file.read_bytes() != trusted_manifest_file.read_bytes():
