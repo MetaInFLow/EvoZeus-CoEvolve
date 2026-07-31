@@ -301,6 +301,20 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
     assert resumed["resume"]["decision"] == "resume"
     assert resumed["worktree"]["registered"] is True
 
+    run(["git", "worktree", "remove", str(worktree)], repo)
+    recovered, recovered_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+    )
+    assert recovered_code == 0
+    assert recovered["resume"]["decision"] == "resume"
+    assert recovered["worktree"]["registered"] is False
+    assert recovered["next_write_action"] == "recreate_resume_worktree_for_existing_branch"
+    assert not worktree.exists()
+
     owner_directory = ledger_root / "MetaInFLow"
     owner_directory.chmod(0o755)
     with pytest.raises(ConsumerError) as caught:
@@ -467,6 +481,42 @@ def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path
     assert local["permission_path"]["resolved"] == "local"
     assert local["permission_path"]["push_allowed"] is False
     assert local["permission_path"]["pull_request_allowed"] is False
+
+
+def test_core_snapshot_rejects_lookalike_origin_and_nested_registered_worktree(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    origin_root = tmp_path / "lookalike-origin"
+    origin_root.mkdir()
+    origin_repo = create_repo(origin_root)
+    run(["git", "remote", "set-url", "origin", f"https://evilgithub.com/{REPO}.git"], origin_repo)
+    lookalike, lookalike_code = execute_plan(
+        origin_repo,
+        origin_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert lookalike_code == 2
+    assert "missing_origin_identity" in blocker_codes(lookalike)
+
+    nested_root = tmp_path / "nested-worktree"
+    nested_root.mkdir()
+    nested_repo = create_repo(nested_root)
+    outer = nested_root / "outer"
+    run(["git", "worktree", "add", "-b", "outer-contribution", str(outer), "origin/main"], nested_repo)
+    nested_path = outer / "nested"
+    nested, nested_code = execute_plan(
+        nested_repo,
+        nested_path,
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert nested_code == 2
+    assert "registered_worktree_descendant" in blocker_codes(nested)
+    assert nested["worktree"]["isolated"] is False
+    assert not nested_path.exists()
+    assert run(["git", "status", "--porcelain=v1", "--untracked-files=all"], outer) == ""
 
 
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:
