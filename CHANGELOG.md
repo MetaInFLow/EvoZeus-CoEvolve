@@ -4,6 +4,14 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Documented the complete Core / CoEvolve / Harness user-visible event dictionary with explicit Implemented / Partial / Planned maturity and misuse boundaries.
+
+### Fixed
+
+- Clarified that `writes=false` is machine-visible in the Notice renderer's structured return and `--json` output; default text mode emits only `display_text`.
+
 ### Changed
 
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.

@@ -55,6 +55,7 @@ def test_readme_covers_canonical_user_visible_event_contract() -> None:
 
     assert CANONICAL_EVENT_CONTRACT in section
     assert "普通业务分析和普通工具调用不打标" in section
+    assert "| 事件 | 成熟度 |" in section
     canonical_rows = {
         event_name: next(
             line for line in section.splitlines() if line.startswith(f"| {event_name} |")
@@ -63,6 +64,11 @@ def test_readme_covers_canonical_user_visible_event_contract() -> None:
     }
     for event_name, prefix in CANONICAL_EVENT_PREFIXES_SNAPSHOT.items():
         assert prefix in canonical_rows[event_name]
+        assert any(
+            f"| {maturity} |" in canonical_rows[event_name]
+            for maturity in ("Implemented", "Partial", "Planned")
+        )
+    assert any("| Partial |" in row for row in canonical_rows.values())
 
     lesson_row = canonical_rows["Lesson 候选"]
     for required_fragment in (
@@ -86,6 +92,9 @@ def test_readme_local_notice_matrix_tracks_deployed_policy() -> None:
 
     assert template_policy == DEFAULT_NOTICE_POLICY
     assert "不生成上表全部 `Core-only` 事件" in section
+    assert "结构化返回值与 `--json` 输出包含 `writes=false`" in section
+    assert "默认文本模式只输出 `display_text`" in section
+    assert "输出始终声明 `writes=false`" not in section
 
     documented_rows: dict[tuple[str, str], str] = {}
     for line in section.splitlines():
