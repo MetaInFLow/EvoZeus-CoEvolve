@@ -175,21 +175,25 @@ def target_template_path(rel: Path) -> Path:
     return Path(TARGET_EVOINFRA_DIR) / rel
 
 
-def checked_target_write_path(target: Path, relative_path: Path) -> Path:
-    target = target.expanduser().resolve()
-    if relative_path.is_absolute() or ".." in relative_path.parts:
-        fail(f"wrapper target path escapes the repository: {relative_path}")
-    destination = target / relative_path
-    cursor = destination
-    while cursor != target:
+def validate_template_destination(target: Path, destination: Path) -> None:
+    """Reject template writes that would traverse a symlink inside the target Repo."""
+    try:
+        relative = destination.relative_to(target)
+    except ValueError as exc:
+        raise ValueError(f"template destination escapes target repository: {destination}") from exc
+    cursor = target
+    for part in relative.parts:
+        cursor /= part
         if cursor.is_symlink():
-            fail(f"wrapper target path cannot contain symlinks: {cursor.relative_to(target)}")
-        cursor = cursor.parent
-    return destination
+            raise ValueError(
+                "template destination contains a symlink component: "
+                + str(cursor.relative_to(target))
+            )
 
 
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
     existing_harness = target / TARGET_HARNESS_SKILL
+    validate_template_destination(target, existing_harness)
     if existing_harness.exists() or existing_harness.is_symlink():
         if existing_harness.is_symlink() or not existing_harness.is_file():
             raise ValueError(
@@ -215,7 +219,8 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         if src.is_dir() or "__pycache__" in src.parts or src.suffix in {".pyc", ".pyo"}:
             continue
         rel = src.relative_to(TARGET_TEMPLATE_DIR)
-        destination = checked_target_write_path(target, target_template_path(rel))
+        destination = target / target_template_path(rel)
+        validate_template_destination(target, destination)
         if rel in EXACT_SNAPSHOT_TEMPLATE_PATHS:
             if destination.exists() and not force:
                 actions.append(f"skip existing {destination}")
@@ -226,7 +231,8 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         else:
             actions.append(copy_template_file(src, destination, replacements, force))
 
-    script_dst = checked_target_write_path(target, Path(TARGET_PREFLIGHT_SCRIPT))
+    script_dst = target / TARGET_PREFLIGHT_SCRIPT
+    validate_template_destination(target, script_dst)
     if script_dst.exists() and not force:
         actions.append(f"skip existing {script_dst}")
     else:
@@ -234,7 +240,8 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
         script_dst.chmod(0o755)
         actions.append(f"write {script_dst}")
-    notice_dst = checked_target_write_path(target, Path(TARGET_NOTICE_SCRIPT))
+    notice_dst = target / TARGET_NOTICE_SCRIPT
+    validate_template_destination(target, notice_dst)
     if notice_dst.exists() and not force:
         actions.append(f"skip existing {notice_dst}")
     else:
@@ -242,7 +249,8 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(NOTICE_SCRIPT, notice_dst)
         notice_dst.chmod(0o755)
         actions.append(f"write {notice_dst}")
-    consumer_dst = checked_target_write_path(target, Path(TARGET_BRANCH_CONSUMER_SCRIPT))
+    consumer_dst = target / TARGET_BRANCH_CONSUMER_SCRIPT
+    validate_template_destination(target, consumer_dst)
     if consumer_dst.exists() and not force:
         actions.append(f"skip existing {consumer_dst}")
     else:
