@@ -1190,12 +1190,35 @@ def test_invalid_nested_flow_is_not_treated_as_frontmatter(tmp_path: Path) -> No
     check_harness_entry_contract(target, manifest)
 
 
+def test_invalid_sequence_mapping_pair_is_not_treated_as_frontmatter(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = "---\n{key: [a: b: c]}\n---\n\n# Business main flow\n"
+    skill = target / "SKILL.md"
+    skill.write_text(business, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(build_harness_activation_block())
+    assert business in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 def test_flow_frontmatter_preserves_an_exact_harness_entry_example(tmp_path: Path) -> None:
     target = tmp_path / "skill"
     target.mkdir()
     frontmatter = (
         "---\n"
-        '{"description":"\n'
+        '{"key":[foo#bar],"description":"\n'
         + build_harness_activation_block()
         + '\n"}\n'
         + "---\n"

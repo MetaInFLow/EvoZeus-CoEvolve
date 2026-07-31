@@ -2105,7 +2105,7 @@ def _frontmatter_end(text: str) -> int:
             if character in {"'", '"'}:
                 quote = character
                 frames[-1]["content"] = True
-            elif character == "#":
+            elif character == "#" and (index == 0 or inner[index - 1].isspace()):
                 comment = True
             elif character in "[{":
                 frames[-1]["content"] = True
@@ -2152,7 +2152,20 @@ def _frontmatter_end(text: str) -> int:
                     else:
                         frame["separator"] = True
                 else:
-                    frame["content"] = True
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        next_character = inner[index + 1 : index + 2]
+                        if (
+                            not next_character
+                            or next_character.isspace()
+                            or next_character in ",]}"
+                        ):
+                            valid_flow = False
+                            break
+                    else:
+                        frame["separator"] = True
             elif not character.isspace():
                 frames[-1]["content"] = True
         valid_flow = valid_flow and quote is None and len(frames) == 1
