@@ -225,6 +225,9 @@ def validate_existing_manifest_for_attach(
         for field, value in expected.items()
         if not isinstance(manifest, dict) or manifest.get(field) != value
     ]
+    managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
+    if not isinstance(managed_files, list) or TARGET_HARNESS_SKILL not in managed_files:
+        mismatches.append("managed_files")
     if mismatches:
         raise ValueError(
             "existing wrapper manifest requires migrate-layout before attach; incompatible fields: "
