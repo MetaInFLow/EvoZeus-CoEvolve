@@ -3,6 +3,7 @@
 状态：对内-已通过，等待跨 Repo 集成与产品渠道 UAT
 Related issue: https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/29
 Companion PR: https://github.com/MetaInFLow/EvoZeus-session-signal-skill/pull/9
+Core runtime PR: https://github.com/MetaInFLow/EvoZeus/pull/50
 
 ## 1. 真问题
 
@@ -22,8 +23,8 @@ Companion PR: https://github.com/MetaInFLow/EvoZeus-session-signal-skill/pull/9
 | `cwd` containment / 唯一 alias 目标选择 | `EvoZeus-session-signal-skill` |
 | model-only natural-language guidance | `EvoZeus-session-signal-skill` |
 | `UserPromptSubmit` 注册、刷新与卸载 | EvoZeus-CoEvolve |
-| registered target inventory | EvoZeus-CoEvolve |
-| 活动产品渠道发现、固定 attachment、subprocess transport | EvoZeus-CoEvolve |
+| registered target pointer 生命周期 | EvoZeus-CoEvolve |
+| target inventory 消费、活动产品渠道发现、固定 attachment、subprocess transport | EvoZeus Core |
 
 CoEvolve 禁止保留 correction regex、durable-rule regex、目标选择算法或 guidance 文案副本。
 
@@ -34,54 +35,48 @@ CoEvolve 禁止保留 correction regex、durable-rule regex、目标选择算法
 | 事件 | 职责 | 失败语义 |
 | --- | --- | --- |
 | `SessionStart` | 聚合检查注册目标的 Harness 健康与版本 | 保持现有确定性 source-contract 行为 |
-| `UserPromptSubmit` | 发现可信 Session Signal 组件并转发当前用户轮次 | 任何异常均 `{continue:true}` |
+| `UserPromptSubmit` | 进入 Core-owned Lesson runtime | 任何异常均 `{continue:true}` |
 
-`UserPromptSubmit` 只从 `$EVOZEUS_HOME/active-channel.json` 与 `channel-state.json` 读取活动 `stable|uat`。生产路径不接受任意环境变量提供 Session Signal root。
+CoEvolve 只把同一 Core-owned dispatcher 注册到两个事件。Core 的 `UserPromptSubmit` 分支负责读取 `$EVOZEUS_HOME/active-channel.json`、`channel-state.json` 与固定的 `~/.evozeus/.projects` 注册表。CoEvolve template 保持 `SessionStart`-only。
 
-## 4. 固定 Component Attachment
+## 4. 固定 Core Runtime 依赖
 
 CoEvolve `contracts/v1/manifest.json` 固定：
 
-- dependency repo：`MetaInFLow/EvoZeus-session-signal-skill`；
-- Unreleased component version：`v0.1.1`，公开 attachment 合同固定 `availability: unreleased`，产品渠道发布后才更新；
-- API：`evozeus.session-signal.lesson-candidate.v1`；
-- component manifest 与 entrypoint；
-- component manifest SHA-256。
+- dependency repo：`MetaInFLow/EvoZeus`；
+- Unreleased Core PR 与精确 source revision；
+- API：`evozeus.user-prompt.lesson-runtime.v1`；
+- Core-owned dispatcher 路径与 owner。
 
-执行前必须验证：
+CoEvolve 安装前必须验证：
 
-1. active channel entry 的 product manifest digest；
-2. `install_root` 对 `component_roots.evozeus` 与 `embedded_roots.session_signal` 的 containment；
-3. product manifest 的 embedded version、path 与 required paths；
-4. Session Signal component manifest schema、version、API、entrypoint 与全部 file digest；
-5. manifest、entrypoint 和实现文件均为无 symlink component 的 regular file。
+1. dispatcher 和 Core state 均为 regular file，且不接受 symlink；
+2. Core state 为 `channel-managed` 且信任来源为产品 manifest；
+3. dispatcher 包含 Core schema 与 `evozeus.user-prompt.lesson-runtime.v1` marker。
 
-组件缺失、仍为 `v0.1.0`、摘要损坏、路径越界或 symlink 均静默 fail-open。
+Core runtime 缺失或版本过旧时，CoEvolve lifecycle 安装在任何写入前阻塞。每轮执行期的渠道、attachment、摘要、路径、transport 与隐私校验由 Core 负责并 fail-open。
 
 ## 5. Transport 与隐私
 
-- 使用 `sys.executable` + argument list，显式 `shell=false`。
-- stdin 传 JSON，stdout 只接受固定 API JSON；stderr 永不外显。
-- timeout 固定为 1.5 秒。
-- prompt 超过 32,000 chars 或 stdin JSON 超过 256 KiB 时静默 fail-open，不启动子进程。
-- 子进程环境只保留 `PYTHONDONTWRITEBYTECODE=1` 与 `PYTHONNOUSERSITE=1`。
-- 不写 signal、不创建 Issue、不生成缓存或 bytecode。
-- 组件响应只能进入 model-only `additionalContext`；raw prompt、cwd、canonical path、component path、JSON diagnostics 与 signal id 不进入 Hook 响应。
-- registered targets 超过 API v1 的 256 上限时传空 inventory，组件仍可返回 unassigned Lesson。
+- Core runtime 负责 bounded stdin/stdout、timeout、`shell=false`、隔离环境与私密值回显拒绝。
+- CoEvolve lifecycle 不读取 prompt，不执行 Session Signal，不写 signal，不创建 Issue。
+- CoEvolve 只修改 `~/.codex/hooks.json` 中自己的 handler 和独立 lifecycle state。
 
 ## 6. 安装与升级
 
 - `hook global install` 结构化合并两个事件，保留第三方 Hook，并保持幂等。
+- install / refresh 不复制或覆盖 Core dispatcher 和 Core state。
 - 仅有旧 `SessionStart` 注册的安装状态为 `upgrade_required`。
 - 刷新 Hook 会改变 trust hash；安装后重新通过 Codex `/hooks` 审核。
-- 卸载只移除 EvoZeus handler，保留同事件的第三方 handler。
+- 卸载只移除 EvoZeus handler 与 CoEvolve lifecycle state，保留第三方 handler、Core dispatcher 和 Core state。
 
 ## 7. 完成边界
 
 本 PR 只 `Addresses #29`。Issue 保持打开，直到：
 
 1. Session Signal companion PR 合并；
-2. 后续 EvoZeus 产品渠道内嵌 `v0.1.1` 并通过完整性检查；
-3. 真实 fresh-chat correction / neutral / ambiguous UAT 通过。
+2. Core runtime PR 合并；
+3. 后续 EvoZeus 产品渠道内嵌 Session Signal 并通过完整性检查；
+4. 真实 fresh-chat correction / neutral / ambiguous UAT 通过。
 
 本轮禁止下载、安装、tag、Release 或合并 PR。

@@ -42,7 +42,7 @@ If a real directory must be replaced after reviewing the dry-run, add `--approve
 - Files and other unsupported install types require manual handling.
 - Runtime Skill symlink installation and user-level global hook installation are separate outcomes in the report.
 - A written global hook registration remains `pending_review` until the user reviews it through Codex `/hooks` and records the trust decision with `hook global trust`.
-- The global dispatcher checks all registered wrapped Skills at `SessionStart`; at `UserPromptSubmit`, it delegates registered-target inventory and the current turn to the digest-bound Session Signal companion. The watcher remains advisory/fail-open and does not prove exact Skill invocation.
+- The Core-owned global dispatcher checks all registered wrapped Skills at `SessionStart`; at `UserPromptSubmit`, Core consumes registered-target inventory and invokes the digest-bound Session Signal method. CoEvolve owns registration lifecycle only. The watcher remains advisory/fail-open and does not prove exact Skill invocation.
 
 ## Stop Conditions
 

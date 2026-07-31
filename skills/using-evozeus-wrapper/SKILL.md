@@ -203,7 +203,7 @@ python3 scripts/evozeus_wrapper.py hook global status --json
 
 After installation, review the new registration with Codex `/hooks`, then record the result with `hook global trust`. Installation and trust must never be reported as the same state.
 
-The installed command owns two user-level capabilities: `global_session_dispatcher` for task-start health and `global_prompt_lesson_watcher` for ordinary `UserPromptSubmit` turns. The prompt watcher supplies registered-target inventory and delegates through a digest-bound active-channel Session Signal component; that component owns candidate detection, target selection, and model-only guidance. The Hook remains fail-open and never records an Issue automatically.
+The installed Core-owned command serves two user-level capabilities: `global_session_dispatcher` for task-start health and `global_prompt_lesson_watcher` for ordinary `UserPromptSubmit` turns. CoEvolve owns registration and trust lifecycle only. EvoZeus Core reads the registered-target inventory and runs the digest-bound Session Signal method; Session Signal owns candidate detection, target selection, and model-only guidance. The Hook remains fail-open and never records an Issue automatically.
 
 ### 7. Evolution Loop
 
@@ -256,7 +256,7 @@ For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capa
 - `.evozeus-wrapper/hooks/evozeus_wrapper_start_check.py` reads `.evozeus-wrapper/wrapper.json` and emits Codex hook JSON.
 - The project hook reports `capability=repo_maintenance_hook` and `scope=canonical_repository`; it is not a per-Skill invocation hook.
 - `~/.codex/hooks.json` may separately register the global dispatcher, which aggregates every registered wrapped Skill at task start.
-- The user-level registration also includes `UserPromptSubmit`, which delegates normal-Chat turns to the digest-bound Session Signal companion and returns only validated model guidance. It does not identify exact Skill invocation by itself.
+- The user-level registration also includes `UserPromptSubmit` on the Core-owned runtime endpoint. Core delegates normal-Chat turns to the digest-bound Session Signal method and returns only validated model guidance. This does not identify exact Skill invocation by itself.
 - Non-managed hooks require Codex review/trust through `/hooks` before they run.
 - Project and global hooks share a successful latest-release cache. Deterministic local source-contract errors block; compatible outdated harnesses warn and allow normal business execution. A normal Skill invocation never authorizes Harness maintenance writes. An unknown remote version with no usable cache also warns and allows.
 - `upgrade-all` verifies the authoritative latest version, clean Git state and write access for every target before writing. It backs up the complete migration write set, including target-owned files containing legacy wrapper path references, and rolls all targets back if any apply step fails.

@@ -9,7 +9,7 @@ Use this stage after the target Skill is wrapped and installed through canonical
 
 ## Lesson Intake
 
-安装 user-level global hook 后，`UserPromptSubmit` 会把普通 Chat 用户轮次交给活动产品渠道内已验证的 Session Signal companion；候选判断、目标选择与模型侧指引均由 companion 负责，无需先调用目标 Skill。Watcher 不持久化内容；先完成当前业务纠正，再决定是否展示 Lesson。
+安装 user-level global hook 后，`UserPromptSubmit` 进入 Core-owned runtime；Core 读取注册目标并执行活动产品渠道内已验证的 Session Signal 方法。候选判断、目标选择与模型侧指引由 Session Signal 负责，无需先调用目标 Skill。Watcher 不持久化内容；先完成当前业务纠正，再决定是否展示 Lesson。
 
 ```bash
 python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json

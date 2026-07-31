@@ -33,7 +33,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 💡 `EvoZeus · Lesson` 待记录
 ```
 
-受信任的 global `UserPromptSubmit` watcher 会把普通 Chat 用户轮次与注册目标清单交给已验证的 Session Signal companion，无需先 `@Skill`。捕获阶段只接受 companion 返回的模型侧规则，继续原业务且不执行外部写入；feedback audit JSON 保持内部使用。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
+受信任的 global `UserPromptSubmit` watcher 会把普通 Chat 轮次接入 Core-owned runtime，无需先 `@Skill`。Core 读取注册目标并执行已验证的 Session Signal 方法；捕获阶段只接受模型侧规则，继续原业务且不执行外部写入。feedback audit JSON 保持内部使用。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
 
 - 不满意的 Skill 结果。
 - 期望结果。
@@ -53,7 +53,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 - `repo_maintenance_hook`：project-local `SessionStart`，仅覆盖 canonical repo 维护。
 - `global_session_dispatcher`：user-level `SessionStart`，任务启动时聚合检查全部 wrapped Skills。
-- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit`，只负责可信 companion 接线与 fail-open transport；Session Signal companion 负责候选判断、目标选择与 guidance，不自动记录。
+- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit`，CoEvolve 只负责 Core runtime 的 Hook 生命周期；Core 负责可信 transport，Session Signal 负责候选判断、目标选择与 guidance，不自动记录。
 - `skill_entry_preflight`：Agent 选中 Skill 后按 instruction surface 检查，依赖 prompt compliance。
 - `bootstrap_skill`：Plugin lifecycle 可加载控制 Skill，但不会新增 Skill invocation event。
 - `manual_only`：只能手动运行 wrapper 命令。

@@ -7,7 +7,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Added
 
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
-- Added user-level `UserPromptSubmit` registration that delegates normal Chat Lesson candidate evaluation to a fixed Session Signal component; detection remains read-only and fail-open.
+- Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh and uninstall lifecycle.
 
 ### Changed
 
@@ -18,7 +18,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Fixed
 
 - Converted malformed non-list `SessionStart` and `UserPromptSubmit` event values into read-only global Hook status errors instead of raising during diagnostics or `upgrade-all`.
-- Kept canonical project inventory under `~/.evozeus/.projects` when `EVOZEUS_HOME` points component discovery at a custom product directory.
+- Kept canonical project pointers under `~/.evozeus/.projects`; the Core runtime consumes that fixed registry independently of a custom product home.
+- Preserved the Core-owned dispatcher and product state across CoEvolve install, refresh, trust updates and uninstall.
 
 ### Security
 
@@ -28,11 +29,11 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Verification
 
 - Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
-- Full regression suite passes with `226 passed` and `14 subtests passed`, including the explicit Session Signal companion smoke.
+- Lifecycle and contract regressions include an explicit real Core dispatcher smoke; final full-suite count is recorded after exact-head review.
 - A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
 - Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
 - Legacy status, self-evolution, wrapper, and migration-note removal now stops at a type-specific terminal signature. Missing terminals block before writes; following business prose and H3-only sections remain byte-preserved even without an H1/H2 Markdown boundary.
-- UserPromptSubmit integration tests cover verified active-channel discovery, `v0.1.0`, missing/damaged/symlinked components, subprocess timeout, oversized target inventory, neutral/ambiguous turns and zero-persistence execution against the real companion contract.
+- UserPromptSubmit lifecycle tests cover missing/old Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership and zero-mutation execution against the real Core dispatcher.
 
 ## [v0.14.0] - 2026-07-30
 
