@@ -894,7 +894,7 @@ def apply_upgrade_all(
             "errors": [str(exc)],
             "administrator_authorities": authorities,
         }
-    refresh_installed_global_hook = read_global_hook_status(home)["status"] == "installed"
+    refresh_installed_global_hook = read_global_hook_status(home)["any_registration_installed"]
     backup_root = home / HARNESS_UPGRADE_BACKUPS / _utc_transaction_id()
     snapshots: list[dict[str, Any]] = []
     for index, item in enumerate(plan["targets"]):

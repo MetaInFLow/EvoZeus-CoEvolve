@@ -232,7 +232,7 @@ def build_evolution_section(replacements: dict[str, str]) -> str:
 
 进化流程：
 
-1. 受信任的 global prompt watcher 会在普通 Chat 自动发现高置信不满意、纠错、漏检或可复用机制缺陷，无需先 `@Skill`。先完成当前业务纠正，只在回复末尾展示自然语言 Lesson Notice；需要确定路由或准备 Issue 时再运行 feedback audit。Audit JSON 与内部字段不得展示。只有明确确认后才创建 Issue，修复继续要求单独授权。
+1. 受信任的 global prompt watcher 会把普通 Chat 用户轮次和注册目标清单交给活动产品渠道内已验证的 Session Signal companion，无需先 `@Skill`。companion 负责候选判断、目标选择与 model-only guidance；先完成当前业务纠正，只在回复末尾展示自然语言 Lesson Notice。需要准备 Issue 时再运行 feedback audit。Audit JSON 与内部字段不得展示。只有明确确认后才创建 Issue，修复继续要求单独授权。
 2. 每次运行本 Skill 前，先执行 `python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {replacements["REPO_NAME"]}`，确认 wrapper source contract 成立。
 3. 再执行 `python3 {TARGET_PREFLIGHT_SCRIPT} version --repo {replacements["REPO_NAME"]}`，确认 GitHub latest release 没有新版本。
 4. 开始修改前，在 `{TARGET_DESIGNS_DIR}/` 新建设计文档，明确 Related issue、优化目标、实现计划、验证计划和 release plan。
@@ -289,7 +289,7 @@ Runtime integration modes:
 
 - `repo_maintenance_hook`：project-local `SessionStart` hook，仅覆盖 canonical repository 维护。
 - `global_session_dispatcher`：user-level `SessionStart` 聚合检查全部 wrapped Skills，不是 per-Skill invocation hook。
-- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit` 观察普通 Chat 高置信 Lesson 候选；fail-open 且不自动记录，也不证明精确 Skill invocation。
+- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit` 只负责注册目标 inventory、可信 Session Signal companion 发现与 fail-open transport；不自动记录，也不证明精确 Skill invocation。
 - `bootstrap_skill`：Plugin lifecycle 可以稳定加载控制 Skill，但当前没有 `SkillInvoke` 事件。
 - `prompt_runtime_check`：Skill 入口 preflight，基本绑定被选中的 Skill，但依赖 prompt compliance。
 - `manual_only`：只能手动运行 wrapper 命令。

@@ -193,6 +193,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
 - 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
+- `global_prompt_lesson_watcher` 只负责 `UserPromptSubmit` 注册、registered-target inventory、活动产品渠道组件发现与 fail-open subprocess transport。Session Signal companion 独占候选判断、目标选择和 model-only guidance；`contracts/v1/manifest.json` 以 `availability: unreleased` 固定尚未发布的 `v0.1.1` component manifest、API、entrypoint 与 SHA-256。产品渠道发布后才更新 availability。
 
 ## Case: GitHub-backed Skill already exists
 

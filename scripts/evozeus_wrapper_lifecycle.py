@@ -894,6 +894,8 @@ def classify_integration_mode(
             "covers_skill_invocation": False,
             "persistence": "none_before_confirmation",
             "failure_mode": "fail_open",
+            "method_owner": "MetaInFLow/EvoZeus-session-signal-skill",
+            "component_api": "evozeus.session-signal.lesson-candidate.v1",
         },
         "skill_entry_preflight": {
             "installed": skill_entry_preflight_installed,
@@ -1629,7 +1631,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 
 本段是 Skill 入口 preflight。Agent 选中本 Skill 后、进入业务主链路前执行；它基本绑定当前 Skill，但依赖 instruction compliance，不是 native Skill invocation hook。
 
-`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；`global_prompt_lesson_watcher` 在普通 Chat 每轮识别高置信 Lesson 候选；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把这些能力描述成 per-Skill native invocation hook。
+`{TARGET_WRAPPER_MANIFEST}` 分开记录 capability：`repo_maintenance_hook` 只在 canonical repository 作为活动项目时原生触发；`global_session_dispatcher` 在每个任务启动时聚合检查全部 wrapped Skills；`global_prompt_lesson_watcher` 把普通 Chat 用户轮次转发给活动产品渠道内已验证的 Session Signal 组件；本入口仍记录为 `prompt_runtime_check`。当前 Codex 没有 `SkillInvoke` 事件，不得把这些能力描述成 per-Skill native invocation hook。
 
 若当前只是 runtime-only install，缺少维护资产时不要把安装副本当作事实源，回 canonical repo 处理 wrapper harness 或 Skill release。
 
@@ -1655,7 +1657,7 @@ def build_status_section(replacements: dict[str, str]) -> str:
 5. EvoZeus Notice
    - 渲染入口：`python3 {TARGET_NOTICE_SCRIPT} render --kind <kind> --state <state> --message <message> [--action <action>] [--json]`。
    - 配置事实源：`{TARGET_NOTICE_POLICY}`。普通业务进度不展示 EvoZeus Tag。
-   - 受信任的 global prompt watcher 可以在普通 Chat 自动发现高置信候选，无需先 `@Skill`。先完成当前业务纠正；Lesson 成立时在同一响应末尾只显示自然语言 Notice。
+   - 受信任的 global prompt watcher 可以把普通 Chat 用户轮次与注册目标 inventory 交给活动产品渠道内已验证的 Session Signal companion，无需先 `@Skill`。先完成当前业务纠正；companion 返回 Lesson guidance 时，在同一响应末尾只显示自然语言 Notice。
    - 需要确定路由或准备 Issue 时再运行 feedback audit，并通过 `--context` 传入一句脱敏、可复用、可行动的 Lesson 摘要。Audit JSON、signal id、capture state、route 和 Issue draft 仅供内部诊断，不得展示给用户。
    - Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。
    - Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。

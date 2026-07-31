@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
@@ -42,6 +43,24 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
     assert declared_paths == actual_paths
     for entry in manifest["files"]:
         assert entry["sha256"] == sha256_file(BUNDLE / entry["path"])
+
+
+def test_contract_manifest_fixes_external_session_signal_attachment() -> None:
+    manifest = json.loads((BUNDLE / "manifest.json").read_text(encoding="utf-8"))
+    dispatcher_path = ROOT / "templates/global/evozeus_wrapper_dispatcher.py"
+    spec = importlib.util.spec_from_file_location("contract_dispatcher", dispatcher_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    assert manifest["source_revision"] == "v0.14.0"
+    assert manifest["external_component_dependencies"] == [
+        module.SESSION_SIGNAL_ATTACHMENT
+    ]
+    assert module.SESSION_SIGNAL_ATTACHMENT["availability"] == "unreleased"
+    assert module.SESSION_SIGNAL_ATTACHMENT["component_manifest_sha256"] == (
+        "6b9548c02797b2baa62a0eaa64bf165702239b843490a7cf49c001b7e932bba8"
+    )
 
 
 def test_external_sidecar_inventory_has_no_target_writes() -> None:

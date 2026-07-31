@@ -33,7 +33,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 💡 `EvoZeus · Lesson` 待记录
 ```
 
-受信任的 global `UserPromptSubmit` watcher 可以在普通 Chat 自动发现高置信候选，无需先 `@Skill`。捕获阶段只注入模型侧规则，继续原业务且不执行外部写入；feedback audit JSON 保持内部使用。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
+受信任的 global `UserPromptSubmit` watcher 会把普通 Chat 用户轮次与注册目标清单交给已验证的 Session Signal companion，无需先 `@Skill`。捕获阶段只接受 companion 返回的模型侧规则，继续原业务且不执行外部写入；feedback audit JSON 保持内部使用。用户明确确认提交后，才创建 Skill Feedback Issue。Issue 需要包含：
 
 - 不满意的 Skill 结果。
 - 期望结果。
@@ -53,7 +53,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 - `repo_maintenance_hook`：project-local `SessionStart`，仅覆盖 canonical repo 维护。
 - `global_session_dispatcher`：user-level `SessionStart`，任务启动时聚合检查全部 wrapped Skills。
-- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit`，普通 Chat 逐轮发现高置信 Lesson 候选；始终 fail-open，不自动记录。
+- `global_prompt_lesson_watcher`：user-level `UserPromptSubmit`，只负责可信 companion 接线与 fail-open transport；Session Signal companion 负责候选判断、目标选择与 guidance，不自动记录。
 - `skill_entry_preflight`：Agent 选中 Skill 后按 instruction surface 检查，依赖 prompt compliance。
 - `bootstrap_skill`：Plugin lifecycle 可加载控制 Skill，但不会新增 Skill invocation event。
 - `manual_only`：只能手动运行 wrapper 命令。

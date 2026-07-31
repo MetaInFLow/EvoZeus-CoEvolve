@@ -45,7 +45,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.
 - A target harness manifest declares global capability ownership and scope, but live user-level dispatcher installation/trust comes from `hook global status` or the diagnosis overlay.
 - The global dispatcher is a native `SessionStart` aggregate gate, not a native per-Skill invocation hook.
-- The same user-level command may also register a `UserPromptSubmit` Lesson watcher. It detects normal-Chat candidates before Skill selection, stays advisory/fail-open, and must not be described as exact Skill invocation enforcement.
+- The same user-level command may also register a `UserPromptSubmit` Lesson watcher. It delegates normal-Chat candidate evaluation to the fixed active-channel Session Signal companion, stays advisory/fail-open, and must not be described as exact Skill invocation enforcement.
 - A SessionStart-only legacy global installation is `upgrade_required`; refresh it through `hook global install --approve`, then review the changed Hook definition with Codex `/hooks`.
 
 ## Stop Conditions

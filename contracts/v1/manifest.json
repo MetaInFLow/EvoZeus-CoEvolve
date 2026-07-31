@@ -8,6 +8,18 @@
     "min_inclusive": "0.1.0",
     "max_exclusive": "0.3.0"
   },
+  "external_component_dependencies": [
+    {
+      "component_id": "session_signal",
+      "repository": "MetaInFLow/EvoZeus-session-signal-skill",
+      "component_version": "v0.1.1",
+      "availability": "unreleased",
+      "component_manifest": "contracts/lesson-candidate-v1.json",
+      "component_manifest_sha256": "6b9548c02797b2baa62a0eaa64bf165702239b843490a7cf49c001b7e932bba8",
+      "api": "evozeus.session-signal.lesson-candidate.v1",
+      "entrypoint": "scripts/evaluate_lesson_candidate.py"
+    }
+  ],
   "files": [
     {
       "path": "schemas/attachment-v1.schema.json",
@@ -16,7 +28,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "3d96941ed256f1fe85edebdde32eaf3c34c915e9e4b213c8e7a737214cb457ad",
+      "sha256": "b51b08a627045d8557db2b69d10cf793c9660f18615eb35e96ece7f12cf4b04f",
       "role": "target-template-inventory"
     }
   ]
