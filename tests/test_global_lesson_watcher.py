@@ -55,8 +55,13 @@ class GlobalLessonWatcherTest(unittest.TestCase):
         pointer.symlink_to(target)
         return target
 
-    def create_component_fixture(self, home: Path) -> dict[str, object]:
-        product_home = home / ".evozeus"
+    def create_component_fixture(
+        self,
+        home: Path,
+        *,
+        product_home: Path | None = None,
+    ) -> dict[str, object]:
+        product_home = product_home or home / ".evozeus"
         install_root = product_home / "releases" / "fixture"
         core_root = install_root / "evozeus"
         session_root = core_root / "packs" / "session-signal"
@@ -454,6 +459,49 @@ class GlobalLessonWatcherTest(unittest.TestCase):
                 {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"},
             )
 
+    def test_custom_product_home_keeps_fixed_user_project_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            target = self.create_wrapped_target(home, "custom-product-target")
+            fixture = self.create_component_fixture(
+                home,
+                product_home=root / "custom-product-home",
+            )
+            captured: dict[str, object] = {}
+
+            def runner(command, **kwargs):
+                captured.update({"command": command, **kwargs})
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "schema_version": "evozeus.session-signal.lesson-candidate.v1",
+                            "candidate": False,
+                        }
+                    ).encode(),
+                    stderr=b"",
+                )
+
+            payload = self.dispatcher_module.evaluate_user_prompt_submit(
+                home,
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": str(target),
+                    "prompt": "opaque user turn",
+                },
+                evozeus_home=fixture["product_home"],
+                attachment=fixture["attachment"],
+                runner=runner,
+            )
+            request = json.loads(captured["input"].decode())
+
+            self.assertEqual(payload, {"continue": True})
+            self.assertEqual(
+                request["targets"][0]["repo"],
+                "MetaInFLow/custom-product-target",
+            )
+
     def test_component_resolution_requires_verified_manifest_and_root_containment(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -630,7 +678,7 @@ class GlobalLessonWatcherTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
-            product_home = home / ".evozeus"
+            product_home = root / "custom-product-home"
             install_root = product_home / "releases" / "fixture"
             core_root = install_root / "evozeus"
             session_root = core_root / "packs" / "session-signal"

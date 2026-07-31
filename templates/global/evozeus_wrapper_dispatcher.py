@@ -332,16 +332,8 @@ def resolve_latest_version(
     }
 
 
-def discover_wrapped_targets(
-    home: Path,
-    *,
-    evozeus_home: Path | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    projects_root = (
-        evozeus_home.expanduser().resolve() / ".projects"
-        if evozeus_home is not None
-        else home.expanduser().resolve() / PROJECTS_DIR
-    )
+def discover_wrapped_targets(home: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    projects_root = home.expanduser().resolve() / PROJECTS_DIR
     targets: list[dict[str, Any]] = []
     errors: list[str] = []
     if not projects_root.is_dir():
@@ -515,7 +507,7 @@ def evaluate_user_prompt_submit(
         component = resolve_session_signal_component(product_home, attachment=attachment)
         if component is None:
             return {"continue": True}
-        targets, _ = discover_wrapped_targets(home, evozeus_home=product_home)
+        targets, _ = discover_wrapped_targets(home)
         request = _lesson_component_request(hook_input, targets, api=component["api"])
         response = _invoke_lesson_component(component, request, runner=runner)
     except Exception:
