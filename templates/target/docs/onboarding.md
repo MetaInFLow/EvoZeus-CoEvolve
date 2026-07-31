@@ -36,10 +36,10 @@
 
 ## 生成的子 Skill
 
-- 子 Skill 不继承父级 `.codex/hooks.json`，契约固定为 `hooks_inherited: false`。
-- 每个子 Skill 必须单独运行 EvoZeus-CoEvolve lifecycle，生成自己的 manifest、hook 配置和验证材料。
-- 在 Codex 中通过 `/hooks` 审核并信任新建或变更的 hook。
-- 完成条件包括子 Skill structure preflight 和 consumer-project smoke test；只有文件生成成功不算完成。
+- 子 Skill 继承父级 Git Repo 根目录的 Evolution Harness，不创建嵌套 `.evozeus-wrapper/`。
+- 子 Skill 的运行入口和 consumer-project smoke test 仍需单独验证。
+- Repo 级 host adapter 由父 Repo 统一审核和维护。
+- 子 Skill 只有在成为具备独立 Owner、Issue、PR、UAT 与 Release 边界的 Git Repo 后，才可以接入自己的 Harness。
 
 ## Dashboard
 

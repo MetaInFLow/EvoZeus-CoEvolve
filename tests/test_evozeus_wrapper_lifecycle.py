@@ -20,9 +20,11 @@ from scripts.evozeus_wrapper_bootstrap import (
 )
 from scripts.evozeus_wrapper_lifecycle import (
     CODEX_START_HOOK_SCRIPT,
+    HARNESS_ENTRY_BEGIN,
     LEGACY_TARGET_WRAPPER_MANIFEST,
     TARGET_CHANGELOG,
     TARGET_FEEDBACK_POLICY,
+    TARGET_HARNESS_SKILL,
     TARGET_MIGRATIONS_README,
     TARGET_ONBOARDING_GUIDE,
     TARGET_PREFLIGHT_SCRIPT,
@@ -48,6 +50,8 @@ from scripts.evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_transform_action,
     repo_from_remote,
+    require_repo_admin,
+    resolve_harness_target,
     runtime_pointer_scope,
     skill_name_from_skill_md,
     stage_label,
@@ -164,6 +168,124 @@ def create_complete_legacy_target(target: Path) -> str:
 
 
 class LifecycleBasicsTest(unittest.TestCase):
+    def test_repository_boundary_routes_nested_skill_to_git_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            skill = root / "skills" / "example"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            boundary = resolve_harness_target(skill)
+
+            self.assertEqual(Path(boundary["repo_root"]), root.resolve())
+            self.assertFalse(boundary["requested_is_repo_root"])
+            self.assertTrue(boundary["eligible"])
+
+    def test_repository_boundary_rejects_plain_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "independent Git repository"):
+                resolve_harness_target(Path(tmp))
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "harness",
+                    "upgrade-check",
+                    "--target",
+                    tmp,
+                    "--latest-version",
+                    "v0.13.0",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertTrue(any("independent Git repository" in item for item in payload["errors"]))
+
+    def test_cli_normalizes_nested_skill_target_to_repository_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            skill = root / "skills" / "example"
+            skill.mkdir(parents=True)
+            (root / "SKILL.md").write_text("# Root Skill\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text("# Nested Skill\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "skill",
+                    "transform",
+                    "--mode",
+                    "attach",
+                    "--target",
+                    str(skill),
+                    "--dry-run",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(payload["target"]), root.resolve())
+            self.assertFalse(payload["repository_boundary"]["requested_is_repo_root"])
+
+    def test_repository_boundary_rejects_nested_active_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            nested = root / "skills" / "example" / ".evozeus-wrapper"
+            nested.mkdir(parents=True)
+            (nested / "wrapper.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+            boundary = resolve_harness_target(root)
+
+            self.assertFalse(boundary["eligible"])
+            self.assertEqual(
+                boundary["nested_harness_manifests"],
+                ["skills/example/.evozeus-wrapper/wrapper.json"],
+            )
+
+    def test_harness_mutation_requires_repository_admin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            root = root.resolve()
+
+            def runner(args, cwd=None):
+                if args[:4] == ["git", "-C", str(root), "rev-parse"]:
+                    return {"returncode": 0, "stdout": str(root), "stderr": ""}
+                if args[:5] == ["git", "-C", str(root), "remote", "get-url"]:
+                    return {
+                        "returncode": 0,
+                        "stdout": "https://github.com/MetaInFLow/example.git\n",
+                        "stderr": "",
+                    }
+                if args[:3] == ["gh", "repo", "view"]:
+                    return {
+                        "returncode": 0,
+                        "stdout": json.dumps(
+                            {
+                                "nameWithOwner": "MetaInFLow/example",
+                                "viewerPermission": "WRITE",
+                            }
+                        ),
+                        "stderr": "",
+                    }
+                return {"returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+            with self.assertRaisesRegex(ValueError, "ADMIN permission"):
+                require_repo_admin(root, "MetaInFLow/example", runner=runner)
+
     def test_replace_markdown_section_preserves_target_h1_and_suffix_bytes(self):
         frontmatter = (
             '---\nname: "example"\ndescription: |\n'
@@ -237,9 +359,17 @@ class LifecycleBasicsTest(unittest.TestCase):
             skill.write_text(
                 '---\nname: "example"\n---\n\n'
                 "## EvoZeus-wrapper 状态检查\n\n"
-                "legacy wrapper-owned status\n\n"
+                "Skill 入口 preflight for the wrapper contract.\n"
+                ".evozeus-wrapper/wrapper.json\n\n"
+                "解决顺序：完成只读检查后进入业务主链路。\n\n"
                 "# Target Skill Title\n\n"
-                "Target-owned content.\n",
+                "Target-owned content.\n\n"
+                "## 自进化方法\n\n"
+                "本 Skill 已由 EvoZeus-wrapper 接入自进化闭环。\n\n"
+                "Wrapper harness version: `v0.10.1`\n\n"
+                "## EvoZeus-wrapper\n\n"
+                "本区由 EvoZeus-wrapper 追加，用来说明 wrapper harness。\n\n"
+                "- `manual_only`：只能手动运行 wrapper 命令。\n",
                 encoding="utf-8",
             )
 
@@ -257,10 +387,11 @@ class LifecycleBasicsTest(unittest.TestCase):
             )
 
             updated = skill.read_text(encoding="utf-8")
-            self.assertEqual(updated.count("## EvoZeus-CoEvolve 状态检查"), 1)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
             self.assertNotIn("## EvoZeus-wrapper 状态检查", updated)
-            self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", updated)
-            self.assertNotIn("再进入主链路", updated)
+            self.assertNotIn("本 Skill 已由 EvoZeus-wrapper 接入自进化闭环", updated)
+            self.assertNotIn("## EvoZeus-wrapper", updated)
+            self.assertIn(TARGET_HARNESS_SKILL, updated)
             self.assertIn("# Target Skill Title\n\nTarget-owned content.", updated)
 
     def test_crlf_instruction_surface_inserts_status_after_frontmatter(self):
@@ -284,14 +415,14 @@ class LifecycleBasicsTest(unittest.TestCase):
                 layout_migration_required=False,
             )
             updated = skill.read_bytes()
-            status = "## EvoZeus-CoEvolve 状态检查".encode("utf-8")
+            activation = HARNESS_ENTRY_BEGIN.encode("utf-8")
 
             self.assertTrue(updated.startswith(frontmatter))
             self.assertIn(target_owned, updated)
-            self.assertGreater(updated.index(status), len(frontmatter) - 1)
-            self.assertGreater(updated.index(target_owned), updated.index(status))
+            self.assertGreater(updated.index(activation), len(frontmatter) - 1)
+            self.assertGreater(updated.index(target_owned), updated.index(activation))
 
-    def test_version_refresh_note_records_actual_consolidated_layout(self):
+    def test_version_refresh_uses_canonical_entry_without_business_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             skill = target / "SKILL.md"
@@ -324,12 +455,10 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertTrue(changed)
             self.assertEqual(surface, "SKILL.md")
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.10.1",
-                updated,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
-            self.assertNotIn("Migration Note: v0.10.0 -> v0.10.1", updated)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertIn(TARGET_HARNESS_SKILL, updated)
+            self.assertNotIn("Version Refresh Note", updated)
+            self.assertNotIn("Migration Note", updated)
             self.assertIn("# Target Skill Title" + target_owned, updated)
             self.assertIn("Wrapper harness version: `v9.9.9`", updated)
             self.assertIn("Keep --latest-version <wrapper-version> in business prose.", updated)
@@ -503,9 +632,9 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             skill_text = (target / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn("## EvoZeus-CoEvolve 状态检查", skill_text)
-            self.assertIn("## 自进化方法", skill_text)
-            self.assertIn(TARGET_WRAPPER_MANIFEST, skill_text)
+            self.assertEqual(skill_text.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("## 自进化方法", skill_text)
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text)
 
     def test_preflight_rejects_legacy_layout_until_migrated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -989,6 +1118,8 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "move .evozeus/wrapper.json -> .evozeus-wrapper/wrapper.json",
                 report["actions"],
             )
+            self.assertIn(".evozeus/wrapper.json", report["changed_files"])
+            self.assertIn(TARGET_WRAPPER_MANIFEST, report["changed_files"])
             self.assertFalse((target / ".evozeus").exists())
             self.assertTrue((target / TARGET_WRAPPER_MANIFEST).is_file())
             self.assertEqual(manifest["wrapper_version"], "v0.9.1")
@@ -998,7 +1129,9 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue((target / TARGET_ONBOARDING_GUIDE).is_file())
             self.assertEqual(manifest["onboarding"]["installation"]["mode"], "canonical_repo_symlink")
             self.assertFalse(manifest["onboarding"]["generated_child_skills"]["hooks_inherited"])
-            self.assertIn(TARGET_WRAPPER_MANIFEST, skill_text)
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text)
+            self.assertEqual(manifest["harness_skill_path"], TARGET_HARNESS_SKILL)
+            self.assertTrue((target / TARGET_HARNESS_SKILL).is_file())
             self.assertIn(".evozeus-wrapper/policies/audit-rule.md", policy)
             self.assertTrue(
                 (target / ".evozeus-wrapper/docs/migrations/2026-07-18-layout-v1-to-v2.md").is_file()
@@ -1012,6 +1145,59 @@ class LifecycleBasicsTest(unittest.TestCase):
                 (target / ".github/workflows/evozeus-wrapper-preflight.yml").read_text(encoding="utf-8"),
             )
             self.assertFalse(wrapper_manifest_status(target)["migration_required"])
+
+    def test_migration_changed_files_include_removed_duplicate_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            legacy_manifest = target / LEGACY_TARGET_WRAPPER_MANIFEST
+            current_manifest = target / TARGET_WRAPPER_MANIFEST
+            current_manifest.parent.mkdir(parents=True)
+            current_manifest.write_bytes(legacy_manifest.read_bytes())
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target),
+                    "-c",
+                    "user.name=EvoZeus Test",
+                    "-c",
+                    "user.email=evozeus@example.invalid",
+                    "commit",
+                    "-qm",
+                    "legacy fixture",
+                ],
+                check=True,
+            )
+
+            report = migrate_target_layout(
+                target,
+                latest_version="v0.14.0",
+                today=date(2026, 7, 31),
+            )
+
+            self.assertIn(
+                f"remove duplicate {LEGACY_TARGET_WRAPPER_MANIFEST}",
+                report["actions"],
+            )
+            self.assertIn(LEGACY_TARGET_WRAPPER_MANIFEST, report["changed_files"])
+            self.assertIn(TARGET_WRAPPER_MANIFEST, report["changed_files"])
+            self.assertFalse(legacy_manifest.exists())
+            changed_in_git = {
+                line[3:]
+                for line in subprocess.run(
+                    ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all"],
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.splitlines()
+                if line
+            }
+            self.assertTrue(changed_in_git)
+            self.assertLessEqual(changed_in_git, set(report["changed_files"]))
 
     def test_migrate_target_layout_seeds_policies_when_oldest_layout_lacks_them(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1051,9 +1237,9 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue(report["writes"])
             self.assertEqual(before_business, after_business)
             self.assertIn(business.strip(), skill_text)
-            self.assertIn("v0.9.1", skill_text.split("## Business Logic", 1)[0])
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text.split("## Business Logic", 1)[0])
             self.assertNotIn("--latest-version <wrapper-version>", skill_text)
-            self.assertIn("v0.6.0 -> v0.9.1", skill_text)
+            self.assertNotIn("Migration Note", skill_text)
             self.assertEqual(manifest["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(manifest["integration"]["native_skill_invocation_hook_installed"])
             self.assertTrue(
@@ -1197,11 +1383,8 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "# Target Skill Title\n\nTarget-owned intro bytes.  \n\n## Business Logic",
                 refreshed_skill,
             )
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.9.0 -> v0.9.1",
-                refreshed_skill,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", refreshed_skill)
+            self.assertEqual(refreshed_skill.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("Version Refresh Note", refreshed_skill)
             self.assertTrue(
                 (target / ".evozeus-wrapper/docs/migrations/2026-07-18-v0.9.0-to-v0.9.1.md").is_file()
             )
@@ -1235,10 +1418,8 @@ class LifecycleBasicsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "skill"
             target.mkdir()
-            write_wrapper_manifest(
-                target,
-                build_wrapper_manifest("MetaInFLow/skill", "v0.8.0", [], []),
-            )
+            create_complete_legacy_target(target)
+            migrate_target_layout(target, latest_version="v0.8.0")
             (target / "CHANGELOG.md").write_text(
                 "# Business changelog not owned by wrapper\n",
                 encoding="utf-8",
@@ -1916,7 +2097,10 @@ class WrapperManifestTest(unittest.TestCase):
             self.assertEqual(loaded["wrapper_repo"], "MetaInFLow/EvoZeus-CoEvolve")
             self.assertEqual(loaded["wrapper_version"], "v0.2.0")
             self.assertEqual(loaded["canonical_repo"], "MetaInFLow/resume-screening")
-            self.assertEqual(loaded["managed_files"], ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py"])
+            self.assertEqual(
+                loaded["managed_files"],
+                ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py", TARGET_HARNESS_SKILL],
+            )
             self.assertEqual(loaded["install_links"], ["/Users/anthonyf/.codex/skills/resume-screening"])
             self.assertEqual(loaded["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(loaded["integration"]["native_host_hook_installed"])
@@ -1959,8 +2143,9 @@ class WrapperManifestTest(unittest.TestCase):
         children = manifest["onboarding"]["generated_child_skills"]
         self.assertTrue(children["supported"])
         self.assertFalse(children["hooks_inherited"])
-        self.assertEqual(children["attachment"], "separate_wrapper_lifecycle")
-        self.assertEqual(children["trust_review"], "/hooks")
+        self.assertTrue(children["repo_harness_inherited"])
+        self.assertEqual(children["attachment"], "inherited_repo_harness")
+        self.assertEqual(children["separate_harness_boundary"], "independent_git_repository")
         self.assertIn("consumer-project smoke test", children["verification"])
 
     def test_onboarding_contract_rejects_incomplete_required_initialization(self):
@@ -2219,8 +2404,8 @@ class SourceContractTest(unittest.TestCase):
 class TransformPlanningTest(unittest.TestCase):
     def test_plan_transform_action_maps_diagnosis_to_mode(self):
         self.assertEqual(plan_transform_action("migration_required", True), "migrate_layout")
-        self.assertEqual(plan_transform_action("missing", False), "bootstrap")
-        self.assertEqual(plan_transform_action("missing", True), "adopt")
+        self.assertEqual(plan_transform_action("missing", False), "create_repo_first")
+        self.assertEqual(plan_transform_action("missing", True), "attach")
         self.assertEqual(plan_transform_action("partial", False), "repair")
         self.assertEqual(plan_transform_action("partial", True), "repair")
         self.assertEqual(plan_transform_action("complete", False), "verify")
@@ -2863,6 +3048,15 @@ class GlobalDispatcherTest(unittest.TestCase):
 
 class UpgradeAllHarnessTest(unittest.TestCase):
     @staticmethod
+    def admin(target, repo):
+        return {
+            "repo_root": str(Path(target).resolve()),
+            "repository": repo,
+            "viewer_permission": "ADMIN",
+            "verified": True,
+        }
+
+    @staticmethod
     def latest_v010():
         return {"version": "v0.10.0", "source": "test", "error": None}
 
@@ -2877,6 +3071,10 @@ class UpgradeAllHarnessTest(unittest.TestCase):
     @staticmethod
     def latest_v013():
         return {"version": "v0.13.1", "source": "test", "error": None}
+
+    @staticmethod
+    def latest_v014():
+        return {"version": "v0.14.0", "source": "test", "error": None}
 
     def create_wrapper_source(self, root: Path, version: str = "v0.10.0") -> Path:
         wrapper_root = root / "wrapper-source"
@@ -2982,6 +3180,29 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertIn("original clean", (clean / "SKILL.md").read_text(encoding="utf-8"))
             self.assertIn("original dirty", (dirty / "SKILL.md").read_text(encoding="utf-8"))
 
+    def test_upgrade_all_blocks_write_when_target_admin_cannot_be_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root)
+            self.create_upgrade_target(home, "admin-required", initialize_git=True)
+
+            def deny_admin(target, repo):
+                raise ValueError(f"ADMIN permission required for {repo}")
+
+            report = apply_upgrade_all(
+                home,
+                wrapper_root,
+                "v0.10.0",
+                approve=True,
+                latest_resolver=self.latest_v010,
+                admin_resolver=deny_admin,
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertTrue(any("ADMIN permission" in item for item in report["errors"]))
+
     def test_upgrade_all_blocks_incomplete_wrapper_source_before_target_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3005,8 +3226,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            first = self.create_upgrade_target(home, "first")
-            second = self.create_upgrade_target(home, "second")
+            first = self.create_upgrade_target(home, "first", initialize_git=True)
+            second = self.create_upgrade_target(home, "second", initialize_git=True)
             (first / "README.md").write_text("business first\n", encoding="utf-8")
             (second / "README.md").write_text("business second\n", encoding="utf-8")
             (first / "empty-business-dir").mkdir()
@@ -3045,6 +3266,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -3102,9 +3324,10 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                 report = apply_upgrade_all(
                     home,
                     Path.cwd(),
-                    "v0.13.1",
+                    "v0.14.0",
                     approve=True,
-                    latest_resolver=self.latest_v013,
+                    latest_resolver=self.latest_v014,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "rolled_back")
@@ -3172,26 +3395,24 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = apply_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.13.1",
+                "v0.14.0",
                 approve=True,
-                latest_resolver=self.latest_v013,
+                latest_resolver=self.latest_v014,
+                admin_resolver=self.admin,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.13.1",
-                updated,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("Version Refresh Note", updated)
 
     def test_upgrade_all_is_idempotent_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            target = self.create_upgrade_target(home, "current-after-upgrade")
+            target = self.create_upgrade_target(home, "current-after-upgrade", initialize_git=True)
 
             def fake_plan(target, latest_version, **kwargs):
                 return {
@@ -3225,6 +3446,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
                 second = apply_upgrade_all(
                     home,
@@ -3232,6 +3454,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(first["status"], "applied")
@@ -3246,7 +3469,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
-            target = self.create_upgrade_target(home, "refresh-global")
+            target = self.create_upgrade_target(home, "refresh-global", initialize_git=True)
             apply_global_hook_install(home, wrapper_root, approve=True)
             installed_dispatcher = home / ".evozeus/hooks/evozeus_wrapper_dispatcher.py"
             installed_dispatcher.write_text("# outdated dispatcher\n", encoding="utf-8")
@@ -3286,6 +3509,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "v0.10.0",
                     approve=True,
                     latest_resolver=self.latest_v010,
+                    admin_resolver=self.admin,
                 )
 
             self.assertEqual(report["status"], "applied")
@@ -3386,7 +3610,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             )
 
             self.assertEqual(report["status"], "blocked")
-            self.assertTrue(any("git worktree" in error for error in report["errors"]))
+            self.assertTrue(any("Git repository" in error for error in report["errors"]))
 
     def test_upgrade_all_rejects_non_authoritative_latest_version(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3665,7 +3889,7 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             self.assertEqual(plan["upgrade_status"], "up_to_date")
             self.assertEqual(plan["recommended_action"], "migrate_layout")
 
-    def test_plan_harness_upgrade_returns_append_only_migration_plan(self):
+    def test_plan_harness_upgrade_returns_canonical_harness_skill_migration_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "skill"
             target.mkdir()
@@ -3690,8 +3914,8 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             self.assertEqual(plan["oldest_infra_dir"], ".evozeus")
             self.assertEqual(plan["manifest_path"], TARGET_WRAPPER_MANIFEST)
             self.assertFalse(plan["legacy_manifest_detected"])
-            self.assertFalse(plan["migration_required"])
-            self.assertTrue(plan["append_only"])
+            self.assertTrue(plan["migration_required"])
+            self.assertFalse(plan["append_only"])
             self.assertTrue(plan["status_check_first"])
             self.assertFalse(plan["requires_confirmation"])
             self.assertEqual(
@@ -3700,8 +3924,8 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
             self.assertEqual(plan["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(plan["integration"]["native_host_hook_installed"])
-            self.assertIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
-            self.assertIn("SKILL.md EvoZeus-CoEvolve section or migration note (append only)", plan["planned_files"])
+            self.assertIn("SKILL.md canonical Harness Skill activation block", plan["planned_files"])
+            self.assertIn(TARGET_HARNESS_SKILL, plan["planned_files"])
             self.assertIn(TARGET_MIGRATIONS_README, plan["planned_files"])
             self.assertIn(TARGET_WRAPPER_MANIFEST, plan["planned_files"])
             self.assertIn(".codex/hooks.json", plan["planned_files"])
@@ -3744,11 +3968,11 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "AGENTS.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
+                "AGENTS.md canonical Harness Skill activation block",
                 plan["planned_files"],
             )
             self.assertIn("AGENTS.md", plan["evolution_surface_policy"])
-            self.assertNotIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
+            self.assertNotIn("SKILL.md canonical Harness Skill activation block", plan["planned_files"])
 
     def test_plan_harness_upgrade_uses_hook_loaded_control_skill_for_plugin_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3779,7 +4003,7 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "skills/session-bootstrap/SKILL.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
+                "skills/session-bootstrap/SKILL.md canonical Harness Skill activation block",
                 plan["planned_files"],
             )
             self.assertIn("skills/session-bootstrap/SKILL.md", plan["evolution_surface_policy"])

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,11 @@ try:
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
+        independent_repo_root,
+        latest_changelog_tag,
+        migrate_instruction_surface_to_harness_entry,
+        require_repo_admin,
+        version_key,
         write_wrapper_manifest,
     )
 except ImportError:
@@ -22,6 +28,11 @@ except ImportError:
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
+        independent_repo_root,
+        latest_changelog_tag,
+        migrate_instruction_surface_to_harness_entry,
+        require_repo_admin,
+        version_key,
         write_wrapper_manifest,
     )
 
@@ -30,14 +41,10 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
-STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
-LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
-LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
-INITIAL_VERSION = "v0.1.0"
-WRAPPER_VERSION = "v0.13.1"
+WRAPPER_VERSION = "v0.14.0"
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
@@ -95,27 +102,36 @@ def require_github_cli() -> None:
         fail("gh is installed but not authenticated; run gh auth login")
 
 
-def check_github_repo_available(repo: str) -> str:
-    cmd = ["gh", "repo", "view", repo, "--json", "nameWithOwner,url,visibility"]
-    try:
-        result = subprocess.run(cmd, text=True, capture_output=True)
-    except FileNotFoundError:
-        fail("gh CLI is required to verify whether the target GitHub repo already exists")
-
-    if result.returncode == 0:
-        fail(f"GitHub repo already exists: {repo}. Stop before creating a new harness.")
-
-    output = f"{result.stdout}\n{result.stderr}"
-    not_found_markers = [
-        "Could not resolve to a Repository",
-        "Not Found",
-        "HTTP 404",
-        "repository not found",
-    ]
-    if any(marker.lower() in output.lower() for marker in not_found_markers):
-        return f"verified GitHub repo is available: {repo}"
-
-    fail(f"could not verify whether GitHub repo exists: {repo}\n{output.strip()}")
+def resolve_current_skillware_version(target: Path, repo: str, explicit: str | None) -> str:
+    if explicit:
+        try:
+            version_key(explicit)
+        except ValueError as exc:
+            fail(str(exc))
+        return explicit
+    release = subprocess.run(
+        ["gh", "release", "view", "--repo", repo, "--json", "tagName"],
+        text=True,
+        capture_output=True,
+    )
+    if release.returncode == 0:
+        try:
+            tag = json.loads(release.stdout).get("tagName")
+        except json.JSONDecodeError:
+            tag = None
+        if isinstance(tag, str) and tag.strip():
+            try:
+                version_key(tag.strip())
+            except ValueError:
+                fail(f"target GitHub latest release is not semantic: {tag.strip()}")
+            return tag.strip()
+    changelog_version = latest_changelog_tag(target)
+    if changelog_version:
+        return changelog_version
+    fail(
+        "target Repo has no GitHub release or versioned CHANGELOG; "
+        "pass --current-version vMAJOR.MINOR.PATCH after the Owner confirms its current version"
+    )
 
 
 def copy_template_file(src: Path, dst: Path, replacements: dict[str, str], force: bool) -> str:
@@ -133,6 +149,8 @@ def target_template_path(rel: Path) -> Path:
         return rel
     if rel_text.startswith(".codex/hooks/"):
         return Path(TARGET_EVOINFRA_DIR) / "hooks" / rel.name
+    if rel_text.startswith(".evozeus_evoinfra/skills/"):
+        return Path(TARGET_EVOINFRA_DIR) / rel.relative_to(".evozeus_evoinfra")
     if rel_text.startswith(".evozeus_evoinfra/"):
         return Path(TARGET_EVOINFRA_DIR) / "policies" / rel.name
     if rel_text.startswith("docs/wrapper-migrations/"):
@@ -238,7 +256,7 @@ def build_wrapper_section(replacements: dict[str, str]) -> str:
 
 调用 wrapper 的场景：
 
-1. 本 Skill 需要 repo 化、adopt/repair wrapper harness、或确认 canonical source。
+1. 本 Skillware Repo 需要 attach/adopt/repair Harness，或确认 canonical source。
 2. `{TARGET_WRAPPER_MANIFEST}` 中的 wrapper harness version 落后于 EvoZeus-CoEvolve 最新版本。
 3. `~/.evozeus/.projects/{replacements["REPO_NAME"]}`、`.codex` 或 `.agents` runtime install 疑似不是同一个 source of truth。
 4. 使用反馈先进入当前 invocation 的本地待确认状态；用户明确确认后才提交 Skill Feedback Issue；另获修复授权后才能进入 design doc、PR、CHANGELOG、release 的自进化闭环。
@@ -278,64 +296,26 @@ Runtime integration modes:
 """
 
 
-def has_heading(text: str, heading: str) -> bool:
-    return any(line.strip() == heading for line in text.splitlines())
-
-
-def content_insert_index(text: str) -> int:
-    if not text.startswith("---\n"):
-        return 0
-    end = text.find("\n---\n", 4)
-    if end == -1:
-        return 0
-    return end + len("\n---\n")
-
-
-def prepend_status_section_if_missing(target: Path, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    if has_heading(text, STATUS_SECTION_HEADING) or has_heading(text, LEGACY_STATUS_SECTION_HEADING):
-        return f"skip existing {STATUS_SECTION_HEADING} in {skill_path}"
-
-    insert_at = content_insert_index(text)
-    prefix = text[:insert_at].rstrip()
-    suffix = text[insert_at:].lstrip()
-    if prefix:
-        updated = prefix + "\n\n" + section.rstrip() + "\n\n" + suffix
-    else:
-        updated = section.rstrip() + "\n\n" + suffix
-    skill_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
-    return f"prepend {STATUS_SECTION_HEADING} to {skill_path}"
-
-
-def append_section_if_missing(target: Path, heading: str, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    compatible_headings = {heading}
-    if heading == WRAPPER_SECTION_HEADING:
-        compatible_headings.add(LEGACY_WRAPPER_SECTION_HEADING)
-    if any(has_heading(text, candidate) for candidate in compatible_headings):
-        return f"skip existing {heading} in {skill_path}"
-
-    updated = text.rstrip() + "\n\n" + section.rstrip() + "\n"
-    skill_path.write_text(updated, encoding="utf-8")
-    return f"append {heading} to {skill_path}"
-
-
-def inject_evolution_method(target: Path, replacements: dict[str, str]) -> list[str]:
-    return [
-        prepend_status_section_if_missing(target, build_status_section(replacements)),
-        append_section_if_missing(target, EVOLUTION_SECTION_HEADING, build_evolution_section(replacements)),
-        append_section_if_missing(target, WRAPPER_SECTION_HEADING, build_wrapper_section(replacements)),
-    ]
+def inject_evolution_method(
+    target: Path,
+    replacements: dict[str, str],
+    instruction_surface: str = "SKILL.md",
+) -> list[str]:
+    changed = migrate_instruction_surface_to_harness_entry(target, instruction_surface)
+    action = "write" if changed else "keep"
+    return [f"{action} canonical Harness Skill activation block in {target / instruction_surface}"]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Bootstrap an EvoZeus-CoEvolve dashboard into a local Skill folder.")
-    parser.add_argument("target", help="Path to the local Skill folder.")
+    parser = argparse.ArgumentParser(description="Attach EvoZeus-CoEvolve to an independent Git repository root.")
+    parser.add_argument("target", help="Path to the independent target Git repository root.")
     parser.add_argument("--skill-name", help="Display name for the Skill.")
     parser.add_argument("--repo", required=True, help="Target GitHub repo in OWNER/REPO format.")
     parser.add_argument("--visibility", choices=["public", "private"], help="GitHub repo visibility.")
+    parser.add_argument(
+        "--current-version",
+        help="Owner-confirmed current Skillware version when the target Repo has no release or versioned CHANGELOG.",
+    )
     parser.add_argument(
         "--init-command",
         help="Target Skill-owned initialization command; requires --init-verification.",
@@ -347,7 +327,7 @@ def main() -> int:
     parser.add_argument(
         "--generates-child-skills",
         action="store_true",
-        help="Declare that generated child Skills require separate wrapper and hook onboarding.",
+        help="Declare generated child Skills; they inherit this Repo Harness unless published as independent Repos.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing wrapper files.")
     args = parser.parse_args()
@@ -357,6 +337,15 @@ def main() -> int:
         fail(f"target folder does not exist: {target}")
     if not (target / "SKILL.md").exists():
         fail(f"target folder must contain SKILL.md: {target}")
+    try:
+        repo_root = independent_repo_root(target)
+    except ValueError as exc:
+        fail(str(exc))
+    if repo_root != target:
+        fail(
+            "Harness can only be attached at the independent Git repository root: "
+            f"requested={target}; repo_root={repo_root}"
+        )
     validate_repo(args.repo)
     if not TARGET_TEMPLATE_DIR.exists():
         fail(f"template folder missing: {TARGET_TEMPLATE_DIR}")
@@ -365,10 +354,20 @@ def main() -> int:
     if not NOTICE_SCRIPT.exists():
         fail(f"notice script missing: {NOTICE_SCRIPT}")
     require_github_cli()
-    repo_check = check_github_repo_available(args.repo)
+    try:
+        authority = require_repo_admin(target, args.repo)
+    except ValueError as exc:
+        fail(str(exc))
 
-    visibility = args.visibility or ask_visibility()
+    detected_visibility = str(authority.get("visibility") or "").lower()
+    visibility = args.visibility or detected_visibility or ask_visibility()
+    if detected_visibility and visibility != detected_visibility:
+        fail(
+            "requested visibility does not match the existing GitHub repository: "
+            f"requested={visibility}; actual={detected_visibility}"
+        )
     skill_name = args.skill_name or infer_skill_name(target)
+    current_version = resolve_current_skillware_version(target, args.repo, args.current_version)
     try:
         onboarding = build_onboarding_contract(
             repo=args.repo,
@@ -381,8 +380,8 @@ def main() -> int:
         fail(str(exc))
     replacements = {
         "DATE": date.today().isoformat(),
-        "INITIAL_VERSION": INITIAL_VERSION,
-        "CURRENT_VERSION": INITIAL_VERSION,
+        "INITIAL_VERSION": current_version,
+        "CURRENT_VERSION": current_version,
         "REPO_NAME": args.repo,
         "REPO_URL": f"https://github.com/{args.repo}",
         "SKILL_NAME": skill_name,
@@ -390,10 +389,13 @@ def main() -> int:
         "WRAPPER_VERSION": WRAPPER_VERSION,
     }
 
-    actions = [repo_check]
+    actions = [
+        f"verified independent Git repository root: {target}",
+        f"verified GitHub ADMIN authority: {authority['repository']}",
+    ]
     actions.extend(copy_templates(target, replacements, args.force))
     actions.extend(ensure_project_pointer(target, args.repo, args.force))
-    actions.extend(inject_evolution_method(target, replacements))
+    actions.extend(inject_evolution_method(target, replacements, instruction_surface="SKILL.md"))
     actions.append(
         write_wrapper_manifest(
             target,
@@ -402,29 +404,28 @@ def main() -> int:
                 WRAPPER_VERSION,
                 WRAPPER_MANAGED_FILES,
                 [],
+                instruction_surface="SKILL.md",
                 onboarding=onboarding,
             ),
             args.force,
         )
     )
-    print("EvoZeus-CoEvolve bootstrap complete.")
+    print("EvoZeus-CoEvolve repository Harness attachment complete.")
     print(f"Target: {target}")
     print(f"Repo: {args.repo}")
     print(f"Visibility: {visibility}")
-    print(f"Initial version: {INITIAL_VERSION}")
+    print(f"Preserved Skillware version: {current_version}")
     print(f"EvoZeus project pointer: {local_project_dir(args.repo)}")
     for action in actions:
         print(f"- {action}")
 
-    visibility_flag = "--public" if visibility == "public" else "--private"
     print("\nNext commands from the target folder:")
-    print(f"python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {args.repo} --allow-missing-repo")
+    print(f"python3 {TARGET_PREFLIGHT_SCRIPT} doctor --repo {args.repo}")
     print(f"python3 {TARGET_PREFLIGHT_SCRIPT} structure")
-    print("git init")
     print("git add .")
-    print('git commit -m "Initialize wrapped Skill dashboard"')
-    print(f"gh repo create {args.repo} --source . {visibility_flag} --push")
-    print(f'gh release create {INITIAL_VERSION} --repo {args.repo} --target main --title "{INITIAL_VERSION}" --notes "Initial wrapped Skill harness for {skill_name}."')
+    print('git commit -m "Attach EvoZeus CoEvolve Harness"')
+    print("git push")
+    print("Preserve the target Repo release version; attaching a Harness does not create or reset a Skillware release.")
     if visibility == "public":
         print(f"gh api --method POST repos/{args.repo}/pages -f build_type=workflow")
         print(f"gh variable set EVOZEUS_PAGES_ENABLED --body true --repo {args.repo}")

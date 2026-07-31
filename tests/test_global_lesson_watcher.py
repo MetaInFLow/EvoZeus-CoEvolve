@@ -30,7 +30,7 @@ class GlobalLessonWatcherTest(unittest.TestCase):
         spec.loader.exec_module(self.dispatcher_module)
 
     def test_patch_version_identifies_the_new_harness(self):
-        self.assertEqual(WRAPPER_VERSION, "v0.13.1")
+        self.assertEqual(WRAPPER_VERSION, "v0.14.0")
 
     def create_wrapped_target(self, home: Path, name: str, version: str = "v0.13.0") -> Path:
         target = home.parent / f"canonical-{name}"

@@ -2,7 +2,11 @@
 
 ## 核心判断
 
-EvoZeus-CoEvolve 面向一个已经存在的本地 Skill 文件夹或兼容 Skillware bundle。用户安装和启动 EvoZeus，由 EvoZeus 在 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时路由到 CoEvolve attachment layer。
+EvoZeus-CoEvolve 面向一个已经存在的独立 Skillware Git Repo。用户安装和启动 EvoZeus，由 EvoZeus 在该 Repo 需要反馈闭环、版本治理或 Harness 维护时路由到 CoEvolve attachment layer。
+
+活动 Harness 只能位于独立 Git Repo 根目录的 `.evozeus-wrapper/`。Repo 内部 Skill、package、pack 和 app 继承根 Harness；普通文件夹和嵌套 Harness 不在合同范围内。任何 Harness 写入、升级或上传要求目标 GitHub Repo 的 `ADMIN` 权限。
+
+边界决策见 [`specs/2026-07-30-independent-repo-harness-boundary.md`](specs/2026-07-30-independent-repo-harness-boundary.md)。
 
 它把目标补齐成一个最小 Collaborative Evolution lifecycle harness：
 
@@ -159,9 +163,9 @@ python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.13.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
 ```
 
 `loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
@@ -172,8 +176,8 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 
 
 - Skill release 描述目标 Skill 行为版本。
 - Wrapper harness version 描述 EvoZeus-CoEvolve 注入的模板、脚本和治理逻辑版本。
-- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities` 和 `onboarding`。
-- `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及不继承父 hook 的子 Skill 单独接入和验证。
+- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities`、`onboarding`、`instruction_surface`、`harness_skill_path`、`harness_skill_version` 和 `harness_skill_managed=true`。
+- `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及子 Skill 继承 Repo 根 Harness后的独立运行验证。
 - `dashboard.deployment_mode=opt_in_github_pages`；workflow validation 不依赖 Pages，部署由 `EVOZEUS_PAGES_ENABLED=true` 显式开启。
 - 最新 wrapper 版本默认取 GitHub latest release；来源不可用时必须返回 `latest_unknown` 和查询证据，不能回退为当前版本。
 - wrapper major upgrade 必须用户确认。
@@ -181,11 +185,13 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 
 - legacy layout migration 可以更新 target-owned 文档或脚本中的旧 wrapper 路径引用；计划必须列出并备份完整 write set，且不得改变业务语义。
 - `migrate-layout` 和 `upgrade-all` 都必须拒绝绝对路径、`..` 越界和任何包含 symlink component 的 write path；manifest-selected instruction surface 同样必须是 target 内部的普通文件。
 - wrapper upgrade 必须生成迁移方案，列出每个 source/destination、冲突、保留的宿主接点、验证命令和回滚方案；有冲突时不得写入。
-- layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新状态段和 manifest integration，追加 migration note，并通过 post-migration structure validation 后才返回成功。
+- layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新 canonical Harness Skill、compact entry 和 manifest integration，并通过 post-migration structure validation 后才返回成功。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
-- 目标 `SKILL.md` 的 frontmatter 后必须先出现 `EvoZeus-CoEvolve 状态检查`，列出当前 Skill release、wrapper harness version、source contract 检查和对应解决方法；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
-- 目标 Harness 必须安装并校验 Notice policy 与 CLI；目标 Skill 状态段必须声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
-- 目标 `SKILL.md` 中的 `EvoZeus-CoEvolve` 区域只能追加或补缺；如果已经存在，升级时追加 migration note，不改写旧业务段落。
+- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.0.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
+- `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。
+- 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
+- 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 
 ## Case: GitHub-backed Skill already exists
@@ -193,7 +199,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 
 `engineering-everything` 自进化时暴露了一个 wrapper 级反模式：agent 先修改安装副本，再查公开 GitHub，最后才发现用户自己的 repo 已存在。正确机制必须进入 wrapper，而不是只留在具体 Skill case 中：
 
 1. 先检查 `git` / `gh` / `gh auth status`。
-2. 当前目录在 git repo 内时，先验证 `origin` 是否是可访问 GitHub repo；bootstrap pre-create 阶段可用 `--allow-missing-repo` 验证目标 repo 可创建。
+2. 当前目录必须解析到独立 Git Repo 根目录；验证 `origin` 与目标 GitHub Repo 匹配。Repo 不存在时先创建 Repo，不能预先写入 Harness。
 3. 当前目录只是安装副本时，先查当前 `gh` 用户 repo，再查用户所属 org repo，最后才扩大到公开 repo 搜索。
 4. lesson 候选先进入 GitHub Issue 队列，再决定是否写入 Skill 内部 lesson / pattern。
 5. 安装副本只作为部署目标；GitHub repo clone 才是 canonical source。
@@ -201,7 +207,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 
    - GitHub latest release tag。
    - `.evozeus-wrapper/CHANGELOG.md` 最新 `vMAJOR.MINOR.PATCH` 条目，并先为该 tag 创建或确认 GitHub release。
    - 两者都没有时停止，让 owner 选择首个 Skill version。
-7. `v0.1.0` 只用于新建目标 repo 的首个 wrapped Skill release；wrapper harness version 另由 `.evozeus-wrapper/wrapper.json` 记录。
+7. 接入 Harness 不重置目标 Repo 的版本；wrapper harness version 另由 `.evozeus-wrapper/wrapper.json` 记录。
 
 ## Data Policy
 

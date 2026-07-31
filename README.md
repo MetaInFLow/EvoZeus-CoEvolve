@@ -1,224 +1,193 @@
-# EvoZeus-CoEvolve
+# EvoZeus CoEvolve
 
-**An Add-On Harness for Collaborative Evolution of Existing Skillware**
+**为独立 Skillware Repo 增加可审查、可验证、可回滚的进化闭环。**
 
-EvoZeus-CoEvolve 是 EvoZeus 体系中的 Collaborative Evolution 系统与公开论文 artifact 入口。它为本地静态 `SKILL.md`、根入口为 `AGENTS.md` 的 runtime kit，或由 hook / plugin 控制的 Skill bundle 加装可审查、可发布、可恢复的演进 harness，同时保留目标 Skillware 的核心任务逻辑和原开发方式。
+[![Release](https://img.shields.io/github/v/release/MetaInFLow/EvoZeus-CoEvolve)](https://github.com/MetaInFLow/EvoZeus-CoEvolve/releases)
+[![CI](https://github.com/MetaInFLow/EvoZeus-CoEvolve/actions/workflows/ci.yml/badge.svg)](https://github.com/MetaInFLow/EvoZeus-CoEvolve/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-当前开发候选版本 `v0.13.1` 在正式版 `v0.13.0` 的目标 Skill Notice 基础上，增加普通 Chat 的全局 `UserPromptSubmit` Lesson watcher：用户纠错无需先 `@Skill`，内部 audit JSON 不再进入用户可见合同。它继续提供由 EvoZeus Stable/UAT 渠道清单固定版本的 `external-sidecar` 合同包。跨用户信号聚合、frontier code/research adapters、candidate generation 和独立行为评价仍按公开研究边界推进；README 和论文只陈述已有验证结果。
-
-开发中的 Slice-01 已在 `contracts/v1/` 建立首个 hash-bound Collaborative Evolution contract bundle。它只定义 attachment 和 target template inventory；执行、安装和本地状态由 `EvoZeus-infra` 的 EvoZeus Runtime 实现。`external-sidecar` contract 固定为目标 Skillware 零写入，尚未发布为 `v0.11.3` 的现有能力。
-
-## Research paper
-
-- **Title**: *EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware*
-- **Authors**: Haodi Fan and Zucong Lan, MetaInFlow
-- **Emails**: [anthonyfan@metainflow.cn](mailto:anthonyfan@metainflow.cn); [neillan@metainflow.cn](mailto:neillan@metainflow.cn)
-- **Author GitHub**: [HaodiFan](https://github.com/HaodiFan)
-- **Artifact**: [MetaInFLow/EvoZeus-CoEvolve](https://github.com/MetaInFLow/EvoZeus-CoEvolve)
-- **Skillware foundation**: [arXiv:2607.18970](https://arxiv.org/abs/2607.18970)
-- **Artifact manifest and claim boundary**: [`research/collaborative-evolution/`](research/collaborative-evolution/)
-- **First public feasibility case**: [Engineering Everything](research/collaborative-evolution/examples/engineering-everything/)
-
-Collaborative Evolution 在本文中指：一个具有共享身份的 Skillware Unit，从其用户群体和指定外部来源获得演进信号，将信号转换为可独立验证的候选变更，并把通过治理的版本重新分发给兼容用户。贡献证据的用户与受益用户可以分离。
-
-首个公开案例把 harness 加装到非具体开发项目的 [Engineering Everything](https://github.com/HaodiFan/engineering-everything) Skillware：12 个 runtime Skills 的目标业务内容在排除版本元数据和 harness-owned 段落后保持 `12/12` 一致；原生门禁、发布门禁、24 个 fresh-client canonical symlinks 和 `v0.12.0` 回退演练均通过。该证据只支持 attachment 与 governed lifecycle 的可行性，不支持协同进化效果优于其他方法的结论。
-
-Repository 与产品名已统一为 `EvoZeus-CoEvolve`。为保持已接入 Skill 的运行兼容，`.evozeus-wrapper/`、`evozeus_wrapper.py`、`EVOZEUS_WRAPPER_*` 与现有 Skill slug 继续作为稳定技术标识。
-
-用户入口由 EvoZeus 提供。当 EvoZeus 判断一个 promoted Skill 或已有本地 Skill 需要 repo 化、反馈闭环和版本治理时，会路由到 EvoZeus-CoEvolve。
-
-本 repo 的 root `SKILL.md` 只做薄入口，不承载完整操作流程。实际使用协议放在 `skills/using-evozeus-wrapper/SKILL.md`，再由它按阶段调用 environment diagnosis、target diagnosis、evolution surface diagnosis、status assessment、transform、publish/reinstall、loop 和 harness upgrade Skills。
-
-**Before**：本地可能是单 Skill 文件夹（根 `SKILL.md`），也可能是 runtime kit / Skill bundle（根 `AGENTS.md` + `skills/*/SKILL.md`），还可能是由 plugin manifest 和 session hook 加载控制 Skill 的系统。
-
-**After**：该 Skill 或 runtime kit 变成一个可运行、可反馈、可审查、可发布的 GitHub repo：
-
-- 有一个 repo-local 驾驶舱；GitHub Pages 在仓库能力确认后显式启用。
-- 用户在创建时明确选择 `public` 或 `private`。
-- 创建前检查目标 GitHub repo 是否已经存在，避免重复 harness。
-- 本地只保留一个 physical canonical repo，`~/.evozeus/.projects/OWNER/REPO` 和 runtime 安装路径都指向它。
-- wrapper 先做 evolution surface assessment，再把 wrapper-owned 状态检查区放进真正控制 agent 行为的说明面：单 Skill 通常是 `SKILL.md`，runtime kit 通常是 `AGENTS.md`，hook/plugin 控制的系统可能是被 session hook 加载的控制 Skill，例如 `skills/<control-skill>/SKILL.md`。新增内容只说明状态检查、自进化方法和 `EvoZeus-CoEvolve` 路由，不改写业务规则。
-- wrapper 产物统一归入 `.evozeus-wrapper/`，manifest 位于 `.evozeus-wrapper/wrapper.json`。
-- `.evozeus-wrapper/docs/onboarding.md` 和 manifest 的 `onboarding` 字段记录安装、调用、目标 Skill 初始化及子 Skill hook 接入契约。
-- 每次受管 Skill invocation 的第一条用户可见输出显示一次以 `🧙🏻‍♂️` 开始、Tag 为 `EvoZeus · 受管 Skill` 的身份头，列出 canonical repo、Skill release、Harness version 与开发版/UAT/正式版渠道。
-- 每个目标 Skill 获得可配置 Notice policy 和只读 CLI；Lesson、Evolution、Maintenance、UAT、Release、Advisory 与 Blocked 使用统一 Emoji + EvoZeus Tag。
-- `.evozeus-wrapper/CHANGELOG.md` 记录每次 Skill 迭代。
-- 增加 GitHub Issue 反馈入口，专门收集“使用中结果不满意”的场景。
-- 增加 `.evozeus-wrapper/docs/design-doc-template.md` 和 `.evozeus-wrapper/docs/designs/`，每次 Skill 更新先写 design doc。
-- 增加上传前检查：Issue 格式、PR design doc、CHANGELOG、release tag 和 release notes。
-
-## 第一性原理
-
-静态 Skill 会在真实使用中持续暴露新需求、环境差异和可迁移改进。EvoZeus-CoEvolve 为这些演进信号提供可追踪、可审查、可回滚的治理路径，并使通过验证的共享版本能够服务后续兼容用户。
-
-EvoZeus-CoEvolve 的最小闭环是：
+EvoZeus CoEvolve 是 [EvoZeus](https://github.com/MetaInFLow/EvoZeus) 的可选进化扩展与 Evolution Harness SDK。它把真实使用中的 Lesson 转换为有证据、有责任人、有验证结果的 Repo 变更：
 
 ```text
-environment diagnosis
-  -> GitHub access / permission check
-  -> target repo architecture, Skill inventory, and evolution surface assessment
-  -> component gap report
-  -> one physical canonical GitHub repo
-  -> ~/.evozeus/.projects/OWNER/REPO pointer
-  -> runtime symlink install
-  -> repo dashboard + optional GitHub Pages deployment
-  -> feedback Issue
-  -> design doc
-  -> PR
-  -> CHANGELOG
-  -> release
-  -> run-time latest release check
+Lesson → Feedback Issue → Design → PR → UAT → Release → Rollback Point
 ```
 
-这不是 agent runtime，也不是 prompt 管理平台，也不是和 EvoZeus 平级的用户入口。它只做一件事：在 EvoZeus 调度下，把一个本地 Skill 文件夹或 Skill bundle / runtime kit 包装成可自我进化的协作单元。
+普通用户通过 EvoZeus 使用这项能力。维护者在需要诊断、接入、升级或开发 Harness 时直接进入本 Repo。
 
-## 使用方式
+## 核心边界
 
-### 1. 分阶段诊断
+Evolution Harness 的治理单位是独立 Git Repo：Issue、PR、Owner、UAT、Release 和回滚都发生在这个边界。
 
-通常由 EvoZeus 判断并路由到本 repo。维护者也可以直接运行阶段 CLI：
+- 一个独立 Git Repo 最多拥有一个活动 Harness。
+- Harness 固定在 Repo 根目录的 `.evozeus-wrapper/`。
+- Skill、package、pack、app、example 和其他子目录继承所在 Repo 的根 Harness。
+- 普通文件夹不能接入 Harness。
+- 传入 Repo 子目录时，工具统一定位到 Repo 根目录。
+- 发现嵌套 Harness 时，诊断和维护操作立即停止。
+- 只读诊断和升级计划对普通用户开放。
+- Harness 写入、升级和上传要求目标 GitHub Repo 的 `ADMIN` 权限。
 
-```bash
-python3 scripts/evozeus_wrapper.py env diagnose --json
-python3 scripts/evozeus_wrapper.py skill diagnose --target /absolute/path/to/my-skill-or-runtime-kit --repo MetaInFLow/my-skill --json
-python3 scripts/evozeus_wrapper.py skill transform --mode bootstrap --target /absolute/path/to/my-skill --repo MetaInFLow/my-skill --instruction-surface <relative path> --visibility private --dry-run --json
-python3 scripts/evozeus_wrapper.py publish reinstall --skill-name my-skill --canonical-path /absolute/path/to/my-skill --target codex --dry-run --json
-python3 scripts/evozeus_wrapper.py publish reinstall --skill-name my-skill --canonical-path /absolute/path/to/my-skill --target codex --json
-python3 scripts/evozeus_wrapper.py hook global plan --json
-python3 scripts/evozeus_wrapper.py hook global install --approve --json
-python3 scripts/evozeus_wrapper.py hook global status --json
-python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/my-skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/my-skill --latest-version v0.13.1 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.13.1 --dry-run --json
-```
+需要让某个内部模块独立进化时，先把它建立为有明确 Owner 和发布边界的独立 Repo，再接入 CoEvolve。
 
-如果 `env diagnose` 返回 `next_action: install_evozeus`，先安装 / 初始化 EvoZeus，不进入目标 repo transform。如果没有给 `Visibility`，Agent 必须先问用户选择 `public` 还是 `private`。如果本地发现多个 repo clone 或多个 real-directory 安装副本，必须先让用户选择 canonical repo 或归档策略。
+完整决策见 [独立 Repo Harness 边界](docs/specs/2026-07-30-independent-repo-harness-boundary.md)。
 
-目标 repo 诊断必须先用 `gh repo view` 检查 repo 是否存在、visibility、default branch 和当前账号权限，再判断架构并输出 evolution surface 候选事实：
+## 适用场景
 
-- `single_skill`：根目录 `SKILL.md`。
-- `runtime_skill_bundle`：根目录 `AGENTS.md`，并存在 `skills/*/SKILL.md`、`runtime/`、`agents/`、`automation/` 等 runtime 结构。
-- `hooked_skill_bundle`：存在 Codex project-local hook、plugin manifest lifecycle hook 或 hook-loaded control Skill，例如 `.codex/hooks.json` 或 `skills/<control-skill>/SKILL.md`。
-- `skill_bundle`：存在多个 `skills/*/SKILL.md`，但没有完整 runtime 结构。
-- `agents_runtime`：根目录 `AGENTS.md`，但没有可识别 Skill inventory。
+适合：
 
-诊断输出必须包含：
+- 一个 Skillware Repo 已经有人使用，需要持续吸收真实反馈。
+- 团队需要区分开发、唯一 UAT 候选与正式 Release。
+- Skill 行为变化需要 Issue、设计、验证和回滚证据。
+- 多个用户贡献 Lesson，但发布权仍由 Repo Owner 管理。
 
-- `evolution_surface`：候选说明入口、controller files、脚本事实边界；最终 placement 由 `skills/evolution-surface-diagnosis/SKILL.md` 判断。
-- `component_gaps`：当前 repo 缺少哪些 wrapper 文件、manifest、状态检查和 changelog。
-- `skill_inventory`：发现了哪些 `skills/*/SKILL.md`。
-- `controller_files`：Codex hook / plugin manifest / runtime controller 文件。
-- `integration`：分别报告 `repo_maintenance_hook`、`global_session_dispatcher`、`global_prompt_lesson_watcher`、`skill_entry_preflight`、Plugin/tool gateway 和未来 Skill invocation hook。当前 Codex 没有 `SkillInvoke`，不得把 project/global hook 或 prompt watcher 描述成 native per-Skill invocation hook。
+无需使用：
 
-诊断 JSON 是事实输入，不直接承担用户解释。诊断后必须先使用 `skills/evolution-surface-diagnosis/SKILL.md` 浏览整个 repo 并选择 instruction surface，再使用 `skills/status-assessment/SKILL.md` 做状态分析，把事实和判断转成用户可理解的流程进度、阻塞项和下一步命令；通过状态分析后才进入 transform。
+- 只想临时修改一个本地提示词。
+- 目标只是 monorepo 内部 package 或 Skill 目录。
+- 没有独立版本、Owner、Issue 或 Release 边界。
+- 仅需要 EvoZeus 的会话复盘与本地判断能力。
 
-维护者或 agent 直接使用本 repo 时，应先读取 `skills/using-evozeus-wrapper/SKILL.md`，不要把 root `SKILL.md` 当成完整操作手册。
+## 用户体验
 
-### 2. 用 bootstrap 脚本生成本地驾驶舱文件
-
-```bash
-python3 scripts/evozeus_wrapper_bootstrap.py /absolute/path/to/my-skill \
-  --skill-name "My Skill" \
-  --repo "MetaInFLow/my-skill"
-```
-
-如果目标 Skill 有首次初始化，必须同时提供 `--init-command` 和 `--init-verification`。会生成子 Skill 的 factory 还要增加 `--generates-child-skills`；wrapper 只记录和验证契约，不实现 company 专用逻辑。
-
-脚本会先用 `gh repo view OWNER/REPO` 检查目标 GitHub repo 是否已经存在；如果已存在，必须停止，不要重复创建 harness。
-脚本在检查 repo 前必须先确认本机有 `git`、`gh`，且 `gh auth status` 通过；如果目标 Skill 已经有 git origin，则 origin 必须是可访问的 GitHub repo。bootstrap 阶段允许目标 repo 尚不存在，但必须明确使用 `--allow-missing-repo`。
-然后脚本会交互询问 `public/private`，把 `templates/target/` 中的文件注入目标 Skill 文件夹，并复制 preflight checker。
-同时，脚本会把 dashboard、changelog、design docs、policy、preflight 和 hook adapter 统一写入 `.evozeus-wrapper/`，并在 `.evozeus-wrapper/wrapper.json` 记录 `instruction_surface`、`integration.mode` 和 `dashboard` deployment contract。目标说明面只增加状态检查、自进化方法和 wrapper 路由，不改写原业务规则。
-
-### 3. 创建 GitHub repo 和 Pages
-
-在目标 Skill 文件夹中执行：
-
-```bash
-git init
-git add .
-git commit -m "Initialize wrapped Skill dashboard"
-gh repo create MetaInFLow/my-skill --source . --public --push
-gh release create v0.1.0 --repo MetaInFLow/my-skill --target main \
-  --title "v0.1.0" \
-  --notes "Initial wrapped Skill harness."
-gh api --method POST repos/MetaInFLow/my-skill/pages -f build_type=workflow
-gh variable set EVOZEUS_PAGES_ENABLED --body true --repo MetaInFLow/my-skill
-gh workflow run evozeus-wrapper-preflight.yml --repo MetaInFLow/my-skill
-```
-
-如果选择 `private`，把 `--public` 改成 `--private`，且不要设置 `EVOZEUS_PAGES_ENABLED=true`，除非已确认当前 plan 支持 private Pages。未启用 Pages 时，workflow 仍运行 maintainer validation，并以 repository-only mode 成功结束。Pages 可能成为互联网发布面；不要把敏感内容放进 `.evozeus-wrapper/docs/`。
-
-## 目标 repo 会被增加什么
+在 EvoZeus 中可以直接表达目标：
 
 ```text
-target-skill/
-├── <evolution-surface>
+检查这个 Skillware Repo 是否已经接入进化机制
+```
+
+```text
+这里捕捉到一条 Lesson，先给我看准备记录的内容
+```
+
+```text
+检查所有我有管理权限的 Harness，给出升级计划
+```
+
+EvoZeus 负责选择入口和解释结果；CoEvolve 负责 Repo 级治理与执行合同。任何外部写入都要经过明确授权。
+
+## 维护者快速开始
+
+### 1. 诊断目标 Repo
+
+目标必须已经是独立 Git Repo，并配置匹配的 GitHub `origin`：
+
+```bash
+python3 scripts/evozeus_wrapper.py skill diagnose \
+  --target /absolute/path/to/repo-or-any-path-inside-it \
+  --repo OWNER/REPO \
+  --json
+```
+
+传入子目录时，结果中的 `repository_boundary.repo_root` 是唯一 Harness 位置。
+
+### 2. 生成首次接入计划
+
+```bash
+python3 scripts/evozeus_wrapper.py skill transform \
+  --mode attach \
+  --target /absolute/path/to/repo \
+  --repo OWNER/REPO \
+  --instruction-surface SKILL.md \
+  --visibility private \
+  --dry-run \
+  --json
+```
+
+### 3. 接入 Harness
+
+写入前会验证：目标是 Repo 根目录、GitHub origin 匹配、仓库已存在、当前账号具备 `ADMIN` 权限。
+
+```bash
+python3 scripts/evozeus_wrapper_bootstrap.py /absolute/path/to/repo \
+  --skill-name "My Skillware" \
+  --repo OWNER/REPO
+```
+
+完成后在目标 Repo 内提交 Harness 变更，并通过 PR 进入该 Repo 的唯一 UAT 候选。
+
+### 4. 检查与升级
+
+```bash
+python3 scripts/evozeus_wrapper.py harness upgrade-check \
+  --target /absolute/path/to/repo \
+  --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version vMAJOR.MINOR.PATCH \
+  --dry-run \
+  --json
+```
+
+`upgrade-all` 的实际写入还需要 `--approve`，并逐个验证目标 Repo 的管理员权限、干净工作区和可回滚快照。
+
+## Harness 产物
+
+CoEvolve 在目标 Repo 根目录维护：
+
+```text
+target-repo/
 ├── .evozeus-wrapper/
 │   ├── wrapper.json
 │   ├── CHANGELOG.md
-│   ├── WRAPPER.md
 │   ├── policies/
 │   ├── hooks/
 │   ├── scripts/
 │   └── docs/
-│       └── onboarding.md
-├── .codex/
-│   └── hooks.json
-└── .github/
-    ├── ISSUE_TEMPLATE/
-    │   ├── config.yml
-    │   └── skill-feedback.yml
-    ├── pull_request_template.md
-    └── workflows/
-        └── evozeus-wrapper-preflight.yml
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   └── workflows/
+└── <existing Skillware files>
 ```
 
-`.codex/hooks.json` 与 `.github/` 是宿主固定发现位置，只保留薄接点；wrapper 自有实现和内容都在 `.evozeus-wrapper/`。
+`.codex/` 或其他宿主固定发现位置只保留薄接点。目标业务规则仍由原 Repo Owner 管理。
 
-## 上传前检查
+## 版本与渠道
 
-目标 Skill repo 中可以运行：
+Skillware Release 与 Harness Version 是两条版本轴：
+
+- **Skillware Release**：目标 Repo 对用户交付的业务版本。
+- **Harness Version**：CoEvolve 治理能力版本，记录在 `.evozeus-wrapper/wrapper.json`。
+
+每个目标 Repo 只有一个 UAT 候选。修复 UAT 问题时覆盖该候选；通过验证后，使用同一个已验证 Commit 发布正式 Release。
+
+## 安全与隐私
+
+- 本 Repo 和公开模板不保存 raw private session、客户资料、Secret 或未脱敏证据。
+- Feedback Issue 只记录复现场景、期望行为和脱敏证据边界。
+- Public / private 由目标 Repo Owner 决定。
+- GitHub Pages 属于潜在公开发布面，未确认前保持关闭。
+- 普通 Skill 调用不会自动获得 Harness 维护权限。
+
+## Research artifact
+
+**Paper:** *EvoZeus-CoEvolve: An Add-On Harness for Collaborative Evolution of Existing Skillware*
+
+**Authors:** Haodi Fan and Zucong Lan, MetaInFlow
+
+**Emails:** [anthonyfan@metainflow.cn](mailto:anthonyfan@metainflow.cn), [neillan@metainflow.cn](mailto:neillan@metainflow.cn)
+
+**Artifact manifest:** [`research/collaborative-evolution/`](research/collaborative-evolution/)
+
+**Skillware foundation:** [arXiv:2607.18970](https://arxiv.org/abs/2607.18970)
+
+公开证据当前支持 attachment 与 governed lifecycle 的可行性。跨用户聚合效果、frontier code/research adapters、candidate generation 与效果优越性继续按 Implemented / Partial / Planned 边界陈述。
+
+## 开发与验证
 
 ```bash
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py doctor --repo MetaInFLow/my-skill --allow-missing-repo
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py structure
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py version --repo MetaInFLow/my-skill
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py issue --file issue.md
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr --design-doc .evozeus-wrapper/docs/designs/2026-06-26-example.md
-python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py release --tag v0.1.0 --release-notes release-notes.md
+python3 -m pytest -q
+python3 -m py_compile \
+  scripts/evozeus_wrapper.py \
+  scripts/evozeus_wrapper_bootstrap.py \
+  scripts/evozeus_wrapper_global_hook.py \
+  scripts/evozeus_wrapper_lifecycle.py \
+  scripts/evozeus_wrapper_preflight.py
 ```
 
-检查规则：
+贡献前请阅读 [AGENTS.md](AGENTS.md) 与 [CHANGELOG.md](CHANGELOG.md)。
 
-- Doctor：必须能找到 `git`、`gh`，`gh auth status` 必须通过；读取 `.evozeus-wrapper/wrapper.json` 后验证 project pointer、canonical repo origin、GitHub repo 和 runtime install pointer。发现 `.evozeus_evoinfra/` 或旧 `.evozeus/wrapper.json` 时必须先迁移，不能继续 fallback 运行。
-- Structure：目标 repo 必须包含 `.evozeus-wrapper/` canonical harness。说明入口由 manifest 的 `instruction_surface` 或根 `SKILL.md` / `AGENTS.md` 决定；project hook 必须声明 `scope=canonical_repository` 且不得声称 Skill invocation coverage；`onboarding` 和 `dashboard` contract 必须完整。
-- Version：运行 Skill 前必须检查 GitHub latest release；如果远端 release 比本地 `.evozeus-wrapper/CHANGELOG.md` 新，先更新再运行。
-- Identity：`python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py identity --json` 输出 `runtime_identity.display_line`；无法核验 release 或 commit 时 fail closed 为开发版，禁止用 HTML 或图片路径渲染小人。
-- Existing repo version：已有 repo 不得重置为 `v0.1.0`；先取 GitHub latest release，再取 `.evozeus-wrapper/CHANGELOG.md`，两者都没有时让 owner 选择当前版本。
-- Harness：`harness upgrade-check` 默认从 GitHub latest release 获取权威最新版本；查询失败时返回 `latest_unknown`，不得把当前版本当成最新版本。兼容的旧 Harness 只警告并继续业务流程；普通 Skill 调用不授予维护写入权限。用户明确请求维护后先运行 dry-run，实际迁移继续要求单独确认。旧 layout 或残缺的较早 v2 harness 迁移会安全合并 Codex hooks、刷新状态段和 manifest、追加 migration note，并在 structure post-validation 通过后才报告成功。
-- Workflow：push 和 workflow_dispatch 始终运行 maintainer validation。Pages deployment 只有在仓库变量 `EVOZEUS_PAGES_ENABLED=true` 时运行；否则明确使用 repository-only fallback。
-- Project hook：target `.codex/hooks.json` 只覆盖 canonical repo 维护；adapter 优先复用 global dispatcher 的 latest cache，避免重复联网。
-- Global hook：`~/.codex/hooks.json` 调用 `~/.evozeus/hooks/evozeus_wrapper_dispatcher.py`。`SessionStart` 聚合检查全部 registered wrapped Skills；`UserPromptSubmit` 在普通 Chat 每轮识别高置信纠错与可复用规则候选，并向模型注入 record-only Lesson 指引，无需先 `@Skill`。兼容版本落后返回 advisory allow；普通 Chat watcher 始终 fail-open。安装和 trust 分开报告，所有 Issue、维护与修复写入都需要各自明确授权。
-- Upgrade all：显式版本必须与 dispatcher cache、环境 override 或 GitHub release 的 authoritative latest 一致；全部 target 均需可验证的 clean Git worktree 和写权限。任一 preflight 失败时零写入，应用中途失败则恢复完整 write-set snapshots。
-- Reinstall：先用 `--dry-run` 查看计划；实际执行会创建或修正 symlink。真实目录必须显式增加 `--approve-archive`，原内容移动到 `~/.evozeus/archives/runtime-installs/`，不会删除。
-- Feedback audit：全局 `UserPromptSubmit` watcher 自动覆盖普通 Chat 的候选发现；`python3 scripts/evozeus_wrapper.py loop audit --target <repo> --user-input "<input>" --json` 保留为明确目标后的诊断与 Issue 草案入口。Agent 先完成业务纠正，只展示 `EvoZeus · Lesson` 自然语言 Notice；内部 JSON 仅供机器诊断。提交 Issue 与启动修复需要两次独立明确授权。
-- Issue：必须符合反馈模板，说明不满意结果、期望结果、复现场景、证据边界和影响程度。
-- PR：必须有 design doc，且 design doc 说明修复 issue、优化目标、优化方向、实现方式和验证计划。
-- PR：必须更新 `.evozeus-wrapper/CHANGELOG.md`。
-- Release：必须有对应 tag 的 changelog 记录，且 release description 非空。
+版本说明归档见 [Release Notes](docs/releases/README.md)。
 
-## Release 版本标准
+## License
 
-所有 release tag 必须使用 `vMAJOR.MINOR.PATCH`。
-
-- `MAJOR`：不兼容的 Skill 行为、输入要求或输出格式变化。
-- `MINOR`：新增能力、新增必需证据规则、新增 harness 行为。
-- `PATCH`：文案、示例、bug fix、校验修复或不破坏兼容性的澄清。
-
-新建目标 repo 的首个 wrapped Skill release 使用 `v0.1.0`。已有 repo 走 `adopt`，保留既有 Skill release；`.evozeus-wrapper/wrapper.json` 中的 wrapper harness version 是另一条版本轴。
-
-## 边界
-
-本 repo 不保存目标 Skill 的业务内容，不上传 raw private session，不替代目标 Skill 的 owner 判断。
-
-如果目标 Skill 涉及客户资料、商业资料、secret 或个人隐私，默认使用 private repo，并且 `.evozeus-wrapper/docs/` 里只放脱敏内容。
+[MIT](LICENSE)

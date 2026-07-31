@@ -1,13 +1,13 @@
 ---
 name: using-evozeus-wrapper
-description: Use whenever EvoZeus-CoEvolve is invoked to diagnose, bootstrap, adopt, repair, verify, publish, reinstall, release, or migrate a wrapped Skill, AGENTS.md runtime kit, or hook/plugin-controlled Skill bundle. This is the operating Skill for the wrapper lifecycle; root SKILL.md only routes here.
+description: Use whenever EvoZeus-CoEvolve is invoked to diagnose, attach, adopt, repair, verify, publish, reinstall, release, or migrate the Repo-level Harness of an independent Skillware Git repository.
 ---
 
 # Using EvoZeus Wrapper
 
 Use this Skill as the operating guide for EvoZeus-CoEvolve. The root `SKILL.md` only anchors discovery and routing.
 
-EvoZeus-CoEvolve is not the user entrypoint. EvoZeus decides when a promoted Skill, existing local Skill folder, runtime kit, or hook/plugin-controlled Skill bundle needs repoization, feedback capture, release governance, or wrapper migration.
+EvoZeus is the user entrypoint. EvoZeus-CoEvolve runs when an independent Skillware Git Repo needs feedback capture, release governance, Harness attachment, or Harness migration.
 
 ## First Principles
 
@@ -24,9 +24,11 @@ weak result
   -> updated Skill
 ```
 
-Keep one source of truth:
+Keep one source of truth and one Harness boundary:
 
 - one physical canonical GitHub repo clone for the target Skill or runtime kit
+- one `.evozeus-wrapper/` at that Git Repo root
+- packages, packs, apps, and Skill directories inherit the root Harness
 - `~/.evozeus/.projects/OWNER/REPO` pointing to the canonical repo
 - `~/.codex/skills/<skill-name>` and optional `~/.agents/skills/<skill-name>` as runtime pointers to that canonical repo
 
@@ -46,16 +48,18 @@ For wrapper-managed targets, discover source state in this order:
 
 Before writing anything, identify:
 
-- Target folder: absolute local path.
+- Target Repo: absolute independent Git repository root; a child path must be normalized to this root.
 - Target type: root `SKILL.md`, root `AGENTS.md` runtime kit, multi-Skill bundle, or hook/plugin-controlled Skill bundle.
 - Target GitHub repo: `OWNER/REPO`.
 - Visibility: `public` or `private`.
 - Skill / kit display name.
 - Whether target-owned initialization is required, including its command and verification command.
-- Whether the target generates child Skills that need separate wrapper and hook onboarding.
+- Whether the target generates child Skills; generated Skills inherit the parent Repo Harness unless they are published as independent Repos.
 - Evidence boundary: public examples only, redacted examples, or private material.
 
 If visibility is missing, ask before creating or pushing anything.
+
+Reject Harness writes when the target is outside Git, when an active Harness exists below the Repo root, or when the current GitHub account is not an `ADMIN` of the target Repo. Diagnosis and dry-run plans remain read-only.
 
 ## Version Standard
 
@@ -65,9 +69,7 @@ Use `vMAJOR.MINOR.PATCH`.
 - `MINOR`: new capability, new required evidence rule, or new harness behavior.
 - `PATCH`: wording, examples, bug fixes, validation fixes, or non-breaking clarifications.
 
-Initial wrapped release is `v0.1.0` only for a new target repo with no prior Skill release.
-
-For an existing target repo, preserve its current Skill / kit version:
+Attaching a Harness never resets the target Repo version. Preserve its current Skillware version:
 
 1. GitHub latest release tag is the current version.
 2. If GitHub has no release but `.evozeus-wrapper/CHANGELOG.md` has a latest `vMAJOR.MINOR.PATCH` entry, create or verify that release before runtime use.
@@ -151,7 +153,7 @@ Use `skills/target-skill-transform/SKILL.md`.
 
 ```bash
 python3 scripts/evozeus_wrapper.py skill transform \
-  --mode <bootstrap|adopt|repair|verify> \
+  --mode <attach|adopt|repair|verify> \
   --target /absolute/path/to/target-skill-or-kit \
   --repo OWNER/REPO \
   --instruction-surface <relative path> \
@@ -189,7 +191,7 @@ The generated manifest records onboarding separately from wrapper implementation
 - installation uses a canonical repo symlink;
 - invocation remains owned by the target Skill's canonical `SKILL.md`;
 - required initialization must provide both a target-owned command and verification;
-- child Skills do not inherit parent hooks and require a separate wrapper lifecycle, `/hooks` trust review, structure preflight, and consumer-project smoke test.
+- child Skills inherit the parent Repo Harness. A separate Harness lifecycle is allowed only after the child is published as an independent Repo.
 
 User-level global enforcement is a separate lifecycle from the portable target harness:
 
@@ -236,12 +238,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.13.1 \
+  --latest-version v0.14.0 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.13.1 \
+  --latest-version v0.14.0 \
   --dry-run \
   --json
 ```
@@ -261,18 +263,14 @@ For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capa
 
 ## GitHub Operations
 
-Use `gh` only after local target files and visibility are reviewed.
+Use `gh` only after the independent target Repo, local changes, visibility, and administrator authority are reviewed.
 
-For a new public repo:
+The target Repo must already exist before Harness attachment:
 
 ```bash
-git init
 git add .
-git commit -m "Initialize wrapped Skill dashboard"
-gh repo create OWNER/REPO --source . --public --push
-gh release create v0.1.0 --repo OWNER/REPO --target main \
-  --title "v0.1.0" \
-  --notes "Initial wrapped Skill harness."
+git commit -m "Attach EvoZeus CoEvolve Harness"
+git push
 gh api --method POST repos/OWNER/REPO/pages -f build_type=workflow
 gh variable set EVOZEUS_PAGES_ENABLED --body true --repo OWNER/REPO
 ```
@@ -287,8 +285,9 @@ Stop and ask when:
 - `git` or `gh` is missing, or `gh auth status` fails.
 - target repo visibility is not chosen.
 - target repo name or canonical source is ambiguous.
-- GitHub write permission cannot be verified.
-- bootstrap was selected but the target GitHub repo already exists.
+- GitHub `ADMIN` permission cannot be verified for a Harness write or upload.
+- target GitHub Repo does not exist or origin does not match.
+- target is a normal folder or a Repo subdirectory with its own nested Harness.
 - existing target repo has no GitHub release and no `.evozeus-wrapper/CHANGELOG.md` version entry.
 - an old scattered layout is detected but its migration plan has conflicts.
 - no controlling instruction surface can be proven.

@@ -42,6 +42,10 @@ TARGET_MIGRATIONS_README = f"{TARGET_MIGRATIONS_DIR}/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
+HARNESS_SKILL_VERSION = "v1.0.0"
+HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
+HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
 
 REQUIRED_FILES = [
     TARGET_CHANGELOG,
@@ -64,6 +68,7 @@ REQUIRED_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_HARNESS_SKILL,
 ]
 MAINTAINER_REQUIRED_FILES = REQUIRED_FILES
 
@@ -84,28 +89,23 @@ DESIGN_TERMS = [
     ["release plan", "release", "发布"],
 ]
 
-SKILL_EVOLUTION_TERMS = [
-    ["EvoZeus-CoEvolve 状态检查", "EvoZeus-wrapper 状态检查"],
-    ["当前记录版本", "当前 Skill 版本", "Skill release"],
-    ["解决顺序", "处理顺序", "解决方法"],
-    ["自进化"],
-    ["EvoZeus-CoEvolve", "EvoZeus-wrapper"],
-    [TARGET_WRAPPER_MANIFEST],
-    ["runtime-only install"],
-    ["source discovery", "源头发现", "source of truth", "事实源"],
-    ["~/.evozeus/.projects"],
-    ["version --repo"],
-    ["identity --json", "runtime_identity.display_line"],
-    [TARGET_NOTICE_POLICY],
-    [TARGET_NOTICE_SCRIPT, "EvoZeus Notice"],
-    ["EvoZeus · Lesson"],
-    ["Skill Feedback Issue", "feedback issue"],
-    [TARGET_DESIGNS_DIR, "design doc"],
-    [TARGET_MIGRATIONS_DIR, "wrapper migration"],
-    ["append-only", "追加"],
-    ["wrapper harness version"],
-    [TARGET_CHANGELOG],
-    ["release tag", "release notes"],
+HARNESS_SKILL_TERMS = [
+    TARGET_WRAPPER_MANIFEST,
+    TARGET_NOTICE_POLICY,
+    "prompt_runtime_check",
+    "bootstrap_skill",
+    "integration.capabilities",
+    "SkillInvoke",
+    "runtime-only install",
+    "doctor --target .",
+    "identity --json",
+    "Feedback Issue",
+    "Issue-to-PR",
+    "Harness 维护",
+    "UAT",
+    "Release",
+    "rollback",
+    "普通 Skill 调用不授权",
 ]
 
 PLACEHOLDER_PATTERNS = [
@@ -309,6 +309,164 @@ def detected_plugin_manifests(target: Path) -> list[str]:
     return [path for path in PLUGIN_MANIFEST_CANDIDATES if (target / path).is_file()]
 
 
+def _manifest_relative_file(target: Path, raw: object, label: str) -> Path:
+    repair_hint = (
+        "; run an approved Harness repair or migrate-layout"
+        if label == "canonical Harness Skill"
+        else ""
+    )
+    if not isinstance(raw, str) or not raw:
+        fail(f"{label} must be a non-empty relative path{repair_hint}")
+    if re.match(r"^[A-Za-z]:[\\/]", raw) or "\\" in raw:
+        fail(f"{label} must stay inside target and use POSIX relative syntax{repair_hint}")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"{label} must stay inside target{repair_hint}")
+    target = target.expanduser().resolve()
+    candidate = target / relative
+    cursor = candidate
+    while cursor != target:
+        if cursor.is_symlink():
+            fail(f"{label} cannot contain a symlink: {cursor.relative_to(target)}{repair_hint}")
+        cursor = cursor.parent
+    if not candidate.exists():
+        fail(f"missing {label}: {raw}{repair_hint}")
+    if not candidate.is_file():
+        fail(f"{label} must resolve to a regular file: {raw}{repair_hint}")
+    try:
+        candidate.resolve(strict=True).relative_to(target.resolve())
+    except (OSError, ValueError):
+        fail(f"{label} resolves outside target: {raw}{repair_hint}")
+    return candidate
+
+
+def check_harness_skill_contract(
+    target: Path,
+    manifest: dict,
+    *,
+    allow_legacy: bool,
+) -> str:
+    fields = ("harness_skill_path", "harness_skill_version", "harness_skill_managed")
+    present = [field for field in fields if field in manifest]
+    if not present:
+        if allow_legacy:
+            surface_rel = manifest.get("instruction_surface")
+            if not isinstance(surface_rel, str) or not surface_rel:
+                surface_rel = "SKILL.md" if (target / "SKILL.md").is_file() else "AGENTS.md"
+            surface = _manifest_relative_file(target, surface_rel, "legacy instruction_surface")
+            content = content_after_frontmatter(read_text(surface)).lstrip()
+            lines = content.splitlines()
+            has_legacy_prelude = content.startswith(STATUS_PRELUDE_HEADINGS) or bool(
+                lines
+                and lines[0].startswith("# ")
+                and "\n".join(lines[1:]).lstrip().startswith(STATUS_PRELUDE_HEADINGS)
+            )
+            if not has_legacy_prelude:
+                fail(
+                    "legacy wrapper manifest has no compatible status prelude; "
+                    "run an approved Harness repair or migrate-layout"
+                )
+            warn(
+                "legacy wrapper manifest has no canonical Harness Skill identity; "
+                "run migrate-layout before the next Harness write"
+            )
+            return "legacy_compatible"
+        fail(f"{TARGET_WRAPPER_MANIFEST} missing canonical Harness Skill identity")
+    if len(present) != len(fields):
+        fail(f"{TARGET_WRAPPER_MANIFEST} has an incomplete canonical Harness Skill identity")
+
+    path_value = manifest.get("harness_skill_path")
+    if path_value != TARGET_HARNESS_SKILL:
+        fail(f"harness_skill_path must use canonical path {TARGET_HARNESS_SKILL}")
+    if manifest.get("harness_skill_version") != HARNESS_SKILL_VERSION:
+        fail(
+            "incompatible canonical Harness Skill version: "
+            f"{manifest.get('harness_skill_version')}; expected {HARNESS_SKILL_VERSION}; "
+            "run an approved compatible Harness migration"
+        )
+    if manifest.get("harness_skill_managed") is not True:
+        fail("canonical Harness Skill must remain wrapper managed")
+    managed_files = manifest.get("managed_files")
+    if not isinstance(managed_files, list) or TARGET_HARNESS_SKILL not in managed_files:
+        fail("canonical Harness Skill must be listed in managed_files")
+
+    harness_path = _manifest_relative_file(target, path_value, "canonical Harness Skill")
+    text = read_text(harness_path)
+    frontmatter = re.match(r"\A---\r?\n(?P<body>.*?)\r?\n(?:---|\.\.\.)\r?\n", text, re.DOTALL)
+    if not frontmatter:
+        fail(
+            "canonical Harness Skill frontmatter is missing or malformed; "
+            "run an approved Harness repair or migrate-layout"
+        )
+    body = frontmatter.group("body")
+    if not re.search(r"(?m)^name:[ \t]*[\"']?using-evozeus-harness[\"']?[ \t]*\r?$", body):
+        fail(
+            "canonical Harness Skill frontmatter name must be using-evozeus-harness; "
+            "run an approved Harness repair"
+        )
+    metadata = re.search(
+        r"(?m)^metadata:[ \t]*\r?\n(?P<values>(?:^[ \t]+[^\r\n]*(?:\r?\n|$))*)",
+        body,
+    )
+    if not metadata or not re.search(
+        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
+        metadata.group("values"),
+    ):
+        fail(
+            f"canonical Harness Skill frontmatter version must be {HARNESS_SKILL_VERSION}; "
+            "run an approved Harness repair"
+        )
+    missing_terms = [term for term in HARNESS_SKILL_TERMS if term not in text]
+    if missing_terms:
+        fail(
+            "canonical Harness Skill missing required concepts: "
+            + ", ".join(missing_terms)
+            + "; run an approved Harness repair"
+        )
+    ok(f"canonical Harness Skill contract is valid: {TARGET_HARNESS_SKILL}@{HARNESS_SKILL_VERSION}")
+    return "canonical"
+
+
+def _canonical_harness_entry_block() -> str:
+    return "\n".join(
+        [
+            HARNESS_ENTRY_BEGIN,
+            "**CRITICAL — 进入业务主链路前 MUST 使用 Read 工具读取并执行",
+            f"[{TARGET_HARNESS_SKILL}]({TARGET_HARNESS_SKILL})。**",
+            HARNESS_ENTRY_END,
+        ]
+    )
+
+
+def check_harness_entry_contract(target: Path, manifest: dict) -> None:
+    if manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL:
+        fail(f"Harness entry manifest does not match canonical path {TARGET_HARNESS_SKILL}")
+    surface_rel = manifest.get("instruction_surface")
+    surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
+    text = read_text(surface).replace("\r\n", "\n")
+    if text.count(HARNESS_ENTRY_BEGIN) != 1 or text.count(HARNESS_ENTRY_END) != 1:
+        fail("instruction surface must contain exactly one canonical Harness Skill activation block")
+    start = text.index(HARNESS_ENTRY_BEGIN)
+    end = text.index(HARNESS_ENTRY_END, start) + len(HARNESS_ENTRY_END)
+    block = text[start:end]
+    if block != _canonical_harness_entry_block():
+        fail("instruction surface Harness Skill link does not match the canonical manifest path")
+    if len(block.splitlines()) > 8:
+        fail("instruction surface Harness Skill activation block exceeds 8 lines")
+
+    content = content_after_frontmatter(text).lstrip()
+    lines = content.splitlines()
+    at_entry = content.startswith(HARNESS_ENTRY_BEGIN)
+    after_title = bool(
+        lines
+        and lines[0].startswith("# ")
+        and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
+    )
+    if not (at_entry or after_title):
+        fail("canonical Harness Skill activation block must precede the business main flow")
+    ok(f"instruction surface activates canonical Harness Skill: {surface_rel}")
+
+
 def check_integration_contract(target: Path, manifest: dict | None) -> None:
     integration = (manifest or {}).get("integration") or {}
     registration = ((manifest or {}).get("hook_registration") or {}).get("codex") or {}
@@ -357,18 +515,21 @@ def check_integration_contract(target: Path, manifest: dict | None) -> None:
             fail("skill_entry_preflight instruction_surface is missing or outside target")
         if not surface.is_file():
             fail("skill_entry_preflight instruction_surface is missing")
-        content = content_after_frontmatter(surface.read_text(encoding="utf-8")).lstrip()
-        lines = content.splitlines()
-        if content.startswith(STATUS_PRELUDE_HEADINGS):
-            has_status_prelude = True
+        if (manifest or {}).get("harness_skill_path") is not None:
+            check_harness_entry_contract(target, manifest or {})
         else:
-            has_status_prelude = bool(
-                lines
-                and lines[0].startswith("# ")
-                and "\n".join(lines[1:]).lstrip().startswith(STATUS_PRELUDE_HEADINGS)
-            )
-        if not has_status_prelude:
-            fail("skill_entry_preflight installation requires the status prelude")
+            content = content_after_frontmatter(surface.read_text(encoding="utf-8")).lstrip()
+            lines = content.splitlines()
+            if content.startswith(STATUS_PRELUDE_HEADINGS):
+                has_status_prelude = True
+            else:
+                has_status_prelude = bool(
+                    lines
+                    and lines[0].startswith("# ")
+                    and "\n".join(lines[1:]).lstrip().startswith(STATUS_PRELUDE_HEADINGS)
+                )
+            if not has_status_prelude:
+                fail("legacy skill_entry_preflight installation requires the status prelude")
     if registration.get("capability") == "repo_maintenance_hook":
         if registration.get("scope") != "canonical_repository":
             fail("repo_maintenance_hook registration scope must be canonical_repository")
@@ -449,14 +610,16 @@ def check_onboarding_contract(manifest: dict | None) -> None:
     if not isinstance(children.get("supported"), bool):
         fail("onboarding.generated_child_skills.supported must be boolean")
     if children.get("supported"):
-        if children.get("attachment") != "separate_wrapper_lifecycle":
-            fail("generated child Skills must use a separate_wrapper_lifecycle attachment")
-        if children.get("trust_review") != "/hooks":
-            fail("generated child Skill hooks must require /hooks trust review")
+        if children.get("repo_harness_inherited") is not True:
+            fail("generated child Skills must inherit the parent repository Harness")
+        if children.get("attachment") != "inherited_repo_harness":
+            fail("generated child Skills must use inherited_repo_harness attachment")
+        if children.get("separate_harness_boundary") != "independent_git_repository":
+            fail("a generated child may own a separate Harness only as an independent Git repository")
         verification = children.get("verification") or ""
-        required_terms = ["structure preflight", "consumer-project smoke test"]
+        required_terms = ["repository structure preflight", "consumer-project smoke test"]
         if not all(term in verification for term in required_terms):
-            fail("generated child Skill verification must include structure preflight and consumer-project smoke test")
+            fail("generated child Skill verification must include parent repository preflight and consumer-project smoke test")
     ok("onboarding contract is complete")
 
 
@@ -567,12 +730,12 @@ def check_terms(text: str, term_groups: list[list[str]], label: str) -> None:
 
 
 def content_after_frontmatter(text: str) -> str:
-    if not text.startswith("---\n"):
+    if not re.match(r"\A---[ \t]*\r?\n", text):
         return text
-    end = text.find("\n---\n", 4)
-    if end == -1:
+    match = re.match(r"\A---[ \t]*\r?\n.*?\r?\n(?:---|\.\.\.)[ \t]*\r?\n", text, re.DOTALL)
+    if not match:
         return text
-    return text[end + len("\n---\n") :]
+    return text[match.end() :]
 
 
 def check_status_prelude(skill_text: str, label: str = "SKILL.md") -> None:
@@ -587,7 +750,13 @@ def root_entry_path(target: Path) -> Path:
     if manifest and manifest.get("instruction_surface"):
         raw_surface = manifest["instruction_surface"]
         relative = Path(raw_surface) if isinstance(raw_surface, str) else Path("")
-        if relative.is_absolute() or ".." in relative.parts:
+        if (
+            not isinstance(raw_surface, str)
+            or re.match(r"^[A-Za-z]:[\\/]", raw_surface)
+            or "\\" in raw_surface
+            or relative.is_absolute()
+            or ".." in relative.parts
+        ):
             fail(f"manifest instruction_surface must stay inside target: {raw_surface}")
         manifest_surface = target / relative
         cursor = manifest_surface
@@ -790,18 +959,14 @@ def check_maintainer(args: argparse.Namespace) -> None:
     if missing:
         fail("missing required maintainer wrapper files:\n" + "\n".join(f"- {path}" for path in missing))
     manifest = load_wrapper_manifest(target)
+    if manifest is None:
+        fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
+    check_harness_skill_contract(target, manifest, allow_legacy=False)
+    check_harness_entry_contract(target, manifest)
     check_notice_policy(target)
     check_onboarding_contract(manifest)
     check_dashboard_contract(manifest)
     check_integration_contract(target, manifest)
-    entry = root_entry_path(target)
-    entry_text = read_text(entry)
-    label = str(entry.relative_to(target))
-    check_terms(entry_text, SKILL_EVOLUTION_TERMS, f"{label} self-evolution method")
-    if label == "AGENTS.md":
-        check_agents_status_prelude(entry_text)
-    else:
-        check_status_prelude(entry_text, label)
     check_runtime(args)
     ok("maintainer bundle contains required wrapper files")
 
@@ -810,6 +975,13 @@ def check_doctor(args: argparse.Namespace) -> None:
     target = Path(args.target).resolve()
     require_command("git")
     require_command("gh")
+
+    git_root_result = run_command(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
+    if git_root_result.returncode != 0 or not git_root_result.stdout.strip():
+        fail("Evolution Harness requires an independent Git repository")
+    git_root = Path(git_root_result.stdout.strip()).resolve()
+    if git_root != target:
+        fail(f"Harness doctor must run at the Git repository root: {git_root}")
 
     auth = run_command(["gh", "auth", "status"])
     if auth.returncode != 0:
@@ -822,37 +994,27 @@ def check_doctor(args: argparse.Namespace) -> None:
 
     manifest = load_wrapper_manifest(target)
     if manifest:
+        check_harness_skill_contract(target, manifest, allow_legacy=True)
+        if manifest.get("harness_skill_path") is not None:
+            check_harness_entry_contract(target, manifest)
         check_wrapper_managed_doctor(target, repo, manifest, args.allow_missing_repo)
         return
 
-    git_root_result = run_command(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
-    if git_root_result.returncode == 0:
-        git_root = Path(git_root_result.stdout.strip())
-        remote_result = run_command(["git", "-C", str(git_root), "remote", "get-url", "origin"])
-        if remote_result.returncode == 0:
-            remote_repo = repo_from_remote(remote_result.stdout)
-            if remote_repo:
-                repo = repo or remote_repo
-                ok(f"origin GitHub repo detected: {remote_repo}")
-            else:
-                fail(f"origin remote is not a GitHub repo: {remote_result.stdout.strip()}")
-        elif not repo:
-            fail("target is a git repo but origin remote is missing; pass --repo OWNER/REPO")
-    elif not repo:
-        candidates = discover_repo_candidates(target.name)
-        if candidates:
-            repo = candidates[0]
-            ok(f"target is not a git repo; discovered candidate repo: {repo}")
+    remote_result = run_command(["git", "-C", str(git_root), "remote", "get-url", "origin"])
+    if remote_result.returncode == 0:
+        remote_repo = repo_from_remote(remote_result.stdout)
+        if remote_repo:
+            repo = repo or remote_repo
+            ok(f"origin GitHub repo detected: {remote_repo}")
         else:
-            fail("target is not a git repo and no --repo was provided")
+            fail(f"origin remote is not a GitHub repo: {remote_result.stdout.strip()}")
+    else:
+        fail("target independent Git repository has no GitHub origin")
 
     if repo:
         view = run_command(["gh", "repo", "view", repo, "--json", "nameWithOwner,url,visibility"])
         if view.returncode != 0:
             detail = (view.stderr or view.stdout or "").strip()
-            if args.allow_missing_repo and is_repo_not_found(detail):
-                ok(f"GitHub repo is available to create: {repo}")
-                return
             fail(f"cannot access GitHub repo {repo}: {detail}")
         ok(f"GitHub repo accessible: {repo}")
 
@@ -886,18 +1048,13 @@ def check_wrapper_managed_doctor(
         if origin_repo != manifest_repo:
             fail(f"canonical repo origin {origin_repo} does not match wrapper canonical_repo {manifest_repo}")
         ok(f"canonical repo origin matches wrapper manifest: {origin_repo}")
-    elif allow_missing_repo:
-        warn("canonical repo has no GitHub origin yet; allowed only during pre-publish bootstrap")
     else:
-        fail("canonical repo has no GitHub origin; publish or pass --allow-missing-repo only during bootstrap")
+        fail("canonical independent Git repository has no GitHub origin")
 
     view = run_command(["gh", "repo", "view", manifest_repo, "--json", "nameWithOwner,url,visibility"])
     if view.returncode != 0:
         detail = (view.stderr or view.stdout or "").strip()
-        if allow_missing_repo and is_repo_not_found(detail):
-            ok(f"GitHub repo is available to create: {manifest_repo}")
-        else:
-            fail(f"cannot access GitHub repo {manifest_repo}: {detail}")
+        fail(f"cannot access GitHub repo {manifest_repo}: {detail}")
     else:
         ok(f"GitHub repo accessible: {manifest_repo}")
 
@@ -1280,7 +1437,7 @@ def main() -> int:
     doctor = sub.add_parser("doctor", help="Check local git/gh dependencies and source repo access.")
     doctor.add_argument("--target", default=".", help="Target wrapped Skill repo path.")
     doctor.add_argument("--repo", help="GitHub repo in OWNER/REPO format. Defaults to origin remote or discovered candidate.")
-    doctor.add_argument("--allow-missing-repo", action="store_true", help="Allow --repo to be absent on GitHub when bootstrapping a new repo.")
+    doctor.add_argument("--allow-missing-repo", action="store_true", help=argparse.SUPPRESS)
 
     runtime = sub.add_parser("runtime", help="Check runtime-copy runnable Skill files.")
     runtime.add_argument("--target", default=".", help="Target Skill runtime or wrapped repo path.")
