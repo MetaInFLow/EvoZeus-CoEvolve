@@ -17,6 +17,7 @@ try:
         build_wrapper_manifest,
         independent_repo_root,
         latest_changelog_tag,
+        migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         version_key,
         write_wrapper_manifest,
@@ -29,6 +30,7 @@ except ImportError:
         build_wrapper_manifest,
         independent_repo_root,
         latest_changelog_tag,
+        migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         version_key,
         write_wrapper_manifest,
@@ -39,11 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
-STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
-LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
-LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
 WRAPPER_VERSION = "v0.14.0"
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
@@ -150,6 +149,8 @@ def target_template_path(rel: Path) -> Path:
         return rel
     if rel_text.startswith(".codex/hooks/"):
         return Path(TARGET_EVOINFRA_DIR) / "hooks" / rel.name
+    if rel_text.startswith(".evozeus_evoinfra/skills/"):
+        return Path(TARGET_EVOINFRA_DIR) / rel.relative_to(".evozeus_evoinfra")
     if rel_text.startswith(".evozeus_evoinfra/"):
         return Path(TARGET_EVOINFRA_DIR) / "policies" / rel.name
     if rel_text.startswith("docs/wrapper-migrations/"):
@@ -294,56 +295,14 @@ Runtime integration modes:
 """
 
 
-def has_heading(text: str, heading: str) -> bool:
-    return any(line.strip() == heading for line in text.splitlines())
-
-
-def content_insert_index(text: str) -> int:
-    if not text.startswith("---\n"):
-        return 0
-    end = text.find("\n---\n", 4)
-    if end == -1:
-        return 0
-    return end + len("\n---\n")
-
-
-def prepend_status_section_if_missing(target: Path, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    if has_heading(text, STATUS_SECTION_HEADING) or has_heading(text, LEGACY_STATUS_SECTION_HEADING):
-        return f"skip existing {STATUS_SECTION_HEADING} in {skill_path}"
-
-    insert_at = content_insert_index(text)
-    prefix = text[:insert_at].rstrip()
-    suffix = text[insert_at:].lstrip()
-    if prefix:
-        updated = prefix + "\n\n" + section.rstrip() + "\n\n" + suffix
-    else:
-        updated = section.rstrip() + "\n\n" + suffix
-    skill_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
-    return f"prepend {STATUS_SECTION_HEADING} to {skill_path}"
-
-
-def append_section_if_missing(target: Path, heading: str, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    compatible_headings = {heading}
-    if heading == WRAPPER_SECTION_HEADING:
-        compatible_headings.add(LEGACY_WRAPPER_SECTION_HEADING)
-    if any(has_heading(text, candidate) for candidate in compatible_headings):
-        return f"skip existing {heading} in {skill_path}"
-
-    updated = text.rstrip() + "\n\n" + section.rstrip() + "\n"
-    skill_path.write_text(updated, encoding="utf-8")
-    return f"append {heading} to {skill_path}"
-
-
-def inject_evolution_method(target: Path, replacements: dict[str, str]) -> list[str]:
-    return [
-        prepend_status_section_if_missing(target, build_status_section(replacements)),
-        append_section_if_missing(target, EVOLUTION_SECTION_HEADING, build_evolution_section(replacements)),
-        append_section_if_missing(target, WRAPPER_SECTION_HEADING, build_wrapper_section(replacements)),
-    ]
+def inject_evolution_method(
+    target: Path,
+    replacements: dict[str, str],
+    instruction_surface: str = "SKILL.md",
+) -> list[str]:
+    changed = migrate_instruction_surface_to_harness_entry(target, instruction_surface)
+    action = "write" if changed else "keep"
+    return [f"{action} canonical Harness Skill activation block in {target / instruction_surface}"]
 
 
 def main() -> int:
@@ -435,7 +394,7 @@ def main() -> int:
     ]
     actions.extend(copy_templates(target, replacements, args.force))
     actions.extend(ensure_project_pointer(target, args.repo, args.force))
-    actions.extend(inject_evolution_method(target, replacements))
+    actions.extend(inject_evolution_method(target, replacements, instruction_surface="SKILL.md"))
     actions.append(
         write_wrapper_manifest(
             target,
@@ -444,6 +403,7 @@ def main() -> int:
                 WRAPPER_VERSION,
                 WRAPPER_MANAGED_FILES,
                 [],
+                instruction_surface="SKILL.md",
                 onboarding=onboarding,
             ),
             args.force,

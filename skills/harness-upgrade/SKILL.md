@@ -28,12 +28,14 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Do not touch target Skill business rules.
 - Preserve Codex project-local hook registration at `.codex/hooks.json`; keep its adapter under `.evozeus-wrapper/hooks/` and label it `repo_maintenance_hook` with `canonical_repository` scope.
 - Prevalidate `.codex/hooks.json` as structured JSON, preserve unrelated hooks, and create or refresh exactly one wrapper SessionStart registration.
-- `SKILL.md` must start, after frontmatter, with `EvoZeus-CoEvolve 状态检查` before the target Skill's main chain.
-- Other `SKILL.md` changes are append-only: add the `EvoZeus-CoEvolve` section if missing, otherwise append a migration note.
+- Keep the full invocation, maintenance, authorization, UAT, Release, and rollback contract in `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`.
+- Keep exactly one compact activation block of at most eight lines in the diagnosed instruction surface. Its Markdown label and relative link must both equal the manifest `harness_skill_path`.
+- Record `harness_skill_path`, `harness_skill_version`, and `harness_skill_managed=true` in `.evozeus-wrapper/wrapper.json`.
 - Record every wrapper migration under `.evozeus-wrapper/docs/migrations/` with from/to wrapper version, file moves, validation, and rollback.
 - Update `.evozeus-wrapper/wrapper.json` to `layout_version=2` only after all destination conflicts are cleared.
 - Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.
-- Refresh the wrapper-owned status prelude and manifest integration, append a migration note, and require structure post-validation before reporting success.
+- During legacy migration, remove only sections with a proven wrapper ownership signature and preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
+- Refresh the canonical Harness Skill, compact activation block, and manifest integration; require structure post-validation before reporting success.
 - Keep workflow validation active independently of optional Pages deployment; Pages requires `EVOZEUS_PAGES_ENABLED=true`.
 - Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.
 - Major wrapper upgrades require explicit user confirmation.

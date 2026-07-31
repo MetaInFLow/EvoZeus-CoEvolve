@@ -4,9 +4,25 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
+
 ### Changed
 
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
+- Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
+- Changed legacy instruction migration to remove only wrapper-owned sections with positive ownership signatures while preserving target business bytes and LF/CRLF newlines.
+
+### Security
+
+- Added strict manifest, canonical-path, frontmatter/version, managed-identity, symlink, path-traversal, and instruction-entry agreement validation.
+
+### Verification
+
+- Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
+- Full regression suite passes with `187 passed` and `8 subtests passed`.
+- A disposable copy of `MetaInFLow/diagnose-enterprise-ai-scenarios` migrated from the three legacy blocks to one canonical activation block, passed structure validation, and preserved the complete business section byte-for-byte.
 
 ## [v0.14.0] - 2026-07-30
 

@@ -45,7 +45,7 @@ title: "{{SKILL_NAME}} 自进化驾驶舱"
 
 ## 进化规则
 
-`SKILL.md` 的 frontmatter 后第一段必须是 `EvoZeus-CoEvolve 状态检查`。该状态检查先确认当前 Skill release、wrapper harness version 和 source contract，再运行 `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py identity --json`。每次 Skill invocation 将 `runtime_identity.display_line` 原样放在第一条用户可见输出的第一行，只展示一次；下一次 invocation 再展示。后续 EvoZeus 生命周期事件统一调用 `.evozeus-wrapper/scripts/evozeus_notice.py`，配置来自 `.evozeus-wrapper/policies/notice-policy.json`。如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
+诊断选定的 instruction surface 在业务主链路前保留一个不超过 8 行的强制 Read 块，统一加载 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`。该 canonical Harness Skill 负责 Skill release、wrapper harness version、source contract、`identity --json`、Notice、授权边界、UAT、Release 与 rollback；业务入口继续承载目标业务规则。每次 Skill invocation 将 `runtime_identity.display_line` 原样放在第一条用户可见输出的第一行，只展示一次；下一次 invocation 再展示。如果当前只是 runtime-only install，安装副本仅用于运行，维护动作回 canonical repo 执行。
 
 身份头固定使用 Unicode `🧙🏻‍♂️`，并显示 canonical repo、Skill release、Harness version 和 `开发版` / `UAT` / `正式版`。禁止使用 HTML、图片路径或自定义 shortcode。
 
@@ -87,7 +87,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path
 python3 scripts/evozeus_wrapper.py harness upgrade --target /absolute/path/to/this-skill --latest-version <wrapper-version> --dry-run --json
 ```
 
-迁移记录写入 `.evozeus-wrapper/docs/migrations/`，并记录 from/to wrapper version、planned files、`SKILL.md` 状态检查处理、append-only 处理、验证命令和回滚方案。wrapper harness version 的事实源是 `.evozeus-wrapper/wrapper.json`；Skill release 仍以 GitHub release 和 `.evozeus-wrapper/CHANGELOG.md` 为准。
+迁移记录写入 `.evozeus-wrapper/docs/migrations/`，并记录 from/to wrapper version、planned files、canonical Harness Skill、compact entry、验证命令和回滚方案。存量 instruction surface 只删除具备 wrapper 所有权签名的历史段落，业务段与换行字节保持原样。wrapper harness version 的事实源是 `.evozeus-wrapper/wrapper.json`；Skill release 仍以 GitHub release 和 `.evozeus-wrapper/CHANGELOG.md` 为准。
 
 Design doc 至少回答：
 

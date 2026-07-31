@@ -8,6 +8,7 @@ from pathlib import Path
 
 from evozeus_wrapper_lifecycle import (
     REQUIRED_WRAPPER_FILES,
+    TARGET_HARNESS_SKILL,
     apply_reinstall,
     detect_target_architecture,
     diagnose_environment,
@@ -248,11 +249,10 @@ def main() -> int:
         surface_planned_files = []
         if instruction_surface:
             surface_planned_files = [
-                f"{instruction_surface} EvoZeus-CoEvolve status check section",
-                f"{instruction_surface} self-evolution section",
-                f"{instruction_surface} EvoZeus-CoEvolve section",
+                f"{instruction_surface} canonical Harness Skill activation block",
+                TARGET_HARNESS_SKILL,
             ]
-        planned_files = REQUIRED_WRAPPER_FILES + surface_planned_files
+        planned_files = list(dict.fromkeys(REQUIRED_WRAPPER_FILES + surface_planned_files))
         report = {
             "stage": "target_skill_transform",
             "mode": args.mode,

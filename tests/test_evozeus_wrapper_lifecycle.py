@@ -20,9 +20,11 @@ from scripts.evozeus_wrapper_bootstrap import (
 )
 from scripts.evozeus_wrapper_lifecycle import (
     CODEX_START_HOOK_SCRIPT,
+    HARNESS_ENTRY_BEGIN,
     LEGACY_TARGET_WRAPPER_MANIFEST,
     TARGET_CHANGELOG,
     TARGET_FEEDBACK_POLICY,
+    TARGET_HARNESS_SKILL,
     TARGET_MIGRATIONS_README,
     TARGET_ONBOARDING_GUIDE,
     TARGET_PREFLIGHT_SCRIPT,
@@ -357,9 +359,14 @@ class LifecycleBasicsTest(unittest.TestCase):
             skill.write_text(
                 '---\nname: "example"\n---\n\n'
                 "## EvoZeus-wrapper 状态检查\n\n"
-                "legacy wrapper-owned status\n\n"
+                "Skill 入口 preflight for the wrapper contract.\n"
+                ".evozeus-wrapper/wrapper.json\n\n"
                 "# Target Skill Title\n\n"
-                "Target-owned content.\n",
+                "Target-owned content.\n\n"
+                "## 自进化方法\n\n"
+                "本 Skill 已由 EvoZeus-wrapper 接入自进化闭环。\n\n"
+                "## EvoZeus-wrapper\n\n"
+                "本区由 EvoZeus-wrapper 追加，用来说明 wrapper harness。\n",
                 encoding="utf-8",
             )
 
@@ -377,10 +384,11 @@ class LifecycleBasicsTest(unittest.TestCase):
             )
 
             updated = skill.read_text(encoding="utf-8")
-            self.assertEqual(updated.count("## EvoZeus-CoEvolve 状态检查"), 1)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
             self.assertNotIn("## EvoZeus-wrapper 状态检查", updated)
-            self.assertIn("普通 Skill 调用不授权 Harness 升级或其他维护写入", updated)
-            self.assertNotIn("再进入主链路", updated)
+            self.assertNotIn("本 Skill 已由 EvoZeus-wrapper 接入自进化闭环", updated)
+            self.assertNotIn("## EvoZeus-wrapper", updated)
+            self.assertIn(TARGET_HARNESS_SKILL, updated)
             self.assertIn("# Target Skill Title\n\nTarget-owned content.", updated)
 
     def test_crlf_instruction_surface_inserts_status_after_frontmatter(self):
@@ -404,14 +412,14 @@ class LifecycleBasicsTest(unittest.TestCase):
                 layout_migration_required=False,
             )
             updated = skill.read_bytes()
-            status = "## EvoZeus-CoEvolve 状态检查".encode("utf-8")
+            activation = HARNESS_ENTRY_BEGIN.encode("utf-8")
 
             self.assertTrue(updated.startswith(frontmatter))
             self.assertIn(target_owned, updated)
-            self.assertGreater(updated.index(status), len(frontmatter) - 1)
-            self.assertGreater(updated.index(target_owned), updated.index(status))
+            self.assertGreater(updated.index(activation), len(frontmatter) - 1)
+            self.assertGreater(updated.index(target_owned), updated.index(activation))
 
-    def test_version_refresh_note_records_actual_consolidated_layout(self):
+    def test_version_refresh_uses_canonical_entry_without_business_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             skill = target / "SKILL.md"
@@ -444,12 +452,10 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertTrue(changed)
             self.assertEqual(surface, "SKILL.md")
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.10.1",
-                updated,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
-            self.assertNotIn("Migration Note: v0.10.0 -> v0.10.1", updated)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertIn(TARGET_HARNESS_SKILL, updated)
+            self.assertNotIn("Version Refresh Note", updated)
+            self.assertNotIn("Migration Note", updated)
             self.assertIn("# Target Skill Title" + target_owned, updated)
             self.assertIn("Wrapper harness version: `v9.9.9`", updated)
             self.assertIn("Keep --latest-version <wrapper-version> in business prose.", updated)
@@ -623,9 +629,9 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             skill_text = (target / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn("## EvoZeus-CoEvolve 状态检查", skill_text)
-            self.assertIn("## 自进化方法", skill_text)
-            self.assertIn(TARGET_WRAPPER_MANIFEST, skill_text)
+            self.assertEqual(skill_text.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("## 自进化方法", skill_text)
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text)
 
     def test_preflight_rejects_legacy_layout_until_migrated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1118,7 +1124,9 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue((target / TARGET_ONBOARDING_GUIDE).is_file())
             self.assertEqual(manifest["onboarding"]["installation"]["mode"], "canonical_repo_symlink")
             self.assertFalse(manifest["onboarding"]["generated_child_skills"]["hooks_inherited"])
-            self.assertIn(TARGET_WRAPPER_MANIFEST, skill_text)
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text)
+            self.assertEqual(manifest["harness_skill_path"], TARGET_HARNESS_SKILL)
+            self.assertTrue((target / TARGET_HARNESS_SKILL).is_file())
             self.assertIn(".evozeus-wrapper/policies/audit-rule.md", policy)
             self.assertTrue(
                 (target / ".evozeus-wrapper/docs/migrations/2026-07-18-layout-v1-to-v2.md").is_file()
@@ -1171,9 +1179,9 @@ class LifecycleBasicsTest(unittest.TestCase):
             self.assertTrue(report["writes"])
             self.assertEqual(before_business, after_business)
             self.assertIn(business.strip(), skill_text)
-            self.assertIn("v0.9.1", skill_text.split("## Business Logic", 1)[0])
+            self.assertIn(TARGET_HARNESS_SKILL, skill_text.split("## Business Logic", 1)[0])
             self.assertNotIn("--latest-version <wrapper-version>", skill_text)
-            self.assertIn("v0.6.0 -> v0.9.1", skill_text)
+            self.assertNotIn("Migration Note", skill_text)
             self.assertEqual(manifest["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(manifest["integration"]["native_skill_invocation_hook_installed"])
             self.assertTrue(
@@ -1306,11 +1314,8 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "# Target Skill Title\n\nTarget-owned intro bytes.  \n\n## Business Logic",
                 refreshed_skill,
             )
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.9.0 -> v0.9.1",
-                refreshed_skill,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", refreshed_skill)
+            self.assertEqual(refreshed_skill.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("Version Refresh Note", refreshed_skill)
             self.assertTrue(
                 (target / ".evozeus-wrapper/docs/migrations/2026-07-18-v0.9.0-to-v0.9.1.md").is_file()
             )
@@ -1344,10 +1349,8 @@ class LifecycleBasicsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "skill"
             target.mkdir()
-            write_wrapper_manifest(
-                target,
-                build_wrapper_manifest("MetaInFLow/skill", "v0.8.0", [], []),
-            )
+            create_complete_legacy_target(target)
+            migrate_target_layout(target, latest_version="v0.8.0")
             (target / "CHANGELOG.md").write_text(
                 "# Business changelog not owned by wrapper\n",
                 encoding="utf-8",
@@ -1994,7 +1997,10 @@ class WrapperManifestTest(unittest.TestCase):
             self.assertEqual(loaded["wrapper_repo"], "MetaInFLow/EvoZeus-CoEvolve")
             self.assertEqual(loaded["wrapper_version"], "v0.2.0")
             self.assertEqual(loaded["canonical_repo"], "MetaInFLow/resume-screening")
-            self.assertEqual(loaded["managed_files"], ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py"])
+            self.assertEqual(
+                loaded["managed_files"],
+                ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py", TARGET_HARNESS_SKILL],
+            )
             self.assertEqual(loaded["install_links"], ["/Users/anthonyf/.codex/skills/resume-screening"])
             self.assertEqual(loaded["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(loaded["integration"]["native_host_hook_installed"])
@@ -3298,11 +3304,8 @@ class UpgradeAllHarnessTest(unittest.TestCase):
 
             self.assertEqual(report["status"], "applied")
             self.assertIn(business_block, updated)
-            self.assertIn(
-                "## EvoZeus-CoEvolve Version Refresh Note: v0.10.0 -> v0.14.0",
-                updated,
-            )
-            self.assertIn("- Layout: `consolidated-v2 -> consolidated-v2`", updated)
+            self.assertEqual(updated.count(HARNESS_ENTRY_BEGIN), 1)
+            self.assertNotIn("Version Refresh Note", updated)
 
     def test_upgrade_all_is_idempotent_after_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3786,7 +3789,7 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             self.assertEqual(plan["upgrade_status"], "up_to_date")
             self.assertEqual(plan["recommended_action"], "migrate_layout")
 
-    def test_plan_harness_upgrade_returns_append_only_migration_plan(self):
+    def test_plan_harness_upgrade_returns_canonical_harness_skill_migration_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "skill"
             target.mkdir()
@@ -3811,8 +3814,8 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             self.assertEqual(plan["oldest_infra_dir"], ".evozeus")
             self.assertEqual(plan["manifest_path"], TARGET_WRAPPER_MANIFEST)
             self.assertFalse(plan["legacy_manifest_detected"])
-            self.assertFalse(plan["migration_required"])
-            self.assertTrue(plan["append_only"])
+            self.assertTrue(plan["migration_required"])
+            self.assertFalse(plan["append_only"])
             self.assertTrue(plan["status_check_first"])
             self.assertFalse(plan["requires_confirmation"])
             self.assertEqual(
@@ -3821,8 +3824,8 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
             self.assertEqual(plan["integration"]["mode"], "prompt_runtime_check")
             self.assertFalse(plan["integration"]["native_host_hook_installed"])
-            self.assertIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
-            self.assertIn("SKILL.md EvoZeus-CoEvolve section or migration note (append only)", plan["planned_files"])
+            self.assertIn("SKILL.md canonical Harness Skill activation block", plan["planned_files"])
+            self.assertIn(TARGET_HARNESS_SKILL, plan["planned_files"])
             self.assertIn(TARGET_MIGRATIONS_README, plan["planned_files"])
             self.assertIn(TARGET_WRAPPER_MANIFEST, plan["planned_files"])
             self.assertIn(".codex/hooks.json", plan["planned_files"])
@@ -3865,11 +3868,11 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "AGENTS.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
+                "AGENTS.md canonical Harness Skill activation block",
                 plan["planned_files"],
             )
             self.assertIn("AGENTS.md", plan["evolution_surface_policy"])
-            self.assertNotIn("SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)", plan["planned_files"])
+            self.assertNotIn("SKILL.md canonical Harness Skill activation block", plan["planned_files"])
 
     def test_plan_harness_upgrade_uses_hook_loaded_control_skill_for_plugin_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3900,7 +3903,7 @@ class EvolutionAndUpgradePlanningTest(unittest.TestCase):
             )
 
             self.assertIn(
-                "skills/session-bootstrap/SKILL.md EvoZeus-CoEvolve status check section (instruction surface prelude)",
+                "skills/session-bootstrap/SKILL.md canonical Harness Skill activation block",
                 plan["planned_files"],
             )
             self.assertIn("skills/session-bootstrap/SKILL.md", plan["evolution_surface_policy"])
