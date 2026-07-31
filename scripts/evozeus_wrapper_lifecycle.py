@@ -2196,6 +2196,8 @@ def _mask_markdown_fenced_code(text: str) -> str:
             marker = fence_match.group(1)
             fence = (marker[0], len(marker))
             masked.append(mask_line(line))
+        elif re.match(r"^(?: {4,}|\t)", content):
+            masked.append(mask_line(line))
         else:
             masked.append(line)
         offset += len(line)
