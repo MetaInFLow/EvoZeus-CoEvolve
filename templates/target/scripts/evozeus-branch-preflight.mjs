@@ -243,8 +243,7 @@ export function targetBranchFor(options, actor) {
 function targetBranchForResume(options, actor, resumePlan) {
   const legacyTarget = legacyTargetBranchFor(options, actor);
   if (
-    resumePlan?.contract?.version === "1.3.0"
-    && resumePlan?.branch?.target === legacyTarget
+    resumePlan?.branch?.target === legacyTarget
   ) {
     return legacyTarget;
   }
