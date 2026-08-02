@@ -31,11 +31,25 @@
         "docs/onboarding.md",
         "docs/wrapper-migrations/README.md"
       ],
+      "external_sources": [
+        {
+          "source": "scripts/evozeus_wrapper_preflight.py",
+          "target": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+          "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932",
+          "executable": true
+        },
+        {
+          "source": "scripts/evozeus_notice.py",
+          "target": ".evozeus-wrapper/scripts/evozeus_notice.py",
+          "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+          "executable": true
+        }
+      ],
       "contract_files": [
         {
           "source": "migrations/harness-migration-contract-v1.json",
           "target": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-          "sha256": "7ec4785be1388db98f781021ea6e0926f1b84b6088465d45560be3a8cb9f3078"
+          "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec"
         }
       ]
     }

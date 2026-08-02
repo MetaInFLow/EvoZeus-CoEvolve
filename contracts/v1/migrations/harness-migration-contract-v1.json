@@ -51,6 +51,14 @@
         "layout": "consolidated-v2",
         "harness_skill_version": "v1.1.0"
       },
+      "source_release": {
+        "target_wrapper_from": "v0.14.0",
+        "target_wrapper_to": "v0.15.0",
+        "artifact_release_from": "v0.14.0",
+        "artifact_release_to": "v0.15.0",
+        "artifact_to_binding": "contract_bundle.source_revision",
+        "target_closure_authority": "missing"
+      },
       "profile_version": "v1.0.0",
       "adapter_id": "canonical-exact-artifact-upgrade",
       "adapter_version": "v1.0.0",
@@ -93,14 +101,16 @@
         ],
         "protected_business_rule": "instruction_surface_bytes_unchanged"
       },
-      "automatic": true,
+      "automatic": false,
       "required_manifest_fields": {
         "harness_skill_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
         "harness_skill_version": "v1.0.0",
         "harness_skill_managed": true,
         "layout_version": 2
       },
-      "protected_business_rule": "instruction_surface_bytes_unchanged"
+      "protected_business_rule": "instruction_surface_bytes_unchanged",
+      "default_decision": "manual_migration_required",
+      "reason": "The v1.0 target closure is not release-bound, so the complete v0.14.0 to v0.15.0 managed target diff cannot authorize writes."
     },
     {
       "profile_id": "prerelease-ambiguous-to-manual-review",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -62,6 +63,7 @@ NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
 MIGRATION_CONTRACT_SOURCE = (
     ROOT / "contracts" / "v1" / "migrations" / "harness-migration-contract-v1.json"
 )
+TARGET_TEMPLATE_INVENTORY_SOURCE = ROOT / "contracts" / "v1" / "target-template-inventory.json"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
@@ -283,18 +285,117 @@ def validate_existing_manifest_for_attach(
         )
 
 
-def validate_migration_contract_source() -> dict[str, object]:
+def _tree_sha256(root: Path, relative_paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for relative_text in sorted(relative_paths):
+        path = root / relative_text
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"target template source is missing or unsafe: {relative_text}")
+        digest.update(relative_text.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _safe_source_file(root: Path, raw: object, label: str) -> Path:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise ValueError(f"{label} must be a non-empty POSIX relative path")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != raw:
+        raise ValueError(f"{label} escapes its source root: {raw}")
+    candidate = root / relative
+    cursor = candidate
+    while cursor != root:
+        if cursor.is_symlink():
+            raise ValueError(f"{label} contains a symlink: {raw}")
+        cursor = cursor.parent
+    if not candidate.is_file():
+        raise ValueError(f"{label} is missing: {raw}")
+    return candidate
+
+
+def validate_target_source_inventory(bundle: dict[str, object]) -> dict[str, object]:
+    inventory = json.loads(TARGET_TEMPLATE_INVENTORY_SOURCE.read_text(encoding="utf-8"))
+    if not isinstance(inventory, dict):
+        raise ValueError("target template inventory must be a JSON object")
+    governed = (inventory.get("modes") or {}).get("governed-sidecar")
+    if not isinstance(governed, dict) or governed.get("target_writes") is not True:
+        raise ValueError("governed target template inventory is unavailable")
+    declared = governed.get("files")
+    if not isinstance(declared, list) or any(not isinstance(item, str) for item in declared):
+        raise ValueError("target template inventory files must be a string list")
+    actual = [
+        path.relative_to(TARGET_TEMPLATE_DIR).as_posix()
+        for path in TARGET_TEMPLATE_DIR.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
+    if sorted(declared) != sorted(actual):
+        raise ValueError("target template inventory does not cover the complete source tree")
+    tree_digest = f"sha256:{_tree_sha256(TARGET_TEMPLATE_DIR, declared)}"
+    if governed.get("source_tree_sha256") != tree_digest:
+        raise ValueError("target template inventory source tree digest mismatch")
+
+    external_sources = governed.get("external_sources")
+    if not isinstance(external_sources, list) or not external_sources:
+        raise ValueError("target template inventory must bind external source files")
+    for entry in external_sources:
+        if not isinstance(entry, dict):
+            raise ValueError("target template external source entry must be an object")
+        source = _safe_source_file(ROOT, entry.get("source"), "external source")
+        if entry.get("sha256") != hashlib.sha256(source.read_bytes()).hexdigest():
+            raise ValueError(f"target template external source digest mismatch: {entry.get('source')}")
+
+    contract_files = governed.get("contract_files")
+    if not isinstance(contract_files, list) or not contract_files:
+        raise ValueError("target template inventory must bind contract files")
+    bundle_root = Path(bundle["bundle_root"])
+    for entry in contract_files:
+        if not isinstance(entry, dict):
+            raise ValueError("target template contract file entry must be an object")
+        source = _safe_source_file(bundle_root, entry.get("source"), "contract source")
+        if entry.get("sha256") != hashlib.sha256(source.read_bytes()).hexdigest():
+            raise ValueError(f"target template contract source digest mismatch: {entry.get('source')}")
+    return governed
+
+
+def validate_migration_contract_source(
+    *,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
+    require_trusted_release: bool = False,
+) -> dict[str, object]:
     """Verify the contracts/v1 manifest binding before the first target write."""
-    bundle = migration_kernel.load_migration_contract(ROOT)
+    bundle = migration_kernel.load_migration_contract(
+        ROOT,
+        remote_tag_resolver=remote_tag_resolver,
+    )
     if Path(bundle["path"]).resolve() != MIGRATION_CONTRACT_SOURCE.resolve():
         raise ValueError(
             "migration contract source path is not the canonical contracts/v1 artifact"
         )
+    validate_target_source_inventory(bundle)
+    if require_trusted_release and bundle["source_trust"]["status"] != "trusted_release":
+        reasons = "; ".join(bundle["source_trust"].get("reasons", []))
+        raise ValueError(
+            "Harness attachment requires an immutable trusted source release"
+            + (f": {reasons}" if reasons else "")
+        )
     return bundle
 
 
-def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
-    validate_migration_contract_source()
+def copy_templates(
+    target: Path,
+    replacements: dict[str, str],
+    force: bool,
+    *,
+    _migration_bundle: dict[str, object] | None = None,
+) -> list[str]:
+    bundle = _migration_bundle or validate_migration_contract_source(
+        require_trusted_release=True
+    )
+    if bundle["source_trust"]["status"] != "trusted_release":
+        raise ValueError("Harness attachment source is not a trusted immutable release")
+    governed = validate_target_source_inventory(bundle)
     template_files = [
         src
         for src in sorted(TARGET_TEMPLATE_DIR.rglob("*"))
@@ -306,9 +407,6 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         (src, target / target_template_path(src.relative_to(TARGET_TEMPLATE_DIR)))
         for src in template_files
     ]
-    script_dst = target / TARGET_PREFLIGHT_SCRIPT
-    notice_dst = target / TARGET_NOTICE_SCRIPT
-    migration_contract_dst = target / TARGET_MIGRATION_CONTRACT
     expected_artifacts: list[tuple[Path, bytes, bool]] = [
         (
             destination,
@@ -317,13 +415,15 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         )
         for source, destination in template_destinations
     ]
-    expected_artifacts.extend(
-        [
-            (script_dst, PREFLIGHT_SCRIPT.read_bytes(), True),
-            (notice_dst, NOTICE_SCRIPT.read_bytes(), True),
-            (migration_contract_dst, MIGRATION_CONTRACT_SOURCE.read_bytes(), False),
-        ]
-    )
+    for entry in governed["external_sources"]:
+        source = _safe_source_file(ROOT, entry["source"], "external source")
+        expected_artifacts.append(
+            (target / entry["target"], source.read_bytes(), entry.get("executable") is True)
+        )
+    bundle_root = Path(bundle["bundle_root"])
+    for entry in governed["contract_files"]:
+        source = _safe_source_file(bundle_root, entry["source"], "contract source")
+        expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
     for destination, expected, _ in expected_artifacts:
         validate_template_destination(target, destination)
         if destination.exists() or destination.is_symlink():

@@ -3128,11 +3128,13 @@ def plan_target_layout_migration(
     *,
     require_clean_git: bool = False,
     wrapper_root: Path | None = None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
     _migration_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
     migration_bundle = _migration_bundle or migration_kernel.load_migration_contract(
-        wrapper_root
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
     )
     migration_contract = migration_bundle["contract"]
     activation_contract = migration_contract["canonical_activation_block"]
@@ -3157,15 +3159,18 @@ def plan_target_layout_migration(
     discovery_candidates: list[dict[str, Any]] = []
     if manifest_status["conflict"]:
         conflicts.append("legacy wrapper manifests contain different data")
-    git_status = run_command(
-        ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=normal"]
-    )
-    worktree_status_available = git_status["returncode"] == 0
-    worktree_clean = worktree_status_available and not git_status.get("stdout", "").strip()
+    target_git_state = None
+    git_state_error = None
+    try:
+        target_git_state = migration_kernel.target_git_state(target)
+    except ValueError as exc:
+        git_state_error = str(exc)
+    worktree_status_available = target_git_state is not None
+    worktree_clean = bool(target_git_state and target_git_state["status_clean"])
     if require_clean_git and worktree_status_available and not worktree_clean:
         conflicts.append("target git worktree is not clean; commit or stash changes before migration")
     elif require_clean_git and not worktree_status_available:
-        detail = (git_status.get("stderr") or git_status.get("stdout") or "unknown error").strip()
+        detail = git_state_error or "unknown error"
         conflicts.append(f"target git worktree could not be verified: {detail}")
 
     moves: list[dict[str, str]] = []
@@ -3249,6 +3254,33 @@ def plan_target_layout_migration(
         canonical_profile,
         activation_contract,
     )
+    canonical_source_release = canonical_profile.get("source_release") or {}
+    requested_release_to = latest_version or current_version
+    release_axis_evidence = {
+        "expected_from": canonical_source_release.get("target_wrapper_from"),
+        "actual_from": current_version,
+        "expected_to": canonical_source_release.get("target_wrapper_to"),
+        "requested_to": requested_release_to,
+        "expected_artifact_release": canonical_source_release.get(
+            "artifact_release_to"
+        ),
+        "bundle_artifact_release": migration_bundle.get("source_trust", {}).get(
+            "release_tag"
+        ),
+    }
+    release_axis_evidence["matched"] = all(
+        (
+            current_version == canonical_source_release.get("target_wrapper_from"),
+            requested_release_to == canonical_source_release.get("target_wrapper_to"),
+            migration_bundle.get("source_trust", {}).get("release_tag")
+            == canonical_source_release.get("artifact_release_to"),
+        )
+    )
+    if not release_axis_evidence["matched"]:
+        canonical_evidence["matched"] = False
+        canonical_evidence["blockers"].append(
+            "target/source release axis does not match the automatic migration profile"
+        )
     surface_file = None
     surface_text = None
     protected_business_surfaces: list[dict[str, Any]] = []
@@ -3326,6 +3358,19 @@ def plan_target_layout_migration(
             activation_contract,
         )
     )
+    authority_rules = migration_contract.get("authority_rules") or {}
+    canonical_payload = canonical_profile.get("adapter_payload") or {}
+    canonical_profile_authorized = all(
+        (
+            canonical_profile.get("automatic") is True,
+            canonical_payload.get("type") == "exact-artifact-and-stable-block",
+            authority_rules.get("discovery_candidates_are_authority") is False,
+            authority_rules.get("manifest_managed_flag_is_sufficient") is False,
+            authority_rules.get("exact_preimage_hash_required") is True,
+            authority_rules.get("snapshot_required_before_write") is True,
+            authority_rules.get("post_verify_failure") == "restore_snapshot",
+        )
+    )
     if not requires_migration:
         selected_profile = None
         decision = "no_migration_required"
@@ -3335,9 +3380,12 @@ def plan_target_layout_migration(
     elif prerelease_ambiguous:
         selected_profile = prerelease_profile
         decision = "manual_migration_required"
-    elif canonical_evidence["matched"]:
+    elif canonical_evidence["matched"] and canonical_profile_authorized:
         selected_profile = canonical_profile
         decision = "automatic_migration_available"
+    elif canonical_evidence["matched"]:
+        selected_profile = canonical_profile
+        decision = "manual_migration_required"
     else:
         selected_profile = unknown_profile
         decision = "manual_migration_required"
@@ -3596,6 +3644,8 @@ def plan_target_layout_migration(
             else None
         ),
         "ownership_evidence": canonical_evidence,
+        "automatic_profile_authorized": canonical_profile_authorized,
+        "source_release_evidence": release_axis_evidence,
         "discovery_candidates": discovery_candidates,
         "discovery_candidates_have_destructive_authority": False,
         "from_layout": "scattered-v1" if layout_migration_required else "consolidated-v2",
@@ -3633,8 +3683,9 @@ def plan_target_layout_migration(
         "worktree_status_error": (
             None
             if worktree_status_available
-            else (git_status.get("stderr") or git_status.get("stdout") or "unknown error").strip()
+            else git_state_error or "unknown error"
         ),
+        "target_git_state": target_git_state,
         "text_rewrite_candidates": text_rewrite_candidates,
         "generated_cache_candidates": generated_cache_candidates,
         "apply_blockers": list(dict.fromkeys(apply_blockers)),
@@ -3913,9 +3964,13 @@ def migrate_target_layout(
     require_clean_git: bool = False,
     snapshot_root: Path | None = None,
     approved_plan_sha256: str | None = None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
-    migration_bundle = migration_kernel.load_migration_contract(wrapper_root)
+    migration_bundle = migration_kernel.load_migration_contract(
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
+    )
     plan = plan_target_layout_migration(
         target,
         latest_version,
@@ -3970,6 +4025,22 @@ def migrate_target_layout(
         }
     if (plan.get("profile") or {}).get("profile_id") != "canonical-v1.0-to-v1.1":
         raise ValueError("migration apply is blocked: unsupported automatic profile")
+    approved_profile = migration_kernel.contract_profile(
+        migration_bundle["contract"],
+        "canonical-v1.0-to-v1.1",
+    )
+    approved_payload = approved_profile.get("adapter_payload") or {}
+    authority_rules = migration_bundle["contract"].get("authority_rules") or {}
+    if (
+        approved_profile.get("automatic") is not True
+        or approved_payload.get("type") != "exact-artifact-and-stable-block"
+        or authority_rules.get("discovery_candidates_are_authority") is not False
+        or authority_rules.get("manifest_managed_flag_is_sufficient") is not False
+        or authority_rules.get("exact_preimage_hash_required") is not True
+        or authority_rules.get("snapshot_required_before_write") is not True
+        or authority_rules.get("post_verify_failure") != "restore_snapshot"
+    ):
+        raise ValueError("migration apply is blocked: profile authority is incomplete")
     plan["approval"] = {
         "approved_plan_sha256": approved_plan_sha256,
         "matched": True,

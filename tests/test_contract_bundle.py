@@ -33,7 +33,7 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
         "min_inclusive": "0.1.0",
         "max_exclusive": "0.3.0",
     }
-    assert manifest["source_revision"] == "v0.14.0"
+    assert manifest["source_revision"] == "v0.15.0"
     declared_paths = {entry["path"] for entry in manifest["files"]}
     actual_paths = {
         path.relative_to(BUNDLE).as_posix()
@@ -53,7 +53,7 @@ def test_contract_manifest_depends_on_core_owned_user_prompt_runtime() -> None:
         )
     )
 
-    assert manifest["source_revision"] == "v0.14.0"
+    assert manifest["source_revision"] == "v0.15.0"
     assert "external_component_dependencies" not in manifest
     assert dependency == {
         "schema_version": "evozeus.coevolve.external-runtime-dependency.v1",

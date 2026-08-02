@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = "44d1fbdefc1e1de47a35c3ca39d2ba083661d569"
 RELEASE_TAG = "v9.9.9"
 OFFICIAL_URL = "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git"
+_SOURCE_TAG_ATTESTATIONS: dict[str, dict[str, str] | None] = {}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -55,13 +56,22 @@ def _write_json(path: Path, value: object) -> None:
     )
 
 
+def _trusted_development_bundle() -> dict[str, object]:
+    bundle = migration_kernel.load_migration_contract(ROOT)
+    bundle["source_trust"] = {
+        **bundle["source_trust"],
+        "status": "trusted_release",
+        "reasons": [],
+    }
+    return bundle
+
+
 def _make_release_source(
     tmp_path: Path,
     *,
     publish_tag: bool = True,
 ) -> Path:
     source = tmp_path / ("source-published" if publish_tag else "source-forged")
-    remote = tmp_path / ("remote-published.git" if publish_tag else "remote-forged.git")
     source.mkdir()
     shutil.copytree(ROOT / "contracts", source / "contracts")
     skill_source = (
@@ -81,28 +91,59 @@ def _make_release_source(
     manifest_path = source / "contracts/v1/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source_revision"] = RELEASE_TAG
+    contract_path = source / "contracts/v1/migrations/harness-migration-contract-v1.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    canonical = next(
+        profile
+        for profile in contract["profiles"]
+        if profile["profile_id"] == "canonical-v1.0-to-v1.1"
+    )
+    canonical["source_release"]["artifact_release_from"] = RELEASE_TAG
+    canonical["source_release"]["artifact_release_to"] = RELEASE_TAG
+    _write_json(contract_path, contract)
+    next(
+        entry
+        for entry in manifest["files"]
+        if entry["path"] == "migrations/harness-migration-contract-v1.json"
+    )["sha256"] = hashlib.sha256(contract_path.read_bytes()).hexdigest()
     _write_json(manifest_path, manifest)
 
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
     _git(source, "config", "user.email", "migration-test@example.invalid")
     _git(source, "config", "user.name", "Migration Test")
     _git(source, "remote", "add", "origin", OFFICIAL_URL)
-    _git(
-        source,
-        "config",
-        f"url.file://{remote.resolve()}.insteadOf",
-        OFFICIAL_URL,
-    )
     _git(source, "add", ".")
     _git(source, "commit", "-m", "Synthetic immutable migration release")
     _git(source, "tag", RELEASE_TAG)
-    if publish_tag:
-        _git(source, "push", "origin", "HEAD:refs/heads/main", f"refs/tags/{RELEASE_TAG}")
-    else:
-        _git(source, "push", "origin", "HEAD:refs/heads/main")
+    ref_oid = _git(source, "rev-parse", f"refs/tags/{RELEASE_TAG}")
+    peeled = _git(source, "rev-parse", f"refs/tags/{RELEASE_TAG}^{{commit}}")
+    _SOURCE_TAG_ATTESTATIONS[str(source)] = (
+        {
+            "provider": "github-api",
+            "repository": migration_kernel.OFFICIAL_SOURCE_REPOSITORY,
+            "tag": RELEASE_TAG,
+            "ref_oid": ref_oid,
+            "peeled_commit_oid": peeled,
+        }
+        if publish_tag
+        else None
+    )
     assert _git(source, "status", "--porcelain=v1", "--untracked-files=all") == ""
     return source
+
+
+def _source_tag_resolver(source: Path) -> migration_kernel.OfficialTagResolver:
+    def resolve(repository: str, tag: str) -> dict[str, str] | None:
+        attestation = _SOURCE_TAG_ATTESTATIONS[str(source)]
+        if (
+            attestation is None
+            or repository != migration_kernel.OFFICIAL_SOURCE_REPOSITORY
+            or tag != RELEASE_TAG
+        ):
+            return None
+        return dict(attestation)
+
+    return resolve
 
 
 def _old_preflight_bytes() -> bytes:
@@ -121,7 +162,12 @@ def _prepare_exact_v1_target(tmp_path: Path, name: str = "target") -> Path:
         + "\n\n## Business Workflow\n\nOWNER-BYTES-DO-NOT-CHANGE  \n",
         encoding="utf-8",
     )
-    bootstrap.copy_templates(target, _replacement_values(), force=False)
+    bootstrap.copy_templates(
+        target,
+        _replacement_values(),
+        force=False,
+        _migration_bundle=_trusted_development_bundle(),
+    )
     frozen_skill = (
         ROOT
         / "contracts/v1/migrations/artifacts/using-evozeus-harness-v1.0.0.md"
@@ -160,10 +206,11 @@ def _prepare_exact_v1_target(tmp_path: Path, name: str = "target") -> Path:
 def _plan(target: Path, source: Path) -> dict[str, object]:
     return lifecycle.plan_target_layout_migration(
         target,
-        latest_version="v0.14.0",
+        latest_version="v0.15.0",
         today=date(2026, 8, 2),
         require_clean_git=True,
         wrapper_root=source,
+        remote_tag_resolver=_source_tag_resolver(source),
     )
 
 
@@ -177,6 +224,77 @@ def _refresh_snapshot_receipt(snapshot: Path) -> None:
         "sha256:" + migration_kernel.canonical_json_sha256(value["files"])
     )
     _write_json(receipt_path, receipt)
+
+
+def test_source_trust_uses_structured_official_tag_attestation(tmp_path: Path) -> None:
+    source = _make_release_source(tmp_path)
+    bundle = migration_kernel.load_migration_contract(
+        source,
+        remote_tag_resolver=_source_tag_resolver(source),
+    )
+
+    assert bundle["source_trust"]["status"] == "trusted_release"
+    assert bundle["source_trust"]["remote_tag_attestation"] == _SOURCE_TAG_ATTESTATIONS[
+        str(source)
+    ]
+
+
+def test_forged_effective_origin_rewrite_is_untrusted_even_with_valid_tag_attestation(
+    tmp_path: Path,
+) -> None:
+    source = _make_release_source(tmp_path)
+    forged = tmp_path / "forged.git"
+    subprocess.run(["git", "init", "--bare", str(forged)], check=True, capture_output=True)
+    _git(source, "config", f"url.file://{forged.resolve()}.insteadOf", OFFICIAL_URL)
+
+    bundle = migration_kernel.load_migration_contract(
+        source,
+        remote_tag_resolver=_source_tag_resolver(source),
+    )
+
+    assert bundle["source_trust"]["status"] == "source_unreleased"
+    assert bundle["source_trust"]["remote_transport"]["verified"] is False
+    assert any("rewritten away" in reason for reason in bundle["source_trust"]["reasons"])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider", "forged-provider"),
+        ("repository", "attacker/repo"),
+        ("tag", "v1.2.3"),
+        ("ref_oid", "0" * 40),
+        ("peeled_commit_oid", "f" * 40),
+        ("ref_oid", "not-an-oid"),
+    ],
+)
+def test_malformed_or_mismatched_tag_attestation_is_untrusted(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    source = _make_release_source(tmp_path)
+    valid = dict(_SOURCE_TAG_ATTESTATIONS[str(source)] or {})
+    valid[field] = value
+
+    bundle = migration_kernel.load_migration_contract(
+        source,
+        remote_tag_resolver=lambda _repository, _tag: valid,
+    )
+
+    assert bundle["source_trust"]["status"] == "source_unreleased"
+    assert bundle["source_trust"]["remote_tag_verified"] is False
+
+
+def test_fresh_attach_rejects_unreleased_development_source(tmp_path: Path) -> None:
+    target = tmp_path / "untrusted-attach"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_text("# Owner Skill\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="immutable trusted source release"):
+        bootstrap.copy_templates(target, _replacement_values(), force=False)
+
+    assert sorted(path.name for path in target.iterdir()) == ["SKILL.md"]
 
 
 def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> None:
@@ -489,7 +607,12 @@ def test_bootstrap_force_preserves_unknown_managed_destination(
     }
 
     with pytest.raises(ValueError, match="--force cannot authorize replacement"):
-        bootstrap.copy_templates(target, _replacement_values(), force=True)
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=True,
+            _migration_bundle=_trusted_development_bundle(),
+        )
 
     after = {
         path.relative_to(target).as_posix(): path.read_bytes()
@@ -508,7 +631,12 @@ def test_prerelease_v11_without_exact_contract_identity_is_manual_zero_write(
         "# Business\n\n" + lifecycle.build_harness_activation_block() + "\n",
         encoding="utf-8",
     )
-    bootstrap.copy_templates(target, _replacement_values(), force=False)
+    bootstrap.copy_templates(
+        target,
+        _replacement_values(),
+        force=False,
+        _migration_bundle=_trusted_development_bundle(),
+    )
     manifest = lifecycle.build_wrapper_manifest(
         "MetaInFLow/prerelease-v11",
         "v0.14.0",

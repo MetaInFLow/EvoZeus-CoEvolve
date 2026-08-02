@@ -3,7 +3,7 @@
   "bundle_id": "evozeus-coevolve",
   "bundle_version": "v1.2.0",
   "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
-  "source_revision": "v0.14.0",
+  "source_revision": "v0.15.0",
   "runtime_compatibility": {
     "min_inclusive": "0.1.0",
     "max_exclusive": "0.3.0"
@@ -16,7 +16,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "f0064db6c68b88af4f3fb88a325bc0dc78d358c3ed62d51013d5cb429f7ffd70",
+      "sha256": "7e0bb26538bb756cf041135400aa9e1006bc56e9a540d8f3b35271c4517a8eef",
       "role": "target-template-inventory"
     },
     {
@@ -26,7 +26,7 @@
     },
     {
       "path": "migrations/harness-migration-contract-v1.json",
-      "sha256": "8658649984d2859c41b9eef6dc80d8e3e9505eb641b40819e02755d40807dc21",
+      "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
       "role": "harness-migration-contract"
     },
     {

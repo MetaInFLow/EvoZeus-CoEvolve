@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 MIGRATION_PROTOCOL_VERSION = "v1.0.0"
@@ -27,6 +31,11 @@ SNAPSHOT_RECEIPT_SCHEMA_VERSION = (
     "evozeus.coevolve.harness-migration-snapshot-receipt.v1"
 )
 OFFICIAL_SOURCE_REPOSITORY = "MetaInFLow/EvoZeus-CoEvolve"
+OFFICIAL_SOURCE_URLS = {
+    "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git",
+    "git@github.com:MetaInFLow/EvoZeus-CoEvolve.git",
+}
+OfficialTagResolver = Callable[[str, str], dict[str, str] | None]
 CANONICAL_ACTIVATION_CONTRACT = {
     "block_id": "evozeus-harness-entry",
     "marker_version": "v1",
@@ -56,6 +65,103 @@ def canonical_json_sha256(value: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return sha256_bytes(encoded)
+
+
+def _target_inventory(root: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+
+    def visit(directory: Path, relative_root: Path) -> None:
+        try:
+            children = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as exc:
+            raise ValueError(f"target inventory cannot read {relative_root}: {exc}") from exc
+        for child in children:
+            relative = relative_root / child.name
+            if not relative_root.parts and child.name == ".git":
+                continue
+            try:
+                metadata = child.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError(f"target inventory cannot stat {relative}: {exc}") from exc
+            item: dict[str, Any] = {
+                "path": relative.as_posix(),
+                "mode": stat.S_IMODE(metadata.st_mode),
+            }
+            if stat.S_ISLNK(metadata.st_mode):
+                item.update({"kind": "symlink", "target": os.readlink(child.path)})
+            elif stat.S_ISDIR(metadata.st_mode):
+                item["kind"] = "directory"
+                entries.append(item)
+                visit(Path(child.path), relative)
+                continue
+            elif stat.S_ISREG(metadata.st_mode):
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                try:
+                    descriptor = os.open(child.path, flags)
+                    try:
+                        data = b""
+                        while True:
+                            chunk = os.read(descriptor, 1024 * 1024)
+                            if not chunk:
+                                break
+                            data += chunk
+                    finally:
+                        os.close(descriptor)
+                except OSError as exc:
+                    raise ValueError(
+                        f"target inventory cannot read regular file {relative}: {exc}"
+                    ) from exc
+                item.update(
+                    {
+                        "kind": "file",
+                        "size": len(data),
+                        "sha256": sha256_bytes(data),
+                    }
+                )
+            else:
+                item["kind"] = "unsupported"
+            entries.append(item)
+
+    visit(root, Path())
+    return entries
+
+
+def target_git_state(target: Path) -> dict[str, Any]:
+    target = target.expanduser().resolve()
+    head = _git(target, "rev-parse", "HEAD")
+    tree = _git(target, "rev-parse", "HEAD^{tree}")
+    index = _git_bytes(target, "ls-files", "--stage", "-z")
+    status_result = _git_bytes(
+        target,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    if any(result.returncode != 0 for result in (head, tree, index, status_result)):
+        raise ValueError("target Git identity/status cannot be collected")
+    inventory = _target_inventory(target)
+    return {
+        "head_commit": head.stdout.strip(),
+        "head_tree_oid": tree.stdout.strip(),
+        "index_sha256": f"sha256:{sha256_bytes(index.stdout)}",
+        "status_sha256": f"sha256:{sha256_bytes(status_result.stdout)}",
+        "status_clean": status_result.stdout == b"",
+        "inventory_sha256": f"sha256:{canonical_json_sha256(inventory)}",
+        "inventory_entries": len(inventory),
+    }
+
+
+def verify_target_git_state(target: Path, plan: dict[str, Any]) -> None:
+    expected = plan.get("target_git_state")
+    if not isinstance(expected, dict):
+        raise ValueError("migration plan is missing the complete target Git state")
+    actual = target_git_state(target)
+    if actual != expected:
+        raise ValueError(
+            "target Git tree/status/inventory changed after planning: "
+            f"expected={expected}; actual={actual}"
+        )
 
 
 def _json_object(path: Path, label: str) -> dict[str, Any]:
@@ -97,16 +203,118 @@ def _repo_from_remote(remote: str) -> str | None:
     return match.removesuffix(".git").strip("/") or None
 
 
+def _official_origin_transport(wrapper_root: Path) -> dict[str, Any]:
+    """Reject local/global Git URL rewrites before any official remote access."""
+    configured = _git(wrapper_root, "config", "--get-all", "remote.origin.url")
+    configured_urls = [line.strip() for line in configured.stdout.splitlines() if line.strip()]
+    effective = _git(wrapper_root, "remote", "get-url", "--all", "origin")
+    effective_urls = [line.strip() for line in effective.stdout.splitlines() if line.strip()]
+    reasons: list[str] = []
+    if configured.returncode != 0 or len(configured_urls) != 1:
+        reasons.append("source origin must declare exactly one fetch URL")
+    elif configured_urls[0] not in OFFICIAL_SOURCE_URLS:
+        reasons.append("source origin URL is not an exact official GitHub transport")
+    if effective.returncode != 0 or len(effective_urls) != 1:
+        reasons.append("source effective origin transport cannot be resolved exactly")
+    elif effective_urls[0] not in OFFICIAL_SOURCE_URLS:
+        reasons.append("source effective origin transport was rewritten away from GitHub")
+    elif configured_urls and effective_urls[0] != configured_urls[0]:
+        reasons.append("source effective origin transport differs from configured origin")
+    return {
+        "configured_urls": configured_urls,
+        "effective_urls": effective_urls,
+        "verified": not reasons,
+        "reasons": reasons,
+    }
+
+
+def _github_api_json(url: str, headers: dict[str, str]) -> dict[str, Any] | None:
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            final_url = urllib.parse.urlsplit(response.geturl())
+            if (
+                final_url.scheme != "https"
+                or final_url.hostname != "api.github.com"
+                or final_url.port not in {None, 443}
+            ):
+                return None
+            value = json.loads(response.read().decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, urllib.error.URLError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _resolve_official_remote_tag(
+    repository: str,
+    revision: str,
+) -> dict[str, str] | None:
+    """Resolve and peel a fixed official GitHub tag through GitHub's API."""
+    if repository != OFFICIAL_SOURCE_REPOSITORY:
+        return None
+    if not re.fullmatch(r"v\d+\.\d+\.\d+", revision):
+        return None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "EvoZeus-CoEvolve-source-trust",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    ref_url = (
+        "https://api.github.com/repos/MetaInFLow/EvoZeus-CoEvolve/git/ref/tags/"
+        + urllib.parse.quote(revision, safe="")
+    )
+    ref = _github_api_json(ref_url, headers)
+    ref_object = ref.get("object") if isinstance(ref, dict) else None
+    if not isinstance(ref_object, dict):
+        return None
+    ref_oid = ref_object.get("sha")
+    object_type = ref_object.get("type")
+    peeled_oid = ref_oid
+    for _ in range(5):
+        if object_type == "commit":
+            break
+        if object_type != "tag" or not isinstance(peeled_oid, str):
+            return None
+        tag = _github_api_json(
+            "https://api.github.com/repos/MetaInFLow/EvoZeus-CoEvolve/git/tags/"
+            + peeled_oid,
+            headers,
+        )
+        tag_object = tag.get("object") if isinstance(tag, dict) else None
+        if not isinstance(tag_object, dict):
+            return None
+        peeled_oid = tag_object.get("sha")
+        object_type = tag_object.get("type")
+    if (
+        object_type != "commit"
+        or not isinstance(ref_oid, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", ref_oid)
+        or not isinstance(peeled_oid, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", peeled_oid)
+    ):
+        return None
+    return {
+        "provider": "github-api",
+        "repository": OFFICIAL_SOURCE_REPOSITORY,
+        "tag": revision,
+        "ref_oid": ref_oid,
+        "peeled_commit_oid": peeled_oid,
+    }
+
+
 def _release_source_trust(
     wrapper_root: Path,
     bundle_manifest: dict[str, Any],
     contract_bytes: bytes,
     contract: dict[str, Any],
+    remote_tag_resolver: OfficialTagResolver | None = None,
 ) -> dict[str, Any]:
     revision = bundle_manifest.get("source_revision")
     reasons: list[str] = []
-    remote = _git(wrapper_root, "config", "--get", "remote.origin.url")
-    repository = _repo_from_remote(remote.stdout) if remote.returncode == 0 else None
+    transport = _official_origin_transport(wrapper_root)
+    reasons.extend(transport["reasons"])
+    configured_urls = transport["configured_urls"]
+    repository = _repo_from_remote(configured_urls[0]) if len(configured_urls) == 1 else None
     if repository != OFFICIAL_SOURCE_REPOSITORY:
         reasons.append(
             "source repository is not the official EvoZeus-CoEvolve origin"
@@ -116,10 +324,12 @@ def _release_source_trust(
         revision = None
 
     resolved_commit = None
+    local_tag_ref_oid = None
     head_commit = None
     worktree_clean = False
     remote_tag_commit = None
     remote_tag_verified = False
+    remote_tag_attestation = None
     tagged_bundle_sha256 = None
     source_attestations: list[dict[str, Any]] = []
     head = _git(wrapper_root, "rev-parse", "HEAD")
@@ -136,10 +346,18 @@ def _release_source_trust(
         worktree_clean = True
     if revision:
         resolved = _git(wrapper_root, "rev-parse", f"refs/tags/{revision}^{{commit}}")
+        local_ref = _git(wrapper_root, "rev-parse", f"refs/tags/{revision}")
         if resolved.returncode != 0 or not resolved.stdout.strip():
             reasons.append(f"release tag is unavailable: {revision}")
         else:
             resolved_commit = resolved.stdout.strip()
+            if local_ref.returncode != 0 or not re.fullmatch(
+                r"[0-9a-f]{40}",
+                local_ref.stdout.strip(),
+            ):
+                reasons.append(f"release tag ref object is unavailable: {revision}")
+            else:
+                local_tag_ref_oid = local_ref.stdout.strip()
             if head_commit != resolved_commit:
                 reasons.append("source HEAD does not equal the declared release tag commit")
             tagged_manifest_result = _git_bytes(
@@ -160,10 +378,64 @@ def _release_source_trust(
                 tagged_manifest_bytes = tagged_manifest_result.stdout
                 tagged_contract_bytes = tagged_contract_result.stdout
                 tagged_bundle_sha256 = f"sha256:{sha256_bytes(tagged_manifest_bytes)}"
+                working_manifest_bytes = (
+                    wrapper_root / MIGRATION_CONTRACT_BUNDLE_ROOT / "manifest.json"
+                ).read_bytes()
+                if tagged_manifest_bytes != working_manifest_bytes:
+                    reasons.append(
+                        "working contract bundle manifest differs from the declared release artifact"
+                    )
                 try:
                     tagged_manifest = json.loads(tagged_manifest_bytes.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     tagged_manifest = None
+                if tagged_manifest != bundle_manifest:
+                    reasons.append("release tag contract bundle manifest identity is invalid")
+                for entry in bundle_manifest.get("files", []):
+                    if not isinstance(entry, dict):
+                        reasons.append("contract bundle file entry is invalid")
+                        continue
+                    entry_path = entry.get("path")
+                    expected_entry_sha256 = entry.get("sha256")
+                    if not isinstance(entry_path, str) or not _is_plain_sha256(
+                        expected_entry_sha256
+                    ):
+                        reasons.append("contract bundle file identity is incomplete")
+                        continue
+                    try:
+                        entry_relative = _safe_relative_path(
+                            entry_path,
+                            "contract bundle file path",
+                        )
+                        working_entry = _safe_file_below(
+                            wrapper_root / MIGRATION_CONTRACT_BUNDLE_ROOT,
+                            entry_relative,
+                            "contract bundle file",
+                        )
+                    except ValueError as exc:
+                        reasons.append(str(exc))
+                        continue
+                    working_entry_bytes = working_entry.read_bytes()
+                    tagged_entry_result = _git_bytes(
+                        wrapper_root,
+                        "show",
+                        f"{revision}:{MIGRATION_CONTRACT_BUNDLE_ROOT}/{entry_relative.as_posix()}",
+                    )
+                    if sha256_bytes(working_entry_bytes) != expected_entry_sha256:
+                        reasons.append(
+                            f"working contract bundle file digest mismatch: {entry_path}"
+                        )
+                    if tagged_entry_result.returncode != 0:
+                        reasons.append(
+                            f"contract bundle file is absent from release tag: {entry_path}"
+                        )
+                    elif (
+                        tagged_entry_result.stdout != working_entry_bytes
+                        or sha256_bytes(tagged_entry_result.stdout) != expected_entry_sha256
+                    ):
+                        reasons.append(
+                            f"contract bundle file is not release-bound: {entry_path}"
+                        )
                 tagged_entry = next(
                     (
                         item
@@ -242,57 +514,139 @@ def _release_source_trust(
                         reasons.append(
                             f"migration write source is not release-bound: {source_path}"
                         )
+                for profile in contract.get("profiles", []):
+                    if not isinstance(profile, dict) or profile.get("automatic") is not True:
+                        continue
+                    source_release = profile.get("source_release")
+                    if not isinstance(source_release, dict):
+                        continue
+                    release_from = source_release.get("artifact_release_from")
+                    release_to = source_release.get("artifact_release_to")
+                    declared_diff = source_release.get("managed_diff_paths")
+                    if not isinstance(release_from, str) or not isinstance(release_to, str):
+                        continue
+                    release_from_commit = _git(
+                        wrapper_root,
+                        "rev-parse",
+                        f"refs/tags/{release_from}^{{commit}}",
+                    )
+                    release_to_commit = _git(
+                        wrapper_root,
+                        "rev-parse",
+                        f"refs/tags/{release_to}^{{commit}}",
+                    )
+                    if (
+                        release_from_commit.returncode != 0
+                        or release_to_commit.returncode != 0
+                    ):
+                        reasons.append(
+                            f"migration source release axis is unavailable: {profile.get('profile_id')}"
+                        )
+                        continue
+                    diff = _git(
+                        wrapper_root,
+                        "diff",
+                        "--name-only",
+                        "--no-renames",
+                        release_from_commit.stdout.strip(),
+                        release_to_commit.stdout.strip(),
+                        "--",
+                        "templates/target",
+                        "scripts/evozeus_wrapper_preflight.py",
+                        "scripts/evozeus_notice.py",
+                        MIGRATION_CONTRACT_BUNDLE_ROOT,
+                    )
+                    actual_diff = sorted(
+                        line.strip() for line in diff.stdout.splitlines() if line.strip()
+                    )
+                    if diff.returncode != 0 or actual_diff != sorted(declared_diff or []):
+                        reasons.append(
+                            f"migration source release managed diff is incomplete: {profile.get('profile_id')}"
+                        )
+                        continue
+                    operation_sources = {
+                        item.get("source_path")
+                        for item in (profile.get("adapter_payload") or {}).get(
+                            "write_sources", []
+                        )
+                        if isinstance(item, dict)
+                    }
+                    control_paths = {
+                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/manifest.json",
+                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/{MIGRATION_CONTRACT_REL}",
+                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/target-template-inventory.json",
+                    }
+                    uncovered = set(actual_diff) - operation_sources - control_paths
+                    if uncovered:
+                        reasons.append(
+                            "migration operation set does not cover managed source release diff: "
+                            + ", ".join(sorted(uncovered))
+                        )
             if not reasons:
-                remote_tag = _git(
-                    wrapper_root,
-                    "ls-remote",
-                    "--tags",
-                    "origin",
-                    f"refs/tags/{revision}",
-                    f"refs/tags/{revision}^{{}}",
+                resolver = remote_tag_resolver or _resolve_official_remote_tag
+                remote_tag_attestation = resolver(
+                    OFFICIAL_SOURCE_REPOSITORY,
+                    revision,
                 )
-                if remote_tag.returncode != 0:
-                    reasons.append("official origin release tag cannot be verified")
+                if not isinstance(remote_tag_attestation, dict):
+                    reasons.append("declared release tag is absent from the official origin")
+                elif any(
+                    remote_tag_attestation.get(field) != expected
+                    for field, expected in {
+                        "provider": "github-api",
+                        "repository": OFFICIAL_SOURCE_REPOSITORY,
+                        "tag": revision,
+                    }.items()
+                ):
+                    reasons.append("official release tag attestation identity is invalid")
                 else:
-                    direct_commit = None
-                    peeled_commit = None
-                    for line in remote_tag.stdout.splitlines():
-                        fields = line.split()
-                        if len(fields) != 2:
-                            continue
-                        commit, ref = fields
-                        if ref == f"refs/tags/{revision}^{{}}":
-                            peeled_commit = commit
-                        elif ref == f"refs/tags/{revision}":
-                            direct_commit = commit
-                    remote_tag_commit = peeled_commit or direct_commit
-                    if not remote_tag_commit:
-                        reasons.append(
-                            "declared release tag is absent from the official origin"
-                        )
-                    elif remote_tag_commit != resolved_commit:
-                        reasons.append(
-                            "local release tag commit differs from the official origin"
-                        )
-                    else:
-                        remote_tag_verified = True
+                    remote_tag_commit = remote_tag_attestation.get(
+                        "peeled_commit_oid"
+                    )
+                remote_ref_oid = (
+                    remote_tag_attestation.get("ref_oid")
+                    if isinstance(remote_tag_attestation, dict)
+                    else None
+                )
+                if remote_tag_attestation is not None and (
+                    not re.fullmatch(r"[0-9a-f]{40}", str(remote_ref_oid))
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(remote_tag_commit))
+                ):
+                    reasons.append("official release tag attestation commit is invalid")
+                elif remote_ref_oid and remote_ref_oid != local_tag_ref_oid:
+                    reasons.append(
+                        "local release tag ref object differs from the official origin"
+                    )
+                elif remote_tag_commit and remote_tag_commit != resolved_commit:
+                    reasons.append(
+                        "local release tag commit differs from the official origin"
+                    )
+                elif remote_tag_commit:
+                    remote_tag_verified = True
     return {
         "status": "trusted_release" if not reasons else "source_unreleased",
         "official_repository": OFFICIAL_SOURCE_REPOSITORY,
         "repository": repository,
         "release_tag": revision,
         "resolved_commit": resolved_commit,
+        "local_tag_ref_oid": local_tag_ref_oid,
         "head_commit": head_commit,
         "worktree_clean": worktree_clean,
         "remote_tag_commit": remote_tag_commit,
         "remote_tag_verified": remote_tag_verified,
+        "remote_tag_attestation": remote_tag_attestation,
+        "remote_transport": transport,
         "tagged_bundle_sha256": tagged_bundle_sha256,
         "source_attestations": source_attestations,
         "reasons": reasons,
     }
 
 
-def load_migration_contract(wrapper_root: Path | None = None) -> dict[str, Any]:
+def load_migration_contract(
+    wrapper_root: Path | None = None,
+    *,
+    remote_tag_resolver: OfficialTagResolver | None = None,
+) -> dict[str, Any]:
     """Load a release-bound contract and verify every relative identity."""
     wrapper_root = (
         Path(__file__).resolve().parents[1]
@@ -412,6 +766,43 @@ def load_migration_contract(wrapper_root: Path | None = None) -> dict[str, Any]:
             raise ValueError(f"migration profile state identity is invalid: {profile_id}")
         if not isinstance(profile.get("automatic"), bool):
             raise ValueError(f"migration profile automatic flag is invalid: {profile_id}")
+        source_release = profile.get("source_release")
+        if profile.get("automatic") is True:
+            if not isinstance(source_release, dict):
+                raise ValueError(
+                    f"automatic migration profile must bind a source release axis: {profile_id}"
+                )
+            if any(
+                not isinstance(source_release.get(field), str)
+                or re.fullmatch(r"v\d+\.\d+\.\d+", source_release[field]) is None
+                for field in (
+                    "target_wrapper_from",
+                    "target_wrapper_to",
+                    "artifact_release_from",
+                    "artifact_release_to",
+                )
+            ):
+                raise ValueError(f"migration source release axis is invalid: {profile_id}")
+            if (
+                source_release.get("artifact_to_binding")
+                != "contract_bundle.source_revision"
+                or source_release.get("artifact_release_to")
+                != bundle_manifest.get("source_revision")
+            ):
+                raise ValueError(
+                    f"migration target source release is not bundle-bound: {profile_id}"
+                )
+            managed_diff_paths = source_release.get("managed_diff_paths")
+            if (
+                not isinstance(managed_diff_paths, list)
+                or any(not isinstance(item, str) for item in managed_diff_paths)
+                or len(managed_diff_paths) != len(set(managed_diff_paths))
+            ):
+                raise ValueError(
+                    f"migration source release managed diff is invalid: {profile_id}"
+                )
+            for relative_text in managed_diff_paths:
+                _safe_relative_path(relative_text, "managed source release diff path")
         payload = profile["adapter_payload"]
         if not isinstance(payload, dict):
             raise ValueError(f"migration adapter payload must be an object: {profile_id}")
@@ -477,6 +868,7 @@ def load_migration_contract(wrapper_root: Path | None = None) -> dict[str, Any]:
         bundle_manifest,
         contract_bytes,
         contract,
+        remote_tag_resolver,
     )
     return {
         "contract": contract,
@@ -522,6 +914,7 @@ def profile_identity(profile: dict[str, Any]) -> dict[str, Any]:
     }
     identity["from_state"] = profile.get("from")
     identity["to_state"] = profile.get("to")
+    identity["source_release"] = profile.get("source_release")
     return identity
 
 
@@ -614,6 +1007,7 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
             "migration plan digest mismatch: "
             f"expected={expected_plan_sha256}; actual={actual_plan_sha256}"
         )
+    verify_target_git_state(target, plan)
     operation_sets: dict[str, list[dict[str, Any]]] = {}
     for field in ("write_set", "delete_set", "move_set"):
         entries = plan.get(field)
