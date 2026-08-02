@@ -350,9 +350,17 @@ def load_closure(
     release_status = source.get("release_status")
     if release_status not in {"unreleased_exact_snapshot", "release_required_for_apply"}:
         raise VerificationError(f"target closure release status is invalid: {relative}")
-    source_release = source.get("required_release")
-    if source_release is not None:
-        _semver(source_release, "target closure required release")
+    required_release = source.get("required_release")
+    if required_release is not None:
+        _semver(required_release, "target closure required release")
+    if release_status == "unreleased_exact_snapshot" and required_release is not None:
+        raise VerificationError(
+            f"unreleased target closure cannot claim a release: {relative}"
+        )
+    if release_status == "release_required_for_apply" and required_release is None:
+        raise VerificationError(
+            f"release-bound target closure lacks its required release: {relative}"
+        )
     state = closure.get("state")
     if not isinstance(state, dict):
         raise VerificationError(f"target closure state is missing: {relative}")
@@ -631,25 +639,34 @@ def load_profile(
     release_axis = profile.get("release_axis")
     if not isinstance(release_axis, dict):
         raise VerificationError("official upgrade profile release axis is missing")
-    for field in (
-        "target_wrapper_from",
-        "target_wrapper_to",
-        "artifact_release_from",
-        "artifact_release_to",
-    ):
+    for field in ("target_wrapper_from", "target_wrapper_to"):
         _semver(release_axis.get(field), f"official upgrade profile {field}")
-    if release_axis.get("artifact_to_binding") != "contract_bundle.source_revision":
-        raise VerificationError("official upgrade profile release binding is invalid")
     if release_axis.get("target_wrapper_from") != from_closure["state"].get(
         "target_wrapper_version"
     ) or release_axis.get("target_wrapper_to") != to_closure["state"].get(
         "target_wrapper_version"
     ):
         raise VerificationError("official upgrade profile target release axes disagree")
-    if to_closure["source"].get("required_release") != release_axis.get(
-        "artifact_release_to"
-    ):
-        raise VerificationError("official upgrade profile artifact release is not closure-bound")
+    from_source = from_closure["source"]
+    to_source = to_closure["source"]
+    expected_artifact_source_from = {
+        "kind": "construction_revision",
+        "revision": from_source.get("construction_revision"),
+        "release": from_source.get("required_release"),
+    }
+    expected_artifact_source_to = {
+        "kind": "required_release",
+        "release": to_source.get("required_release"),
+        "binding": "contract_bundle.source_revision",
+    }
+    if release_axis.get("artifact_source_from") != expected_artifact_source_from:
+        raise VerificationError(
+            "official upgrade profile from-artifact provenance is not closure-bound"
+        )
+    if release_axis.get("artifact_source_to") != expected_artifact_source_to:
+        raise VerificationError(
+            "official upgrade profile to-artifact provenance is not closure-bound"
+        )
     if _semver(to_closure.get("closure_version"), "to closure version") <= _semver(
         from_closure.get("closure_version"), "from closure version"
     ):

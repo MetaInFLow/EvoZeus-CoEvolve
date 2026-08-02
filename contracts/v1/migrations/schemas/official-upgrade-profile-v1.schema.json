@@ -33,16 +33,32 @@
       "required": [
         "target_wrapper_from",
         "target_wrapper_to",
-        "artifact_release_from",
-        "artifact_release_to",
-        "artifact_to_binding"
+        "artifact_source_from",
+        "artifact_source_to"
       ],
       "properties": {
         "target_wrapper_from": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "target_wrapper_to": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
-        "artifact_release_from": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
-        "artifact_release_to": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
-        "artifact_to_binding": { "const": "contract_bundle.source_revision" }
+        "artifact_source_from": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "revision", "release"],
+          "properties": {
+            "kind": { "const": "construction_revision" },
+            "revision": { "pattern": "^[0-9a-f]{40}$" },
+            "release": { "type": "null" }
+          }
+        },
+        "artifact_source_to": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "release", "binding"],
+          "properties": {
+            "kind": { "const": "required_release" },
+            "release": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+            "binding": { "const": "contract_bundle.source_revision" }
+          }
+        }
       }
     },
     "automatic": { "type": "boolean" },

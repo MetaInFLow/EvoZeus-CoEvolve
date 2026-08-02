@@ -6,7 +6,7 @@
       "id": "canonical-v1.0-to-v1.1",
       "version": "v1.0.0",
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "3dcf42b64dfb573d89aa5af8a9ffe68cc8beaf812f144d6eb2bc9bde92503e5d"
+      "sha256": "bc2d25b3d1d0c133f138065b4d57ebaaaa2d309e02dcb89a2c33d62ded95b01e"
     }
   ]
 }

@@ -113,8 +113,7 @@ def _make_release_source(
     )
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     profile["to_closure"]["sha256"] = closure_sha256
-    profile["release_axis"]["artifact_release_from"] = RELEASE_TAG
-    profile["release_axis"]["artifact_release_to"] = RELEASE_TAG
+    profile["release_axis"]["artifact_source_to"]["release"] = RELEASE_TAG
     _write_json(profile_path, profile)
     profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
     profile_pointer_path = source / "contracts/v1/migrations/profiles/current.json"

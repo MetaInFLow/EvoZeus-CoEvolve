@@ -115,6 +115,56 @@ def test_closure_release_status_does_not_claim_checkpoint_is_a_release() -> None
         "required_release": "v0.15.0",
     }
 
+    _, profile = _profile()
+    assert profile["release_axis"] == {
+        "target_wrapper_from": "v0.14.0",
+        "target_wrapper_to": "v0.15.0",
+        "artifact_source_from": {
+            "kind": "construction_revision",
+            "revision": "44d1fbdefc1e1de47a35c3ca39d2ba083661d569",
+            "release": None,
+        },
+        "artifact_source_to": {
+            "kind": "required_release",
+            "release": "v0.15.0",
+            "binding": "contract_bundle.source_revision",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("axis", "field", "value", "message"),
+    [
+        (
+            "artifact_source_from",
+            "revision",
+            "1" * 40,
+            "from-artifact provenance",
+        ),
+        (
+            "artifact_source_to",
+            "release",
+            "v9.9.9",
+            "to-artifact provenance",
+        ),
+    ],
+)
+def test_profile_artifact_provenance_must_equal_bound_closure_sources(
+    axis: str,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    relative, profile = _profile()
+    profile["release_axis"][axis][field] = value
+    store = verifier.CandidateStore(
+        _base_store(),
+        {relative: _candidate_blob(relative, _json_bytes(profile))},
+    )
+
+    with pytest.raises(verifier.VerificationError, match=message):
+        verifier.load_profile(store, relative, verifier.load_protocol(_base_store()))
+
 
 def test_profile_operations_are_a_strict_bijection_with_closure_diff() -> None:
     store = _base_store()

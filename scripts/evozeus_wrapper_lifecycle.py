@@ -3490,32 +3490,41 @@ def plan_target_layout_migration(
         canonical_profile,
         activation_contract,
     )
-    canonical_source_release = canonical_profile.get("source_release") or {}
-    requested_release_to = latest_version or current_version
-    release_axis_evidence = {
-        "expected_from": canonical_source_release.get("target_wrapper_from"),
-        "actual_from": current_version,
-        "expected_to": canonical_source_release.get("target_wrapper_to"),
-        "requested_to": requested_release_to,
-        "expected_artifact_release": canonical_source_release.get(
-            "artifact_release_to"
-        ),
-        "bundle_artifact_release": migration_bundle.get("source_trust", {}).get(
+    canonical_release_axis = canonical_profile.get("release_axis") or {}
+    requested_wrapper_to = latest_version or current_version
+    artifact_source_from = canonical_release_axis.get("artifact_source_from")
+    artifact_source_to = canonical_release_axis.get("artifact_source_to")
+    upgrade_axis_evidence = {
+        "target_wrapper": {
+            "expected_from": canonical_release_axis.get("target_wrapper_from"),
+            "actual_from": current_version,
+            "expected_to": canonical_release_axis.get("target_wrapper_to"),
+            "requested_to": requested_wrapper_to,
+        },
+        "artifact_source_from": copy.deepcopy(artifact_source_from),
+        "artifact_source_to": copy.deepcopy(artifact_source_to),
+        "bundle_required_release": migration_bundle.get("source_trust", {}).get(
             "release_tag"
         ),
     }
-    release_axis_evidence["matched"] = all(
+    upgrade_axis_evidence["matched"] = all(
         (
-            current_version == canonical_source_release.get("target_wrapper_from"),
-            requested_release_to == canonical_source_release.get("target_wrapper_to"),
+            current_version == canonical_release_axis.get("target_wrapper_from"),
+            requested_wrapper_to == canonical_release_axis.get("target_wrapper_to"),
+            isinstance(artifact_source_from, dict),
+            artifact_source_from.get("kind") == "construction_revision",
+            artifact_source_from.get("release") is None,
+            isinstance(artifact_source_to, dict),
+            artifact_source_to.get("kind") == "required_release",
+            artifact_source_to.get("binding") == "contract_bundle.source_revision",
             migration_bundle.get("source_trust", {}).get("release_tag")
-            == canonical_source_release.get("artifact_release_to"),
+            == artifact_source_to.get("release"),
         )
     )
-    if not release_axis_evidence["matched"]:
+    if not upgrade_axis_evidence["matched"]:
         canonical_evidence["matched"] = False
         canonical_evidence["blockers"].append(
-            "target/source release axis does not match the automatic migration profile"
+            "target wrapper/artifact provenance axis does not match the automatic migration profile"
         )
     surface_file = None
     surface_text = None
@@ -3795,8 +3804,8 @@ def plan_target_layout_migration(
         "compatibility_state": (
             "prerelease_ambiguous" if prerelease_ambiguous else "versioned"
         ),
-        "source_release_from": current_version,
-        "source_release_to": latest_version or current_version,
+        "target_wrapper_from": current_version,
+        "target_wrapper_to": latest_version or current_version,
         "harness_skill_from": (
             (selected_profile or {}).get("from", {}).get("harness_skill_version")
             if selected_profile is not None
@@ -3809,7 +3818,7 @@ def plan_target_layout_migration(
         ),
         "ownership_evidence": canonical_evidence,
         "automatic_profile_authorized": canonical_profile_authorized,
-        "source_release_evidence": release_axis_evidence,
+        "upgrade_axis_evidence": upgrade_axis_evidence,
         "discovery_candidates": discovery_candidates,
         "discovery_candidates_have_destructive_authority": False,
         "from_layout": "scattered-v1" if layout_migration_required else "consolidated-v2",
@@ -3944,7 +3953,7 @@ def _canonical_v1_migration_record(
         f"- Profile to state：`{json.dumps(profile['to_state'], ensure_ascii=False, sort_keys=True)}`",
         f"- Adapter：`{profile['adapter_id']}@{profile['adapter_version']}`",
         f"- Adapter SHA-256：`{profile['adapter_sha256']}`",
-        f"- Source release：`{plan['source_release_from']} -> {plan['source_release_to']}`",
+        f"- Target wrapper：`{plan['target_wrapper_from']} -> {plan['target_wrapper_to']}`",
         f"- Harness Skill：`{plan['harness_skill_from']} -> {plan['harness_skill_to']}`",
         "- Snapshot：apply 前在目标 Repo 外创建；实际路径以 apply report 为准。",
         "",

@@ -707,14 +707,22 @@ def _release_source_trust(
                 for profile in contract.get("profiles", []):
                     if not isinstance(profile, dict) or profile.get("automatic") is not True:
                         continue
-                    source_release = profile.get("source_release")
-                    if not isinstance(source_release, dict):
+                    release_axis = profile.get("release_axis")
+                    if not isinstance(release_axis, dict):
                         continue
-                    release_to = source_release.get("artifact_release_to")
-                    declared_diff = source_release.get("managed_diff_paths")
+                    artifact_source_to = release_axis.get("artifact_source_to")
+                    release_to = (
+                        artifact_source_to.get("release")
+                        if isinstance(artifact_source_to, dict)
+                        else None
+                    )
+                    declared_diff = release_axis.get("managed_diff_paths")
                     adapter_payload = profile.get("adapter_payload") or {}
                     if (
                         release_to != revision
+                        or artifact_source_to.get("kind") != "required_release"
+                        or artifact_source_to.get("binding")
+                        != "contract_bundle.source_revision"
                         or not isinstance(adapter_payload, dict)
                         or adapter_payload.get("authority_source")
                         != "external-hash-bound-official-upgrade-profile"
@@ -896,7 +904,13 @@ def _official_upgrade_profile_compatibility(
     release_axis = raw_profile.get("release_axis")
     if not isinstance(release_axis, dict):
         raise ValueError("official upgrade profile lacks a release axis")
-    if release_axis.get("artifact_release_to") != bundle_manifest.get("source_revision"):
+    artifact_source_to = release_axis.get("artifact_source_to")
+    if (
+        not isinstance(artifact_source_to, dict)
+        or artifact_source_to.get("kind") != "required_release"
+        or artifact_source_to.get("release") != bundle_manifest.get("source_revision")
+        or artifact_source_to.get("binding") != "contract_bundle.source_revision"
+    ):
         raise ValueError("official upgrade profile is not bound to bundle source_revision")
     return {
         "profile_id": raw_profile.get("profile_id"),
@@ -909,7 +923,7 @@ def _official_upgrade_profile_compatibility(
             "layout": to_state.get("layout"),
             "harness_skill_version": to_state.get("harness_skill_version"),
         },
-        "source_release": {
+        "release_axis": {
             **copy.deepcopy(release_axis),
             "managed_diff_paths": sorted(
                 item["source_path"] for item in write_sources
@@ -1120,33 +1134,38 @@ def load_migration_contract(
             raise ValueError(f"migration profile state identity is invalid: {profile_id}")
         if not isinstance(profile.get("automatic"), bool):
             raise ValueError(f"migration profile automatic flag is invalid: {profile_id}")
-        source_release = profile.get("source_release")
+        release_axis = profile.get("release_axis")
         if profile.get("automatic") is True:
-            if not isinstance(source_release, dict):
+            if not isinstance(release_axis, dict):
                 raise ValueError(
                     f"automatic migration profile must bind a source release axis: {profile_id}"
                 )
             if any(
-                not isinstance(source_release.get(field), str)
-                or re.fullmatch(r"v\d+\.\d+\.\d+", source_release[field]) is None
-                for field in (
-                    "target_wrapper_from",
-                    "target_wrapper_to",
-                    "artifact_release_from",
-                    "artifact_release_to",
-                )
+                not isinstance(release_axis.get(field), str)
+                or re.fullmatch(r"v\d+\.\d+\.\d+", release_axis[field]) is None
+                for field in ("target_wrapper_from", "target_wrapper_to")
             ):
                 raise ValueError(f"migration source release axis is invalid: {profile_id}")
+            artifact_source_from = release_axis.get("artifact_source_from")
+            artifact_source_to = release_axis.get("artifact_source_to")
             if (
-                source_release.get("artifact_to_binding")
+                not isinstance(artifact_source_from, dict)
+                or artifact_source_from.get("kind") != "construction_revision"
+                or not isinstance(artifact_source_from.get("revision"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", artifact_source_from["revision"])
+                is None
+                or artifact_source_from.get("release") is not None
+                or not isinstance(artifact_source_to, dict)
+                or artifact_source_to.get("kind") != "required_release"
+                or artifact_source_to.get("binding")
                 != "contract_bundle.source_revision"
-                or source_release.get("artifact_release_to")
+                or artifact_source_to.get("release")
                 != bundle_manifest.get("source_revision")
             ):
                 raise ValueError(
                     f"migration target source release is not bundle-bound: {profile_id}"
                 )
-            managed_diff_paths = source_release.get("managed_diff_paths")
+            managed_diff_paths = release_axis.get("managed_diff_paths")
             if (
                 not isinstance(managed_diff_paths, list)
                 or any(not isinstance(item, str) for item in managed_diff_paths)
@@ -1270,7 +1289,7 @@ def profile_identity(profile: dict[str, Any]) -> dict[str, Any]:
     }
     identity["from_state"] = profile.get("from")
     identity["to_state"] = profile.get("to")
-    identity["source_release"] = profile.get("source_release")
+    identity["release_axis"] = profile.get("release_axis")
     return identity
 
 
