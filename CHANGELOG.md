@@ -8,6 +8,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.1.0` contract version and compact instruction-surface activation block.
 - Added the versioned Harness migration protocol, release-bound contract, frozen v1.0 artifact, independent profile/adapter identities, exact plan approval, receipt-bound snapshots, and verified rollback lifecycle.
+- Added immutable v1.0/v1.1 target closures, hash-bound external upgrade profiles and current pointers, plus a trusted-base pull-request verifier that treats candidate files as data only.
 - Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
 - Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound v1.1.0 contract file that remains compatible with the Core v1 bundle loader.
 
@@ -17,15 +18,18 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
 - Changed legacy instruction matching to read-only discovery. Regex, frontmatter, headings, terminal signatures, and old paths have no destructive authority; ambiguous and scattered layouts return `manual_migration_required`, `writes=false`.
 - Limited automatic migration to the exact canonical Harness Skill v1.0→v1.1 profile. The profile preserves the instruction surface byte-for-byte and verifies every preimage and postimage.
+- Made v0.15.0 the fresh-attach baseline and separated the target wrapper v0.14→v0.15 axis from artifact provenance: v1.0 comes from exact construction revision `44d1fbdefc1e1de47a35c3ca39d2ba083661d569`, while v1.1 requires the official v0.15.0 release.
 
 ### Security
 
 - Added strict manifest, canonical-path, managed-identity, symlink, path-traversal, instruction-entry agreement, protected-surface CAS, official remote release-tag, source-byte, plan-digest, snapshot receipt, and rollback prevalidation.
+- Bound trusted preimages, approved writes, idempotent attachment, rollback allowed states, and final verification to both content hashes and file modes.
 - Blocked lifecycle installation until the Core-owned dispatcher is byte-identical to the active product component and all control paths pass HOME containment and symlink checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
 
 ### Verification
 
 - Added fresh attach, exact artifact migration, same-business-heading, missing-terminal, CRLF, fenced-code, no-marker, unknown-layout, plan-approval, source-trust, symlink, snapshot-tamper, rollback, and ambiguous-zero-write regression coverage.
+- Added regression coverage that keeps current v0.15 fresh fixtures separate from legacy v0.14 migration fixtures and rejects incorrect artifact provenance or mode-only drift.
 - Migration plans declare explicit write/delete/move sets, protected business surfaces, validation, rollback, and self-excluding `plan_sha256`; every write item carries a precomputed postimage hash.
 - Added lifecycle coverage for missing or incompatible Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership, and optional zero-mutation execution against a real Core checkout.
 
