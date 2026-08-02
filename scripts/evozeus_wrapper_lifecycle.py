@@ -2319,15 +2319,12 @@ def _merge_codex_hooks_config(target: Path) -> tuple[dict[str, Any], str]:
 
 
 def _frontmatter_end(text: str) -> int:
-    lines = text.splitlines(keepends=True)
-    if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
-        return 0
-    offset = len(lines[0])
-    for line in lines[1:]:
-        offset += len(line)
-        if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
-            return offset
-    return 0
+    """Return the frontmatter boundary using the shared strict YAML guard."""
+    try:
+        from .evozeus_wrapper_preflight import _frontmatter_end as strict_frontmatter_end
+    except ImportError:
+        from evozeus_wrapper_preflight import _frontmatter_end as strict_frontmatter_end
+    return strict_frontmatter_end(text)
 
 
 def _markdown_headings(text: str) -> list[tuple[int, int, str]]:
@@ -2412,10 +2409,43 @@ def build_harness_activation_block(newline: str = "\n") -> str:
 
 
 def _harness_entry_pattern() -> re.Pattern[str]:
-    return re.compile(
-        rf"{re.escape(HARNESS_ENTRY_BEGIN)}.*?{re.escape(HARNESS_ENTRY_END)}(?:\r?\n)*",
-        re.DOTALL,
+    block = r"\r?\n".join(
+        re.escape(line) for line in build_harness_activation_block().splitlines()
     )
+    return re.compile(
+        rf"^{block}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
+        re.MULTILINE,
+    )
+
+
+def _mask_markdown_fenced_code(text: str) -> str:
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
+    try:
+        from .evozeus_wrapper_preflight import _mask_markdown_fenced_code as mask_code
+    except ImportError:
+        from evozeus_wrapper_preflight import _mask_markdown_fenced_code as mask_code
+    return mask_code(text)
+
+
+def _harness_entry_markers_well_formed(text: str) -> bool:
+    """Accept zero or more complete, non-nested top-level canonical entry blocks."""
+    visible = _mask_markdown_fenced_code(text)
+    marker_pattern = re.compile(
+        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*\r?$",
+        re.MULTILINE,
+    )
+    entry_open = False
+    for match in marker_pattern.finditer(visible):
+        if match.group("begin"):
+            if entry_open:
+                return False
+            entry_open = True
+        else:
+            if not entry_open:
+                return False
+            entry_open = False
+    return not entry_open
 
 
 def _consume_following_newlines(text: str, offset: int) -> int:
@@ -2587,18 +2617,18 @@ def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
 
 def _has_canonical_harness_entry(text: str) -> bool:
     normalized = text.replace("\r\n", "\n")
+    visible = _mask_markdown_fenced_code(text).replace("\r\n", "\n")
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
     content = normalized[_frontmatter_end(normalized) :].lstrip()
     lines = content.splitlines()
+    entries = list(_harness_entry_pattern().finditer(visible))
     precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
         lines
         and lines[0].startswith("# ")
         and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
     )
     return (
-        normalized.count(HARNESS_ENTRY_BEGIN) == 1
-        and normalized.count(HARNESS_ENTRY_END) == 1
-        and build_harness_activation_block() in normalized
+        len(entries) == 1
         and precedes_business
         and not owned_spans
         and not owned_conflicts
@@ -2616,16 +2646,42 @@ def _instruction_insert_index(text: str) -> int:
     return 0
 
 
+def validate_instruction_surface_for_harness_entry(target: Path, surface_rel: str) -> str:
+    """Return the read-only surface only when canonical entry migration is provably safe."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    text = _read_text_preserving_newlines(surface)
+    if not _harness_entry_markers_well_formed(text):
+        raise ValueError(
+            "instruction surface has an unbalanced canonical Harness entry or invalid nesting: "
+            f"{surface_rel}"
+        )
+    _, conflicts = _wrapper_owned_section_analysis(text)
+    if conflicts:
+        raise ValueError(
+            f"instruction surface {surface_rel} cannot be migrated safely:\n- "
+            + "\n- ".join(conflicts)
+        )
+    return text
+
+
 def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str) -> bool:
     """Replace proven wrapper-owned legacy blocks with the compact canonical Read block."""
     surface = safe_target_relative_file(target, surface_rel)
     if surface is None:
         raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
-    original = _read_text_preserving_newlines(surface)
+    original = validate_instruction_surface_for_harness_entry(target, surface_rel)
     if _has_canonical_harness_entry(original):
         return False
 
-    updated = _harness_entry_pattern().sub("", original)
+    entry_spans = [
+        (match.start(), match.end())
+        for match in _harness_entry_pattern().finditer(_mask_markdown_fenced_code(original))
+    ]
+    updated = original
+    for start, end in reversed(entry_spans):
+        updated = updated[:start] + updated[end:]
     owned_spans, owned_conflicts = _wrapper_owned_section_analysis(updated)
     if owned_conflicts:
         raise ValueError("cannot safely migrate instruction surface:\n- " + "\n- ".join(owned_conflicts))
@@ -2726,6 +2782,38 @@ def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
                 rel = source.relative_to(source_dir)
                 add(source, str(Path(destination_dir) / rel))
     return grouped
+
+
+def _manifest_proves_canonical_harness_ownership(manifest: dict[str, Any]) -> bool:
+    managed_files = manifest.get("managed_files")
+    return (
+        manifest.get("harness_skill_path") == TARGET_HARNESS_SKILL
+        and manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION
+        and manifest.get("harness_skill_managed") is True
+        and isinstance(managed_files, list)
+        and TARGET_HARNESS_SKILL in managed_files
+    )
+
+
+def _canonical_harness_path_is_proven_owned(
+    target: Path,
+    manifest: dict[str, Any],
+) -> bool:
+    if _manifest_proves_canonical_harness_ownership(manifest):
+        return True
+    harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
+    if harness is None:
+        return False
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "target"
+        / LEGACY_TARGET_EVOINFRA_DIR
+        / "skills"
+        / "using-evozeus-harness"
+        / "SKILL.md"
+    )
+    return template.is_file() and harness.read_bytes() == template.read_bytes()
 
 
 def _harness_contract_needs_migration(
@@ -2919,6 +3007,15 @@ def plan_target_layout_migration(
     )
     pull_request_template_update = None
     if requires_migration:
+        harness_destination = target / TARGET_HARNESS_SKILL
+        if (
+            (harness_destination.exists() or harness_destination.is_symlink())
+            and not _canonical_harness_path_is_proven_owned(target, current_manifest or {})
+        ):
+            conflicts.append(
+                "existing canonical Harness Skill is not proven wrapper-managed; "
+                "preserve it and use an approved Harness repair"
+            )
         try:
             pull_request_template_update = plan_pull_request_template_update(target, wrapper_root)
         except ValueError as exc:
@@ -2935,17 +3032,10 @@ def plan_target_layout_migration(
                 conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
             else:
                 surface_text = _read_text_preserving_newlines(surface_file)
-                begin_count = surface_text.count(HARNESS_ENTRY_BEGIN)
-                end_count = surface_text.count(HARNESS_ENTRY_END)
-                markers_out_of_order = bool(
-                    begin_count
-                    and end_count
-                    and surface_text.index(HARNESS_ENTRY_BEGIN)
-                    > surface_text.index(HARNESS_ENTRY_END)
-                )
-                if begin_count != end_count or markers_out_of_order:
+                if not _harness_entry_markers_well_formed(surface_text):
                     conflicts.append(
-                        f"instruction surface has an unbalanced canonical Harness entry: {instruction_surface}"
+                        "instruction surface has an unbalanced canonical Harness entry "
+                        f"or invalid nesting: {instruction_surface}"
                     )
                 _, section_conflicts = _wrapper_owned_section_analysis(surface_text)
                 conflicts.extend(
@@ -3026,15 +3116,27 @@ def plan_target_layout_migration(
             if relative_path.is_absolute() or ".." in relative_path.parts:
                 conflicts.append(f"migration write path escapes target repository: {relative}")
                 continue
-            cursor = target / relative_path
-            while cursor != target:
+            cursor = target
+            for index, part in enumerate(relative_path.parts):
+                cursor /= part
                 if cursor.is_symlink():
                     conflicts.append(
                         "migration write path contains a symlink: "
                         + str(cursor.relative_to(target))
                     )
                     break
-                cursor = cursor.parent
+                if cursor.exists() and index < len(relative_path.parts) - 1 and not cursor.is_dir():
+                    conflicts.append(
+                        "migration write path parent is not a directory: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
+                if cursor.exists() and index == len(relative_path.parts) - 1 and not cursor.is_file():
+                    conflicts.append(
+                        "migration write path is not a regular file: "
+                        + str(cursor.relative_to(target))
+                    )
+                    break
 
     return {
         "stage": "harness_layout_migration",
