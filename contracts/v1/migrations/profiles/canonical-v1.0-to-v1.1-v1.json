@@ -8,11 +8,18 @@
   },
   "from_closure": {
     "path": "migrations/history/harness-skill/v1.0.0/closure.json",
-    "sha256": "4e411771c9ac9225cc69c87eb0fa5067c321a262e5679a6e47726523065d5f18"
+    "sha256": "5a3407a02cf594243e8cf1c472e185713a9fcc32c90cb1b465c68a5b696cab64"
   },
   "to_closure": {
     "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-    "sha256": "e8e13ad3566044aa2db9d487b890c7bb9f8295b165a6251259460f6d66ec8cb7"
+    "sha256": "1a19b08ebc4cd146aa6dcc79cc0a9e75fcb1ad4a0cf5d09f5d946188f229ed34"
+  },
+  "release_axis": {
+    "target_wrapper_from": "v0.14.0",
+    "target_wrapper_to": "v0.15.0",
+    "artifact_release_from": "v0.14.0",
+    "artifact_release_to": "v0.15.0",
+    "artifact_to_binding": "contract_bundle.source_revision"
   },
   "automatic": true,
   "operations": [
@@ -25,7 +32,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
+        "sha256": "cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a",
         "mode": "100644"
       }
     },
@@ -52,7 +59,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-        "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932",
+        "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
         "mode": "100755"
       }
     },
@@ -111,7 +118,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec"
+            "sha256": "sha256:cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a"
           }
         },
         {

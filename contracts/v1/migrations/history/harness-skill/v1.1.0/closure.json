@@ -25,7 +25,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.codex/hooks.json"
+      "source_path": "templates/target/.codex/hooks.json",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/CHANGELOG.md",
@@ -39,7 +40,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/CHANGELOG.md"
+      "source_path": "templates/target/CHANGELOG.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/WRAPPER.md",
@@ -53,7 +55,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/WRAPPER.md"
+      "source_path": "templates/target/WRAPPER.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
@@ -61,11 +64,12 @@
       "mode": "100644",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-      "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
+      "sha256": "cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a",
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "contracts/v1/migrations/harness-migration-contract-v1.json"
+      "source_path": "contracts/v1/migrations/harness-migration-contract-v1.json",
+      "source_binding": "required_release"
     },
     {
       "target_path": ".evozeus-wrapper/docs/_config.yml",
@@ -79,7 +83,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/docs/_config.yml"
+      "source_path": "templates/target/docs/_config.yml",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/docs/design-doc-template.md",
@@ -91,7 +96,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/docs/design-doc-template.md"
+      "source_path": "templates/target/docs/design-doc-template.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/docs/designs/README.md",
@@ -103,7 +109,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/docs/designs/README.md"
+      "source_path": "templates/target/docs/designs/README.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/docs/index.md",
@@ -117,7 +124,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/docs/index.md"
+      "source_path": "templates/target/docs/index.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/docs/migrations/README.md",
@@ -129,7 +137,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/docs/wrapper-migrations/README.md"
+      "source_path": "templates/target/docs/wrapper-migrations/README.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
@@ -141,7 +150,8 @@
       "materialization": {
         "policy": "copy_exact",
         "generated_release_artifact": true
-      }
+      },
+      "source_binding": "generated_release_artifact"
     },
     {
       "target_path": ".evozeus-wrapper/docs/onboarding.md",
@@ -153,7 +163,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/docs/onboarding.md"
+      "source_path": "templates/target/docs/onboarding.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/hooks/evozeus_wrapper_start_check.py",
@@ -165,7 +176,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.codex/hooks/evozeus_wrapper_start_check.py"
+      "source_path": "templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/policies/audit-rule.md",
@@ -177,7 +189,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.evozeus_evoinfra/audit-rule.md"
+      "source_path": "templates/target/.evozeus_evoinfra/audit-rule.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/policies/feedback-policy.json",
@@ -189,7 +202,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.evozeus_evoinfra/feedback-policy.json"
+      "source_path": "templates/target/.evozeus_evoinfra/feedback-policy.json",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/policies/notice-policy.json",
@@ -201,7 +215,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.evozeus_evoinfra/notice-policy.json"
+      "source_path": "templates/target/.evozeus_evoinfra/notice-policy.json",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/scripts/evozeus_notice.py",
@@ -213,7 +228,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "scripts/evozeus_notice.py"
+      "source_path": "scripts/evozeus_notice.py",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
@@ -221,11 +237,12 @@
       "mode": "100755",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932",
+      "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "scripts/evozeus_wrapper_preflight.py"
+      "source_path": "scripts/evozeus_wrapper_preflight.py",
+      "source_binding": "required_release"
     },
     {
       "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
@@ -237,7 +254,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
+      "source_path": "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".evozeus-wrapper/wrapper.json",
@@ -261,7 +279,7 @@
           "contract_id": "evozeus-harness-migration",
           "contract_version": "v1.0.0",
           "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-          "sha256": "sha256:a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec"
+          "sha256": "sha256:cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a"
         },
         "managed_blocks": [
           {
@@ -292,7 +310,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/.github/ISSUE_TEMPLATE/config.yml"
+      "source_path": "templates/target/.github/ISSUE_TEMPLATE/config.yml",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".github/ISSUE_TEMPLATE/skill-feedback.yml",
@@ -304,7 +323,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml"
+      "source_path": "templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".github/pull_request_template.md",
@@ -316,7 +336,8 @@
       "materialization": {
         "policy": "copy_exact"
       },
-      "source_path": "templates/target/.github/pull_request_template.md"
+      "source_path": "templates/target/.github/pull_request_template.md",
+      "source_binding": "construction_revision"
     },
     {
       "target_path": ".github/workflows/evozeus-wrapper-preflight.yml",
@@ -330,7 +351,8 @@
         "without_receipt": "preserve_byte_exact",
         "migration_policy": "receipt_gated_preserve_exact"
       },
-      "source_path": "templates/target/.github/workflows/evozeus-wrapper-preflight.yml"
+      "source_path": "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+      "source_binding": "construction_revision"
     }
   ],
   "protected_business_surfaces": [

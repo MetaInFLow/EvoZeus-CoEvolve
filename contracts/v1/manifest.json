@@ -16,12 +16,12 @@
     },
     {
       "path": "migrations/harness-migration-contract-v1.json",
-      "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
+      "sha256": "cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a",
       "role": "harness-migration-contract"
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "2f730707237b4b4a64b62254b52a955dabfcba8fdf7c593e47499e37c966eaa3",
+      "sha256": "160238b2dd4af0760c385187e83d32dd8e364bfdf3a3fbb27dc090590fa29093",
       "role": "current-target-closure-pointer"
     },
     {
@@ -126,12 +126,12 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.0.0/closure.json",
-      "sha256": "4e411771c9ac9225cc69c87eb0fa5067c321a262e5679a6e47726523065d5f18",
+      "sha256": "5a3407a02cf594243e8cf1c472e185713a9fcc32c90cb1b465c68a5b696cab64",
       "role": "immutable-target-closure"
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-      "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
+      "sha256": "cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a",
       "role": "immutable-target-closure-artifact"
     },
     {
@@ -146,7 +146,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932",
+      "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
       "role": "immutable-target-closure-artifact"
     },
     {
@@ -241,17 +241,17 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "e8e13ad3566044aa2db9d487b890c7bb9f8295b165a6251259460f6d66ec8cb7",
+      "sha256": "1a19b08ebc4cd146aa6dcc79cc0a9e75fcb1ad4a0cf5d09f5d946188f229ed34",
       "role": "immutable-target-closure"
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "146db35e3eb3c395395694f9d6035310ea9ab4ef62194b62b0dcde53f59e4548",
+      "sha256": "3dcf42b64dfb573d89aa5af8a9ffe68cc8beaf812f144d6eb2bc9bde92503e5d",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "f21409948bc7a24530226840ee2ccf7de70c55cc2a9830e1c13552b04c9c5973",
+      "sha256": "76bc5e0bc646066bce2f8f80f9f6effd4c892ed8bfa515b03e8ddbea5e1f203f",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
@@ -266,7 +266,7 @@
     },
     {
       "path": "migrations/schemas/official-upgrade-profile-v1.schema.json",
-      "sha256": "51de335c13cba698d4f7075b9d31e81c0513c4b688bb4bd31d6f4d14bae73f22",
+      "sha256": "5aa84e36aa0c109554366d2083ff4d0d6919b8522bdd8671de0e333739e35a40",
       "role": "official-upgrade-json-schema"
     },
     {
@@ -276,7 +276,7 @@
     },
     {
       "path": "migrations/schemas/target-closure-v1.schema.json",
-      "sha256": "d4a12ebc3fbd00992e4a60c163a0b61e310938ac311a1fa1c1b0e23a0b030666",
+      "sha256": "7d2b2861411332e88b0cf2a58b27fbd6333100c05f937e30f587fe4505cf8180",
       "role": "official-upgrade-json-schema"
     },
     {
@@ -286,7 +286,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "7e0bb26538bb756cf041135400aa9e1006bc56e9a540d8f3b35271c4517a8eef",
+      "sha256": "d6da248fa32f7c5f59731271e90b5c14e018d29f52a464d8b2c033c24182e8cb",
       "role": "target-template-inventory"
     },
     {

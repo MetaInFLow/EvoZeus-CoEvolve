@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -3148,6 +3149,189 @@ def _canonical_v1_upgrade_evidence(
     }
 
 
+def _official_upgrade_profile(
+    migration_bundle: dict[str, Any],
+    profile_id: str,
+) -> dict[str, Any]:
+    profiles = (migration_bundle.get("official_upgrade") or {}).get("profiles")
+    profile = next(
+        (
+            item
+            for item in profiles or []
+            if isinstance(item, dict) and item.get("profile_id") == profile_id
+        ),
+        None,
+    )
+    if profile is None:
+        raise ValueError(f"verified official upgrade profile is missing: {profile_id}")
+    return profile
+
+
+def _apply_official_manifest_patch(
+    manifest: dict[str, Any],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    if operation.get("type") != "manifest_patch":
+        raise ValueError("official manifest operation type is invalid")
+    if operation.get("encoding") != "utf-8-json-indent-2-lf":
+        raise ValueError("official manifest patch encoding is invalid")
+    if operation.get("preserve_unlisted_fields") is not True:
+        raise ValueError("official manifest patch must preserve unlisted fields")
+    preconditions = operation.get("preconditions")
+    if not isinstance(preconditions, dict):
+        raise ValueError("official manifest patch preconditions are missing")
+    for field, expected in preconditions.items():
+        if expected == {"state": "absent"}:
+            if field in manifest:
+                raise ValueError(
+                    f"official manifest patch expected an absent field: {field}"
+                )
+        elif manifest.get(field) != expected:
+            raise ValueError(
+                f"official manifest patch precondition mismatch: {field}"
+            )
+    result = copy.deepcopy(manifest)
+    patch = operation.get("patch")
+    if not isinstance(patch, list) or not patch:
+        raise ValueError("official manifest patch actions are missing")
+    touched: set[str] = set()
+    for item in patch:
+        if not isinstance(item, dict):
+            raise ValueError("official manifest patch action is invalid")
+        field = item.get("field")
+        action = item.get("action")
+        if not isinstance(field, str) or field in touched:
+            raise ValueError("official manifest patch fields must be unique")
+        touched.add(field)
+        if action == "replace":
+            if field not in result:
+                raise ValueError(f"official manifest replace field is absent: {field}")
+            result[field] = copy.deepcopy(item.get("value"))
+        elif action == "add":
+            if field in result:
+                raise ValueError(f"official manifest add field already exists: {field}")
+            result[field] = copy.deepcopy(item.get("value"))
+        elif action == "add_managed_block":
+            path_from = item.get("path_from")
+            value = item.get("value")
+            if (
+                field in result
+                or not isinstance(path_from, str)
+                or not isinstance(result.get(path_from), str)
+                or not isinstance(value, dict)
+            ):
+                raise ValueError("official managed block manifest patch is invalid")
+            result[field] = [
+                {
+                    "block_id": value.get("block_id"),
+                    "path": result[path_from],
+                    "marker_version": value.get("marker_version"),
+                    "begin_marker": value.get("begin_marker"),
+                    "end_marker": value.get("end_marker"),
+                    "sha256_lf": value.get("sha256_lf"),
+                }
+            ]
+        elif action == "append_unique":
+            values = item.get("values")
+            existing = result.get(field)
+            if (
+                not isinstance(existing, list)
+                or not isinstance(values, list)
+                or any(not isinstance(value, str) for value in [*existing, *values])
+            ):
+                raise ValueError("official managed file append is invalid")
+            result[field] = list(dict.fromkeys([*existing, *values]))
+        else:
+            raise ValueError(f"official manifest patch action is unknown: {action}")
+    return result
+
+
+def _official_upgrade_write_plan(
+    target: Path,
+    manifest: dict[str, Any],
+    migration_bundle: dict[str, Any],
+    profile_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+    profile = _official_upgrade_profile(migration_bundle, profile_id)
+    wrapper_root: Path = migration_bundle["wrapper_root"]
+    write_set: list[dict[str, Any]] = []
+    staged: dict[str, bytes] = {}
+    for operation in profile.get("operations", []):
+        if not isinstance(operation, dict):
+            raise ValueError("official upgrade operation is invalid")
+        operation_type = operation.get("type")
+        relative = operation.get("target_path")
+        if not isinstance(relative, str):
+            raise ValueError("official upgrade target path is invalid")
+        destination = target / relative
+        if operation_type in {"create_exact", "replace_exact"}:
+            postimage = operation.get("postimage")
+            if not isinstance(postimage, dict):
+                raise ValueError(f"official exact postimage is missing: {relative}")
+            artifact_relative = postimage.get("artifact_path")
+            if not isinstance(artifact_relative, str):
+                raise ValueError(f"official exact artifact path is invalid: {relative}")
+            source = wrapper_root / "contracts/v1" / artifact_relative
+            data = source.read_bytes()
+            expected_postimage = "sha256:" + str(postimage.get("sha256"))
+            if f"sha256:{hashlib.sha256(data).hexdigest()}" != expected_postimage:
+                raise ValueError(f"official exact artifact digest mismatch: {relative}")
+            if operation_type == "create_exact":
+                preimage = None
+                if destination.exists() or destination.is_symlink():
+                    raise ValueError(f"official create destination already exists: {relative}")
+            else:
+                preimage_value = operation.get("preimage")
+                if not isinstance(preimage_value, dict):
+                    raise ValueError(f"official replace preimage is missing: {relative}")
+                preimage = "sha256:" + str(preimage_value.get("sha256"))
+                if (
+                    not destination.is_file()
+                    or destination.is_symlink()
+                    or f"sha256:{file_sha256(destination)}" != preimage
+                ):
+                    raise ValueError(f"official replace preimage mismatch: {relative}")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": preimage,
+                    "postimage_sha256": expected_postimage,
+                    "source_sha256": expected_postimage,
+                    "source_path": (
+                        Path("contracts/v1") / artifact_relative
+                    ).as_posix(),
+                    "authority": operation.get("change_id"),
+                }
+            )
+        elif operation_type == "manifest_patch":
+            if relative != TARGET_WRAPPER_MANIFEST:
+                raise ValueError("official manifest patch targets an unknown manifest")
+            patched = _apply_official_manifest_patch(manifest, operation)
+            data = (json.dumps(patched, ensure_ascii=False, indent=2) + "\n").encode(
+                "utf-8"
+            )
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": f"sha256:{file_sha256(destination)}",
+                    "postimage_sha256": f"sha256:{hashlib.sha256(data).hexdigest()}",
+                    "source_sha256": None,
+                    "authority": operation.get("change_id"),
+                }
+            )
+        else:
+            raise ValueError(
+                f"official upgrade operation is unsupported at runtime: {operation_type}"
+            )
+    if len(write_set) != len({item["path"] for item in write_set}):
+        raise ValueError("official upgrade operation paths are not one-to-one")
+    return write_set, staged
+
+
 def plan_target_layout_migration(
     target: Path,
     latest_version: str | None = None,
@@ -3440,10 +3624,24 @@ def plan_target_layout_migration(
     if requires_migration:
         day = (today or date.today()).isoformat()
         if selected_profile and selected_profile["profile_id"] == "canonical-v1.0-to-v1.1":
-            migration_record = (
-                f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
-                f"{day}-harness-skill-v1.0.0-to-v1.1.0.md"
+            official_profile = _official_upgrade_profile(
+                migration_bundle,
+                selected_profile["profile_id"],
             )
+            ledger_paths = [
+                item.get("target_path")
+                for item in official_profile.get("operations", [])
+                if isinstance(item, dict)
+                and item.get("type") == "create_exact"
+                and isinstance(item.get("target_path"), str)
+                and "/docs/migrations/" in item["target_path"]
+            ]
+            if len(ledger_paths) != 1:
+                conflicts.append(
+                    "official upgrade profile must declare one deterministic migration ledger"
+                )
+            else:
+                migration_record = ledger_paths[0]
         elif layout_migration_required:
             migration_record = (
                 f"{TARGET_EVOINFRA_DIR}/docs/migrations/{day}-layout-v1-to-v2.md"
@@ -3485,108 +3683,22 @@ def plan_target_layout_migration(
         ),
     }
     if decision == "automatic_migration_available" and current_manifest is not None:
-        wrapper_root_path: Path = migration_bundle["wrapper_root"]
-        source_paths = {
-            TARGET_HARNESS_SKILL: (
-                wrapper_root_path
-                / "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
-            ),
-            TARGET_PREFLIGHT_SCRIPT: wrapper_root_path / "scripts/evozeus_wrapper_preflight.py",
-            TARGET_MIGRATION_CONTRACT: migration_bundle["path"],
-        }
-        evidence_by_path = {
-            item["target_path"]: item for item in canonical_evidence["trusted_preimages"]
-        }
-        for relative in (TARGET_HARNESS_SKILL, TARGET_PREFLIGHT_SCRIPT):
-            evidence = evidence_by_path[relative]
-            write_set.append(
-                {
-                    "path": relative,
-                    "operation": "replace",
-                    "preimage_sha256": evidence["actual_sha256"],
-                    "source_sha256": f"sha256:{file_sha256(source_paths[relative])}",
-                    "authority": evidence["artifact_id"],
-                }
+        try:
+            write_set, _ = _official_upgrade_write_plan(
+                target,
+                current_manifest,
+                migration_bundle,
+                canonical_profile["profile_id"],
             )
-            managed_file_refreshes.append(relative)
-        contract_target = target / TARGET_MIGRATION_CONTRACT
-        if contract_target.exists() or contract_target.is_symlink():
-            if (
-                not contract_target.is_file()
-                or contract_target.is_symlink()
-                or file_sha256(contract_target) != file_sha256(source_paths[TARGET_MIGRATION_CONTRACT])
-            ):
-                conflicts.append(
-                    "existing target migration contract does not match the release-bound source"
-                )
-        else:
-            write_set.append(
-                {
-                    "path": TARGET_MIGRATION_CONTRACT,
-                    "operation": "create",
-                    "preimage_sha256": None,
-                    "source_sha256": f"sha256:{file_sha256(source_paths[TARGET_MIGRATION_CONTRACT])}",
-                    "authority": "release-bound-migration-contract",
-                }
-            )
-            managed_file_refreshes.append(TARGET_MIGRATION_CONTRACT)
-        manifest_path = target / TARGET_WRAPPER_MANIFEST
-        write_set.append(
-            {
-                "path": TARGET_WRAPPER_MANIFEST,
-                "operation": "replace",
-                "preimage_sha256": f"sha256:{file_sha256(manifest_path)}",
-                "source_sha256": None,
-                "authority": "wrapper-manifest-self-record",
-            }
-        )
-        write_set.append(
-            {
-                "path": migration_record,
-                "operation": "create",
-                "preimage_sha256": None,
-                "source_sha256": None,
-                "authority": "versioned-migration-ledger",
-            }
-        )
-        for item in write_set:
-            if item.get("source_sha256") is not None:
-                item["postimage_sha256"] = item["source_sha256"]
-        manifest_postimage = _canonical_v1_upgrade_manifest(
-            target,
-            {"latest_version": latest_version or current_version},
-            today,
-            migration_bundle,
-        )
-        manifest_bytes = (
-            json.dumps(manifest_postimage, ensure_ascii=False, indent=2) + "\n"
-        ).encode("utf-8")
-        manifest_item = next(
-            item for item in write_set if item["path"] == TARGET_WRAPPER_MANIFEST
-        )
-        manifest_item["postimage_sha256"] = (
-            f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
-        )
-        record_context = {
-            "profile": migration_kernel.profile_identity(canonical_profile),
-            "migration_protocol_version": migration_kernel.MIGRATION_PROTOCOL_VERSION,
-            "migration_contract": migration_bundle["identity"],
-            "source_release_from": current_version,
-            "source_release_to": latest_version or current_version,
-            "harness_skill_from": canonical_profile["from"]["harness_skill_version"],
-            "harness_skill_to": canonical_profile["to"]["harness_skill_version"],
-            "write_set": write_set,
-            "protected_business_surfaces": protected_business_surfaces,
-            "rollback": rollback_contract,
-        }
-        record_bytes = _canonical_v1_migration_record(record_context, today).encode(
-            "utf-8"
-        )
-        record_item = next(
-            item for item in write_set if item["path"] == migration_record
-        )
-        record_item["postimage_sha256"] = (
-            f"sha256:{hashlib.sha256(record_bytes).hexdigest()}"
+        except ValueError as exc:
+            conflicts.append(str(exc))
+            decision = "manual_migration_required"
+            write_set = []
+        managed_file_refreshes.extend(
+            item["path"]
+            for item in write_set
+            if item.get("operation") in {"create_exact", "replace_exact"}
+            and item["path"] != migration_record
         )
 
     explicit_paths = {
@@ -3850,49 +3962,41 @@ def _apply_canonical_v1_upgrade(
     migration_bundle: dict[str, Any],
     snapshot_root: Path | None,
 ) -> dict[str, Any]:
-    wrapper_root_path: Path = migration_bundle["wrapper_root"]
-    sources = {
-        TARGET_HARNESS_SKILL: (
-            wrapper_root_path
-            / "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
-        ),
-        TARGET_PREFLIGHT_SCRIPT: wrapper_root_path / "scripts/evozeus_wrapper_preflight.py",
-        TARGET_MIGRATION_CONTRACT: migration_bundle["path"],
-    }
     allowed_paths = {item["path"] for item in plan["write_set"]}
+    profile_id = (plan.get("profile") or {}).get("profile_id")
+    official_profile = _official_upgrade_profile(migration_bundle, profile_id)
     expected_paths = {
-        TARGET_HARNESS_SKILL,
-        TARGET_PREFLIGHT_SCRIPT,
-        TARGET_WRAPPER_MANIFEST,
-        plan["migration_record"],
+        item.get("target_path")
+        for item in official_profile.get("operations", [])
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
     }
-    if not (target / TARGET_MIGRATION_CONTRACT).is_file():
-        expected_paths.add(TARGET_MIGRATION_CONTRACT)
     if allowed_paths != expected_paths or plan["delete_set"] or plan["move_set"]:
         raise ValueError("canonical migration plan write set is not the contract-defined set")
 
-    staged: dict[str, bytes] = {}
-    for relative in (
-        TARGET_HARNESS_SKILL,
-        TARGET_PREFLIGHT_SCRIPT,
-        TARGET_MIGRATION_CONTRACT,
-    ):
-        if relative in allowed_paths:
-            staged[relative] = sources[relative].read_bytes()
-    manifest = _canonical_v1_upgrade_manifest(
+    manifest = _read_manifest_json(target / TARGET_WRAPPER_MANIFEST)
+    regenerated_write_set, staged = _official_upgrade_write_plan(
         target,
-        plan,
-        today,
+        manifest,
         migration_bundle,
+        profile_id,
     )
-    staged[TARGET_WRAPPER_MANIFEST] = (
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
-    ).encode("utf-8")
-    staged[plan["migration_record"]] = _canonical_v1_migration_record(
-        plan,
-        today,
-    ).encode("utf-8")
+    regenerated_by_path = {item["path"]: item for item in regenerated_write_set}
     for item in plan["write_set"]:
+        regenerated = regenerated_by_path.get(item["path"])
+        if regenerated is None or any(
+            regenerated.get(field) != item.get(field)
+            for field in (
+                "operation",
+                "preimage_sha256",
+                "postimage_sha256",
+                "source_sha256",
+                "source_path",
+                "authority",
+            )
+        ):
+            raise ValueError(
+                f"migration operation differs from verified profile: {item['path']}"
+            )
         data = staged.get(item["path"])
         if data is None:
             raise ValueError(f"migration staged bytes are missing: {item['path']}")

@@ -76,6 +76,13 @@
           "ownership": { "const": "wrapper_managed" },
           "artifact_path": { "$ref": "#/$defs/relativePath" },
           "source_path": { "$ref": "#/$defs/relativePath" },
+          "source_binding": {
+            "enum": [
+              "construction_revision",
+              "required_release",
+              "generated_release_artifact"
+            ]
+          },
           "sha256": { "$ref": "#/$defs/sha256" },
           "materialization": {
             "type": "object",

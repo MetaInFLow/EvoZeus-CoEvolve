@@ -488,12 +488,22 @@ def check_migration_contract(target: Path, manifest: dict) -> None:
         "target_path": "target_repository_root",
     }:
         fail("migration contract path roots are ambiguous")
-    profiles = contract.get("profiles")
+    expected_official_upgrade = {
+        "protocol_path": "migrations/protocols/official-upgrade-protocol-v1.json",
+        "current_closure_pointer": "migrations/history/harness-skill/current.json",
+        "current_profile_pointer": "migrations/profiles/current.json",
+        "profile_schema": "migrations/schemas/official-upgrade-profile-v1.schema.json",
+        "closure_schema": "migrations/schemas/target-closure-v1.schema.json",
+        "candidate_execution": "trusted_base_verifier_candidate_blobs_as_data",
+    }
+    if contract.get("official_upgrade") != expected_official_upgrade:
+        fail("migration contract official-upgrade locators are incompatible")
+    profiles = contract.get("discovery_profiles")
     if not isinstance(profiles, list) or not profiles:
-        fail("migration contract must declare versioned profiles")
+        fail("migration contract must declare discovery profiles")
     for profile in profiles:
         if not isinstance(profile, dict):
-            fail("migration profile must be an object")
+            fail("migration discovery profile must be an object")
         fields = (
             "profile_id",
             "profile_version",
@@ -503,11 +513,34 @@ def check_migration_contract(target: Path, manifest: dict) -> None:
             "adapter_payload",
         )
         if any(not profile.get(field) for field in fields):
-            fail("migration profile identity is incomplete")
-        if profile["adapter_sha256"] != _canonical_json_sha256(profile["adapter_payload"]):
+            fail("migration discovery profile identity is incomplete")
+        payload = profile["adapter_payload"]
+        if not isinstance(payload, dict):
+            fail(f"migration adapter payload must be an object: {profile['profile_id']}")
+        if profile["adapter_sha256"] != _canonical_json_sha256(payload):
             fail(f"migration adapter digest mismatch: {profile['profile_id']}")
+        if (
+            profile.get("automatic") is not False
+            or profile.get("default_decision") != "manual_migration_required"
+            or payload.get("destructive_authority") is not False
+            or payload.get("discovery_candidates_are_authority") is not False
+        ):
+            fail(
+                "migration discovery profile must be manual and zero-write: "
+                f"{profile['profile_id']}"
+            )
+    expected_authority_rules = {
+        "discovery_candidates_are_authority": False,
+        "manifest_managed_flag_is_sufficient": False,
+        "exact_preimage_hash_required": True,
+        "snapshot_required_before_write": True,
+        "post_verify_failure": "restore_snapshot",
+        "automatic_authority_source": "external_hash_bound_official_upgrade_profile",
+    }
+    if contract.get("authority_rules") != expected_authority_rules:
+        fail("migration contract authority rules are incompatible")
     ok(
-        "versioned migration contract is manifest-bound: "
+        "stable migration contract is manifest-bound: "
         f"{TARGET_MIGRATION_CONTRACT}@{MIGRATION_PROTOCOL_VERSION}"
     )
 

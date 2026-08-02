@@ -92,21 +92,45 @@ def _make_release_source(
     manifest_path = source / "contracts/v1/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source_revision"] = RELEASE_TAG
-    contract_path = source / "contracts/v1/migrations/harness-migration-contract-v1.json"
-    contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    canonical = next(
-        profile
-        for profile in contract["profiles"]
-        if profile["profile_id"] == "canonical-v1.0-to-v1.1"
+    closure_path = (
+        source
+        / "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json"
     )
-    canonical["source_release"]["artifact_release_from"] = RELEASE_TAG
-    canonical["source_release"]["artifact_release_to"] = RELEASE_TAG
-    _write_json(contract_path, contract)
-    next(
-        entry
-        for entry in manifest["files"]
-        if entry["path"] == "migrations/harness-migration-contract-v1.json"
-    )["sha256"] = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    closure["source"]["required_release"] = RELEASE_TAG
+    _write_json(closure_path, closure)
+    closure_sha256 = hashlib.sha256(closure_path.read_bytes()).hexdigest()
+    history_pointer_path = (
+        source / "contracts/v1/migrations/history/harness-skill/current.json"
+    )
+    history_pointer = json.loads(history_pointer_path.read_text(encoding="utf-8"))
+    history_pointer["entries"][0]["sha256"] = closure_sha256
+    _write_json(history_pointer_path, history_pointer)
+
+    profile_path = (
+        source
+        / "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["to_closure"]["sha256"] = closure_sha256
+    profile["release_axis"]["artifact_release_from"] = RELEASE_TAG
+    profile["release_axis"]["artifact_release_to"] = RELEASE_TAG
+    _write_json(profile_path, profile)
+    profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    profile_pointer_path = source / "contracts/v1/migrations/profiles/current.json"
+    profile_pointer = json.loads(profile_pointer_path.read_text(encoding="utf-8"))
+    profile_pointer["entries"][0]["sha256"] = profile_sha256
+    _write_json(profile_pointer_path, profile_pointer)
+    for path in (
+        closure_path,
+        history_pointer_path,
+        profile_path,
+        profile_pointer_path,
+    ):
+        relative = path.relative_to(source / "contracts/v1").as_posix()
+        next(entry for entry in manifest["files"] if entry["path"] == relative)[
+            "sha256"
+        ] = hashlib.sha256(path.read_bytes()).hexdigest()
     _write_json(manifest_path, manifest)
 
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
@@ -975,10 +999,11 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
 
     approval_required = lifecycle.migrate_target_layout(
         target,
-        "v0.14.0",
+        "v0.15.0",
         date(2026, 8, 2),
         wrapper_root=source,
         require_clean_git=True,
+        remote_tag_resolver=_source_tag_resolver(source),
     )
     assert approval_required["status"] == "approval_required"
     assert approval_required["writes"] is False
@@ -986,20 +1011,25 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     snapshot_base = tmp_path / "trusted-snapshots"
     applied = lifecycle.migrate_target_layout(
         target,
-        "v0.14.0",
+        "v0.15.0",
         date(2026, 8, 2),
         wrapper_root=source,
         require_clean_git=True,
         snapshot_root=snapshot_base,
         approved_plan_sha256=plan["plan_sha256"],
+        remote_tag_resolver=_source_tag_resolver(source),
     )
     assert applied["status"] == "applied"
     assert applied["writes"] is True
     assert target.joinpath("SKILL.md").read_bytes() == protected_before
-    record = target.joinpath(plan["migration_record"]).read_text(encoding="utf-8")
-    assert "Source release：`v0.14.0 -> v0.14.0`" in record
-    assert "Harness Skill：`v1.0.0 -> v1.1.0`" in record
-    assert "Migration contract SHA-256" in record
+    record = target.joinpath(plan["migration_record"]).read_bytes()
+    assert record == source.joinpath(
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/"
+        "generated/harness-skill-v1.0.0-to-v1.1.0.md"
+    ).read_bytes()
+    assert b"v0.14.0 -> v0.15.0" in record
+    assert b"wrapper.json" in record
+    assert b"2026-08-02" not in record
 
     rolled_back = lifecycle.rollback_target_layout_migration(
         target,
@@ -1021,7 +1051,7 @@ def test_unpublished_or_locally_forged_tag_is_zero_write(tmp_path: Path) -> None
     plan = _plan(target, source)
     report = lifecycle.migrate_target_layout(
         target,
-        "v0.14.0",
+        "v0.15.0",
         date(2026, 8, 2),
         wrapper_root=source,
         require_clean_git=True,
@@ -1046,7 +1076,7 @@ def test_plan_digest_mismatch_preimage_toctou_and_protected_race_are_zero_write(
 
     mismatch = lifecycle.migrate_target_layout(
         target,
-        "v0.14.0",
+        "v0.15.0",
         date(2026, 8, 2),
         wrapper_root=source,
         require_clean_git=True,
@@ -1057,14 +1087,14 @@ def test_plan_digest_mismatch_preimage_toctou_and_protected_race_are_zero_write(
     assert harness.read_bytes() == before
 
     harness.write_bytes(before + b"\nTOCTOU\n")
-    with pytest.raises(ValueError, match="preimage hash changed"):
+    with pytest.raises(ValueError, match="target Git tree/status/inventory changed"):
         migration_kernel.verify_plan_preimages(target, plan)
     harness.write_bytes(before)
 
     surface = target / "SKILL.md"
     surface_before = surface.read_bytes()
     surface.write_bytes(surface_before + b"\nPROTECTED-RACE\n")
-    with pytest.raises(ValueError, match="protected business surface preimage changed"):
+    with pytest.raises(ValueError, match="target Git tree/status/inventory changed"):
         migration_kernel.verify_plan_preimages(target, plan)
     surface.write_bytes(surface_before)
 
@@ -1072,7 +1102,7 @@ def test_plan_digest_mismatch_preimage_toctou_and_protected_race_are_zero_write(
     dirty_plan = _plan(target, source)
     dirty_report = lifecycle.migrate_target_layout(
         target,
-        "v0.14.0",
+        "v0.15.0",
         date(2026, 8, 2),
         wrapper_root=source,
         approved_plan_sha256=dirty_plan["plan_sha256"],
@@ -1084,7 +1114,7 @@ def test_plan_digest_mismatch_preimage_toctou_and_protected_race_are_zero_write(
     assert harness.read_bytes() == before
 
 
-def test_staged_postimage_mismatch_is_detected_before_snapshot_or_target_write(
+def test_profile_postimage_mismatch_is_detected_before_snapshot_or_target_write(
     tmp_path: Path,
 ) -> None:
     source = _make_release_source(tmp_path)
@@ -1092,14 +1122,18 @@ def test_staged_postimage_mismatch_is_detected_before_snapshot_or_target_write(
     bundle = migration_kernel.load_migration_contract(source)
     plan = _plan(target, source)
     bad_plan = copy.deepcopy(plan)
-    bad_plan["write_set"][0]["postimage_sha256"] = "sha256:" + "f" * 64
+    replace_item = next(
+        item for item in bad_plan["write_set"] if item["operation"] == "replace_exact"
+    )
+    replace_item["postimage_sha256"] = "sha256:" + "f" * 64
     bad_plan["plan_sha256"] = (
         "sha256:" + migration_kernel.migration_plan_digest(bad_plan)
     )
-    before = target.joinpath(bad_plan["write_set"][0]["path"]).read_bytes()
+    replaced_path = target / replace_item["path"]
+    before = replaced_path.read_bytes()
     snapshot_base = tmp_path / "postimage-snapshots"
 
-    with pytest.raises(ValueError, match="staged postimage differs"):
+    with pytest.raises(ValueError, match="migration operation differs from verified profile"):
         lifecycle._apply_canonical_v1_upgrade(
             target,
             bad_plan,
@@ -1108,7 +1142,7 @@ def test_staged_postimage_mismatch_is_detected_before_snapshot_or_target_write(
             snapshot_base,
         )
 
-    assert target.joinpath(bad_plan["write_set"][0]["path"]).read_bytes() == before
+    assert replaced_path.read_bytes() == before
     assert not snapshot_base.exists()
 
 

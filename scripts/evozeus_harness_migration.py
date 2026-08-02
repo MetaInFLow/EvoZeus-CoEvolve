@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -49,6 +50,12 @@ CANONICAL_ACTIVATION_CONTRACT = {
     "end_marker": "<!-- /evozeus-harness-entry -->",
     "sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea",
 }
+
+OFFICIAL_UPGRADE_PROTOCOL_REL = "migrations/protocols/official-upgrade-protocol-v1.json"
+OFFICIAL_UPGRADE_CLOSURE_POINTER_REL = "migrations/history/harness-skill/current.json"
+OFFICIAL_UPGRADE_PROFILE_POINTER_REL = "migrations/profiles/current.json"
+OFFICIAL_UPGRADE_PROFILE_SCHEMA_REL = "migrations/schemas/official-upgrade-profile-v1.schema.json"
+OFFICIAL_UPGRADE_CLOSURE_SCHEMA_REL = "migrations/schemas/target-closure-v1.schema.json"
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -691,67 +698,29 @@ def _release_source_trust(
                     source_release = profile.get("source_release")
                     if not isinstance(source_release, dict):
                         continue
-                    release_from = source_release.get("artifact_release_from")
                     release_to = source_release.get("artifact_release_to")
                     declared_diff = source_release.get("managed_diff_paths")
-                    if not isinstance(release_from, str) or not isinstance(release_to, str):
-                        continue
-                    release_from_commit = _git(
-                        wrapper_root,
-                        "rev-parse",
-                        f"refs/tags/{release_from}^{{commit}}",
-                    )
-                    release_to_commit = _git(
-                        wrapper_root,
-                        "rev-parse",
-                        f"refs/tags/{release_to}^{{commit}}",
-                    )
+                    adapter_payload = profile.get("adapter_payload") or {}
                     if (
-                        release_from_commit.returncode != 0
-                        or release_to_commit.returncode != 0
+                        release_to != revision
+                        or not isinstance(adapter_payload, dict)
+                        or adapter_payload.get("authority_source")
+                        != "external-hash-bound-official-upgrade-profile"
                     ):
                         reasons.append(
-                            f"migration source release axis is unavailable: {profile.get('profile_id')}"
+                            f"automatic profile release authority is invalid: {profile.get('profile_id')}"
                         )
                         continue
-                    diff = _git(
-                        wrapper_root,
-                        "diff",
-                        "--name-only",
-                        "--no-renames",
-                        release_from_commit.stdout.strip(),
-                        release_to_commit.stdout.strip(),
-                        "--",
-                        "templates/target",
-                        "scripts/evozeus_wrapper_preflight.py",
-                        "scripts/evozeus_notice.py",
-                        MIGRATION_CONTRACT_BUNDLE_ROOT,
-                    )
-                    actual_diff = sorted(
-                        line.strip() for line in diff.stdout.splitlines() if line.strip()
-                    )
-                    if diff.returncode != 0 or actual_diff != sorted(declared_diff or []):
-                        reasons.append(
-                            f"migration source release managed diff is incomplete: {profile.get('profile_id')}"
-                        )
-                        continue
-                    operation_sources = {
+                    operation_sources = sorted(
                         item.get("source_path")
-                        for item in (profile.get("adapter_payload") or {}).get(
-                            "write_sources", []
-                        )
+                        for item in adapter_payload.get("write_sources", [])
                         if isinstance(item, dict)
-                    }
-                    control_paths = {
-                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/manifest.json",
-                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/{MIGRATION_CONTRACT_REL}",
-                        f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/target-template-inventory.json",
-                    }
-                    uncovered = set(actual_diff) - operation_sources - control_paths
-                    if uncovered:
+                        and isinstance(item.get("source_path"), str)
+                    )
+                    if operation_sources != sorted(declared_diff or []):
                         reasons.append(
-                            "migration operation set does not cover managed source release diff: "
-                            + ", ".join(sorted(uncovered))
+                            "official migration operation sources disagree with the "
+                            f"managed release set: {profile.get('profile_id')}"
                         )
             if not reasons:
                 resolver = remote_tag_resolver or _resolve_official_remote_tag
@@ -813,6 +782,197 @@ def _release_source_trust(
     }
 
 
+def _official_upgrade_profile_compatibility(
+    raw_profile: dict[str, Any],
+    bundle_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose the data profile through the legacy planner shape during v1 rollout."""
+    from_closure = raw_profile.get("_verified_from_closure")
+    to_closure = raw_profile.get("_verified_to_closure")
+    if not isinstance(from_closure, dict) or not isinstance(to_closure, dict):
+        raise ValueError("official upgrade profile closures were not verified")
+    from_entries = {
+        item.get("target_path"): item
+        for item in from_closure.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
+    }
+    trusted_preimages: list[dict[str, Any]] = []
+    write_sources: list[dict[str, Any]] = []
+    for operation in raw_profile.get("operations", []):
+        if not isinstance(operation, dict):
+            raise ValueError("official upgrade profile operation is invalid")
+        operation_type = operation.get("type")
+        target_path = operation.get("target_path")
+        if operation_type == "replace_exact":
+            preimage = operation.get("preimage")
+            if not isinstance(preimage, dict):
+                raise ValueError("official replace operation lacks a preimage")
+            trusted_preimages.append(
+                {
+                    "artifact_id": "official-closure-preimage:" + str(target_path),
+                    "target_path": target_path,
+                    "sha256": preimage.get("sha256"),
+                }
+            )
+        if operation_type in {"create_exact", "replace_exact"}:
+            postimage = operation.get("postimage")
+            if not isinstance(postimage, dict):
+                raise ValueError("official exact operation lacks a postimage")
+            artifact_path = _safe_relative_path(
+                postimage.get("artifact_path"),
+                "official profile postimage artifact",
+            )
+            write_sources.append(
+                {
+                    "target_path": target_path,
+                    "source_path": (
+                        Path(MIGRATION_CONTRACT_BUNDLE_ROOT) / artifact_path
+                    ).as_posix(),
+                    "sha256": postimage.get("sha256"),
+                }
+            )
+    from_state = from_closure.get("state")
+    to_state = to_closure.get("state")
+    if not isinstance(from_state, dict) or not isinstance(to_state, dict):
+        raise ValueError("official upgrade closure state is invalid")
+    manifest_entry = from_entries.get(".evozeus-wrapper/wrapper.json")
+    manifest_state = (
+        manifest_entry.get("owned_state") if isinstance(manifest_entry, dict) else None
+    )
+    if not isinstance(manifest_state, dict):
+        raise ValueError("official upgrade from closure lacks manifest state")
+    required_manifest_fields = {
+        field: manifest_state[field]
+        for field in (
+            "layout_version",
+            "harness_skill_path",
+            "harness_skill_version",
+            "harness_skill_managed",
+        )
+        if field in manifest_state
+    }
+    payload = {
+        "type": "exact-artifact-and-stable-block",
+        "authority_source": "external-hash-bound-official-upgrade-profile",
+        "official_profile": {
+            "profile_id": raw_profile.get("profile_id"),
+            "profile_version": raw_profile.get("profile_version"),
+            "path": raw_profile.get("_verified_profile_path"),
+            "sha256": raw_profile.get("_verified_profile_sha256"),
+            "protocol": raw_profile.get("protocol"),
+            "from_closure": raw_profile.get("from_closure"),
+            "to_closure": raw_profile.get("to_closure"),
+        },
+        "operations": copy.deepcopy(raw_profile.get("operations", [])),
+        "write_sources": write_sources,
+        "trusted_preimages": trusted_preimages,
+        "stable_blocks": [
+            {
+                "block_id": CANONICAL_ACTIVATION_CONTRACT["block_id"],
+                "target_path_source": "manifest.instruction_surface",
+                "begin_marker": CANONICAL_ACTIVATION_CONTRACT["begin_marker"],
+                "end_marker": CANONICAL_ACTIVATION_CONTRACT["end_marker"],
+                "sha256_lf": CANONICAL_ACTIVATION_CONTRACT["sha256_lf"],
+            }
+        ],
+        "deferred_rendered_surfaces": copy.deepcopy(
+            raw_profile.get("deferred_rendered_surfaces", [])
+        ),
+        "protected_business_rule": "instruction_surface_bytes_unchanged",
+    }
+    release_axis = raw_profile.get("release_axis")
+    if not isinstance(release_axis, dict):
+        raise ValueError("official upgrade profile lacks a release axis")
+    if release_axis.get("artifact_release_to") != bundle_manifest.get("source_revision"):
+        raise ValueError("official upgrade profile is not bound to bundle source_revision")
+    return {
+        "profile_id": raw_profile.get("profile_id"),
+        "profile_version": raw_profile.get("profile_version"),
+        "from": {
+            "layout": from_state.get("layout"),
+            "harness_skill_version": from_state.get("harness_skill_version"),
+        },
+        "to": {
+            "layout": to_state.get("layout"),
+            "harness_skill_version": to_state.get("harness_skill_version"),
+        },
+        "source_release": {
+            **copy.deepcopy(release_axis),
+            "managed_diff_paths": sorted(
+                item["source_path"] for item in write_sources
+            ),
+            "target_closure_authority": "external-hash-bound-official-upgrade-profile",
+        },
+        "adapter_id": "official-upgrade-data-profile",
+        "adapter_version": raw_profile.get("protocol", {}).get("version", "v1.0.0"),
+        "adapter_sha256": canonical_json_sha256(payload),
+        "adapter_payload": payload,
+        "automatic": raw_profile.get("automatic") is True,
+        "required_manifest_fields": required_manifest_fields,
+        "protected_business_rule": "instruction_surface_bytes_unchanged",
+        "default_decision": "automatic_migration_available",
+        "reason": "Exact closure diff and operations are a verified one-to-one mapping.",
+    }
+
+
+def _load_official_upgrade_profiles(
+    wrapper_root: Path,
+    contract: dict[str, Any],
+    bundle_manifest: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    official = contract.get("official_upgrade")
+    expected = {
+        "protocol_path": OFFICIAL_UPGRADE_PROTOCOL_REL,
+        "current_closure_pointer": OFFICIAL_UPGRADE_CLOSURE_POINTER_REL,
+        "current_profile_pointer": OFFICIAL_UPGRADE_PROFILE_POINTER_REL,
+        "profile_schema": OFFICIAL_UPGRADE_PROFILE_SCHEMA_REL,
+        "closure_schema": OFFICIAL_UPGRADE_CLOSURE_SCHEMA_REL,
+        "candidate_execution": "trusted_base_verifier_candidate_blobs_as_data",
+    }
+    if official != expected:
+        raise ValueError("Harness migration official_upgrade locator is invalid")
+    try:
+        from . import evozeus_official_upgrade_verify as official_verifier
+    except ImportError:
+        import evozeus_official_upgrade_verify as official_verifier
+
+    store = official_verifier.FilesystemStore(wrapper_root)
+    catalog_report = official_verifier.verify_catalog(store)
+    pointer_entries = official_verifier.load_pointer(
+        store,
+        official_verifier.PROFILES_CURRENT_REL,
+        "official-upgrade-current-profiles",
+    )
+    protocol = official_verifier.load_protocol(store)
+    profiles: list[dict[str, Any]] = []
+    raw_profiles: list[dict[str, Any]] = []
+    for entry in pointer_entries:
+        profile_path = _safe_relative_path(
+            entry["path"],
+            "official current profile path",
+        )
+        repository_profile_path = (
+            Path(MIGRATION_CONTRACT_BUNDLE_ROOT) / profile_path
+        ).as_posix()
+        raw_profile = official_verifier.load_profile(
+            store,
+            repository_profile_path,
+            protocol,
+            expected_sha256=entry["sha256"],
+        )
+        raw_profile["_verified_profile_path"] = repository_profile_path
+        raw_profile["_verified_profile_sha256"] = entry["sha256"]
+        raw_profiles.append(raw_profile)
+        profiles.append(
+            _official_upgrade_profile_compatibility(raw_profile, bundle_manifest)
+        )
+    return profiles, {
+        "report": catalog_report,
+        "protocol": protocol,
+        "profiles": raw_profiles,
+    }
+
+
 def load_migration_contract(
     wrapper_root: Path | None = None,
     *,
@@ -861,7 +1021,7 @@ def load_migration_contract(
             "migration contract hash does not match contracts/v1/manifest.json"
         )
 
-    contract = _json_object(contract_path, "Harness migration contract")
+    contract_source = _json_object(contract_path, "Harness migration contract")
     expected_contract_identity = {
         "schema_version": MIGRATION_CONTRACT_SCHEMA_VERSION,
         "migration_protocol_version": MIGRATION_PROTOCOL_VERSION,
@@ -874,25 +1034,35 @@ def load_migration_contract(
     identity_mismatches = [
         field
         for field, expected in expected_contract_identity.items()
-        if contract.get(field) != expected
+        if contract_source.get(field) != expected
     ]
     if identity_mismatches:
         raise ValueError(
             "Harness migration contract identity is incompatible: "
             + ", ".join(identity_mismatches)
         )
-    if contract.get("migration_protocol_version") != MIGRATION_PROTOCOL_VERSION:
+    if contract_source.get("migration_protocol_version") != MIGRATION_PROTOCOL_VERSION:
         raise ValueError(
             "unsupported Harness migration protocol: "
-            f"{contract.get('migration_protocol_version')}"
+            f"{contract_source.get('migration_protocol_version')}"
         )
-    roots = contract.get("path_roots")
+    roots = contract_source.get("path_roots")
     if roots != {
         "artifact_path": MIGRATION_CONTRACT_BUNDLE_ROOT,
         "target_path": "target_repository_root",
     }:
         raise ValueError("migration contract path_roots are missing or ambiguous")
 
+    discovery_profiles = contract_source.get("discovery_profiles")
+    if not isinstance(discovery_profiles, list) or not discovery_profiles:
+        raise ValueError("migration contract must declare discovery profiles")
+    official_profiles, official_upgrade = _load_official_upgrade_profiles(
+        wrapper_root,
+        contract_source,
+        bundle_manifest,
+    )
+    contract = copy.deepcopy(contract_source)
+    contract["profiles"] = [*copy.deepcopy(discovery_profiles), *official_profiles]
     profiles = contract.get("profiles")
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("migration contract must declare profiles")
@@ -1043,6 +1213,7 @@ def load_migration_contract(
     )
     return {
         "contract": contract,
+        "contract_source": contract_source,
         "identity": {
             "migration_protocol_version": MIGRATION_PROTOCOL_VERSION,
             "contract_id": contract.get("contract_id"),
@@ -1055,6 +1226,7 @@ def load_migration_contract(
         "path": contract_path,
         "wrapper_root": wrapper_root,
         "source_trust": source_trust,
+        "official_upgrade": official_upgrade,
     }
 
 

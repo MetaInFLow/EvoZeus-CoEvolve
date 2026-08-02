@@ -83,7 +83,7 @@ def test_frozen_closure_artifacts_equal_the_declared_construction_revision(
     for item in closure["files"]:
         source_path = item.get("source_path")
         artifact_path = item.get("artifact_path")
-        if source_path is None:
+        if source_path is None or item.get("source_binding") != "construction_revision":
             continue
         historical = subprocess.run(
             ["git", "-C", str(ROOT), "show", f"{revision}:{source_path}"],
@@ -138,6 +138,48 @@ def test_profile_operations_are_a_strict_bijection_with_closure_diff() -> None:
         ".evozeus-wrapper/wrapper.json": "manifest_patch",
     }
     assert {item["target_path"] for item in raw_profile["operations"]} == set(changes)
+
+
+def test_migration_contract_postimage_hash_is_locked_across_profile_and_closure() -> None:
+    contract_sha256 = _sha256(
+        (BUNDLE / "migrations/harness-migration-contract-v1.json").read_bytes()
+    )
+    _, profile = _profile()
+    closure = json.loads(
+        (BUNDLE / profile["to_closure"]["path"]).read_text(encoding="utf-8")
+    )
+    operation = next(
+        item
+        for item in profile["operations"]
+        if item["target_path"]
+        == ".evozeus-wrapper/contracts/harness-migration-contract-v1.json"
+    )
+    manifest_operation = next(
+        item
+        for item in profile["operations"]
+        if item["target_path"] == ".evozeus-wrapper/wrapper.json"
+    )
+    manifest_contract = next(
+        item["value"]
+        for item in manifest_operation["patch"]
+        if item["field"] == "migration_contract"
+    )
+    contract_file = next(
+        item
+        for item in closure["files"]
+        if item["target_path"]
+        == ".evozeus-wrapper/contracts/harness-migration-contract-v1.json"
+    )
+    wrapper_state = next(
+        item["owned_state"]
+        for item in closure["files"]
+        if item["target_path"] == ".evozeus-wrapper/wrapper.json"
+    )
+
+    assert operation["postimage"]["sha256"] == contract_sha256
+    assert contract_file["sha256"] == contract_sha256
+    assert manifest_contract["sha256"] == f"sha256:{contract_sha256}"
+    assert wrapper_state["migration_contract"]["sha256"] == f"sha256:{contract_sha256}"
 
 
 def test_every_rendered_surface_is_receipt_gated_and_deferred() -> None:

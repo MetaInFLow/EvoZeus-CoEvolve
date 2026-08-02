@@ -16,7 +16,15 @@
     "end_marker": "<!-- /evozeus-harness-entry -->",
     "sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea"
   },
-  "profiles": [
+  "official_upgrade": {
+    "protocol_path": "migrations/protocols/official-upgrade-protocol-v1.json",
+    "current_closure_pointer": "migrations/history/harness-skill/current.json",
+    "current_profile_pointer": "migrations/profiles/current.json",
+    "profile_schema": "migrations/schemas/official-upgrade-profile-v1.schema.json",
+    "closure_schema": "migrations/schemas/target-closure-v1.schema.json",
+    "candidate_execution": "trusted_base_verifier_candidate_blobs_as_data"
+  },
+  "discovery_profiles": [
     {
       "profile_id": "legacy-scattered-to-canonical-v1.0",
       "from": {
@@ -40,77 +48,6 @@
       "automatic": false,
       "default_decision": "manual_migration_required",
       "reason": "No release-bound exact historical artifact digest exists for unmarked scattered instruction blocks."
-    },
-    {
-      "profile_id": "canonical-v1.0-to-v1.1",
-      "from": {
-        "layout": "consolidated-v2",
-        "harness_skill_version": "v1.0.0"
-      },
-      "to": {
-        "layout": "consolidated-v2",
-        "harness_skill_version": "v1.1.0"
-      },
-      "source_release": {
-        "target_wrapper_from": "v0.14.0",
-        "target_wrapper_to": "v0.15.0",
-        "artifact_release_from": "v0.14.0",
-        "artifact_release_to": "v0.15.0",
-        "artifact_to_binding": "contract_bundle.source_revision",
-        "target_closure_authority": "missing"
-      },
-      "profile_version": "v1.0.0",
-      "adapter_id": "canonical-exact-artifact-upgrade",
-      "adapter_version": "v1.0.0",
-      "adapter_sha256": "33eb7f8d56c4e0882071e2134efa58939ab68a570f134b6923543d6e4dc5a42a",
-      "adapter_payload": {
-        "type": "exact-artifact-and-stable-block",
-        "write_sources": [
-          {
-            "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
-            "source_path": "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
-            "sha256": "21e32790d0baabdd4cba93574f37f85cdd1c111a0055ad1c0a3337f9e0fae084"
-          },
-          {
-            "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
-            "source_path": "scripts/evozeus_wrapper_preflight.py",
-            "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932"
-          }
-        ],
-        "trusted_preimages": [
-          {
-            "artifact_id": "canonical-harness-skill-v1.0.0",
-            "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
-            "artifact_path": "migrations/artifacts/using-evozeus-harness-v1.0.0.md",
-            "sha256": "af3f1a58380f5763f5b1bdc25b86c65384efaa40adaca89436ea9dba2accbebe"
-          },
-          {
-            "artifact_id": "target-preflight-for-harness-v1.0.0",
-            "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
-            "sha256": "7b5a6ca032d79e878c4712d9f45e49b0489e4698ea38e97a4e8ad4f9d1af76f8"
-          }
-        ],
-        "stable_blocks": [
-          {
-            "block_id": "evozeus-harness-entry",
-            "target_path_source": "manifest.instruction_surface",
-            "begin_marker": "<!-- evozeus-harness-entry:v1 -->",
-            "end_marker": "<!-- /evozeus-harness-entry -->",
-            "sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea"
-          }
-        ],
-        "protected_business_rule": "instruction_surface_bytes_unchanged"
-      },
-      "automatic": false,
-      "required_manifest_fields": {
-        "harness_skill_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
-        "harness_skill_version": "v1.0.0",
-        "harness_skill_managed": true,
-        "layout_version": 2
-      },
-      "protected_business_rule": "instruction_surface_bytes_unchanged",
-      "default_decision": "manual_migration_required",
-      "reason": "The v1.0 target closure is not release-bound, so the complete v0.14.0 to v0.15.0 managed target diff cannot authorize writes."
     },
     {
       "profile_id": "prerelease-ambiguous-to-manual-review",
@@ -161,6 +98,7 @@
     "manifest_managed_flag_is_sufficient": false,
     "exact_preimage_hash_required": true,
     "snapshot_required_before_write": true,
-    "post_verify_failure": "restore_snapshot"
+    "post_verify_failure": "restore_snapshot",
+    "automatic_authority_source": "external_hash_bound_official_upgrade_profile"
   }
 }

@@ -12,7 +12,7 @@ Use this Skill for target Harness maintenance. The target boundary is one indepe
 Run every change through this sequence:
 
 1. **Inspect**：resolve the independent Repo root, read `.evozeus-wrapper/wrapper.json`, inspect the compact activation marker, and collect historical headings/signatures as read-only discovery candidates.
-2. **Plan**：load `contracts/v1/migrations/harness-migration-contract-v1.json`; emit the protocol, profile, adapter identity, exact from/to state, write/delete/move sets, protected business surfaces, source-release attestation, validation, rollback, and `plan_sha256`.
+2. **Plan**：load `contracts/v1/migrations/harness-migration-contract-v1.json`; use the trusted-base verifier to validate the stable protocol, both current pointers, the selected external official profile, and its hash-bound from/to closures before deriving any automatic write authority; emit the protocol, profile, adapter identity, exact from/to state, write/delete/move sets, protected business surfaces, source-release attestation, validation, rollback, and `plan_sha256`.
 3. **Approve**：show the complete plan to the user and obtain approval for that exact `sha256:<digest>`. GitHub `ADMIN` authority does not approve a plan.
 4. **Apply**：recompute the plan, require `--approve-plan` to match, verify every preimage and the official immutable source release, create a receipt-bound snapshot outside the target Repo, stage all postimages, then write only the approved set.
 5. **Verify**：check every postimage, preserve marker-external business bytes exactly, and run target structure validation.
@@ -26,12 +26,12 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/skill \
-  --latest-version v0.14.0 \
+  --latest-version v0.15.0 \
   --dry-run --json
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/skill \
-  --latest-version v0.14.0 \
+  --latest-version v0.15.0 \
   --approve-plan 'sha256:<exact-plan-digest>' --json
 
 python3 scripts/evozeus_wrapper.py harness rollback-migration \
@@ -40,10 +40,10 @@ python3 scripts/evozeus_wrapper.py harness rollback-migration \
   --approve --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.14.0 --dry-run --json
+  --latest-version v0.15.0 --dry-run --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.14.0 --approve \
+  --latest-version v0.15.0 --approve \
   --approve-plan 'sha256:<exact-batch-plan-digest>' --json
 ```
 
@@ -51,16 +51,16 @@ Batch apply requires both `--approve` and the exact dry-run `batch_plan_sha256` 
 
 ## Versioned authority profiles
 
-- `legacy-scattered-to-canonical-v1.0@v1.0.0`：manual review, `writes=false`. Regex, frontmatter, heading, terminal text, path names, and inferred layout only discover candidates.
-- `canonical-v1.0-to-v1.1@v1.0.0`：automatic planning is available only when manifest identity, stable block identity, exact frozen Harness Skill preimage, exact preflight preimage, and adapter digest all match.
+- `legacy-scattered-to-canonical-v1.0@v1.0.0`：manual review, `writes=false`. Regex, frontmatter, heading, terminal text, path names, and inferred layout remain discovery-only evidence for every protocol version.
+- `canonical-v1.0-to-v1.1@v1.0.0`：automatic planning is available only after the trusted-base verifier resolves the hash-bound external official profile and immutable v1.0/v1.1 closures, and manifest identity, stable block identity, exact frozen Harness Skill preimage, exact preflight preimage, and adapter digest all match.
 - `prerelease-ambiguous-to-manual-review@v1.0.0`：a v1.1 Harness without the exact migration contract and managed-block receipts remains manual, `writes=false`.
 - `unknown-to-manual-review@v1.0.0`：manual review, `writes=false`.
 
-Destructive authority requires the versioned migration profile plus adapter identity and exact preimage hashes. A missing field, duplicate marker, unknown layout, extra legacy candidate, dirty target, changed preimage, changed protected surface, untrusted source, or unapproved plan digest blocks all writes.
+Destructive authority comes exclusively from the verified external official profile, its immutable closure diff, adapter identity, and exact preimage hashes. Frontmatter and regex findings never grant write authority. A missing field, duplicate marker, unknown layout, extra legacy candidate, dirty target, changed preimage, changed protected surface, untrusted source, or unapproved plan digest blocks all writes.
 
 ## Source and snapshot trust
 
-- The write source must use the official `MetaInFLow/EvoZeus-CoEvolve` origin, a clean worktree, `HEAD` equal to the declared release tag commit, and the same tag commit advertised by the official origin.
+- Release identity comes from the fixed `MetaInFLow/EvoZeus-CoEvolve` GitHub API tag attestation. The local tag ref object, peeled commit, and clean `HEAD` must match that attestation; configured Git remotes and `origin` names supply diagnostics only and grant no trust.
 - The tagged contract manifest must bind the contract digest. Every source file used as a postimage must equal both its declared digest and its bytes in that tag.
 - An unreleased branch may inspect and plan. Its apply status remains `source_unreleased`, `writes=false`.
 - The snapshot base must stay outside the target Repo. Reject symlinks in the base, transaction directory, descriptor, files tree, and backup paths.

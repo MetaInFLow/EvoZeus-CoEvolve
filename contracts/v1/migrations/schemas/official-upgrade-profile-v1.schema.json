@@ -11,6 +11,7 @@
     "protocol",
     "from_closure",
     "to_closure",
+    "release_axis",
     "automatic",
     "operations",
     "deferred_rendered_surfaces",
@@ -26,6 +27,24 @@
     "protocol": { "$ref": "#/$defs/binding" },
     "from_closure": { "$ref": "#/$defs/binding" },
     "to_closure": { "$ref": "#/$defs/binding" },
+    "release_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_wrapper_from",
+        "target_wrapper_to",
+        "artifact_release_from",
+        "artifact_release_to",
+        "artifact_to_binding"
+      ],
+      "properties": {
+        "target_wrapper_from": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "target_wrapper_to": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "artifact_release_from": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "artifact_release_to": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "artifact_to_binding": { "const": "contract_bundle.source_revision" }
+      }
+    },
     "automatic": { "type": "boolean" },
     "operations": {
       "type": "array",

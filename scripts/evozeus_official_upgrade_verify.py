@@ -358,8 +358,6 @@ def load_closure(
         raise VerificationError(f"target closure state is missing: {relative}")
     if state.get("layout") != "consolidated-v2":
         raise VerificationError(f"target closure layout is not automatic: {relative}")
-    if source_release is not None and state.get("target_wrapper_version") != source_release:
-        raise VerificationError(f"target closure release axes disagree: {relative}")
     for field in ("target_wrapper_version", "contract_bundle_version", "harness_skill_version"):
         _semver(state.get(field), f"target closure {field}")
     files = closure.get("files")
@@ -423,11 +421,20 @@ def load_closure(
                     f"rendered closure path lacks receipt-gated preservation: {target_path}"
                 )
             source_path = item.get("source_path")
+            source_binding = item.get("source_binding")
             if source_path is not None:
                 _safe_relative(source_path, "target closure source path")
+                if source_binding not in {"construction_revision", "required_release"}:
+                    raise VerificationError(
+                        f"closure source binding is invalid: {target_path}"
+                    )
             elif materialization.get("generated_release_artifact") is not True:
                 raise VerificationError(f"closure artifact lacks source or generated identity: {target_path}")
             if materialization.get("generated_release_artifact") is True:
+                if source_binding != "generated_release_artifact":
+                    raise VerificationError(
+                        f"generated closure artifact binding is invalid: {target_path}"
+                    )
                 artifact_bytes = store.read_bytes(artifact_path)
                 if re.search(rb"\b20[0-9]{2}-[0-9]{2}-[0-9]{2}\b", artifact_bytes):
                     raise VerificationError(f"generated migration ledger contains a date: {target_path}")
@@ -621,6 +628,28 @@ def load_profile(
         to_path,
         expected_sha256=profile["to_closure"]["sha256"],
     )
+    release_axis = profile.get("release_axis")
+    if not isinstance(release_axis, dict):
+        raise VerificationError("official upgrade profile release axis is missing")
+    for field in (
+        "target_wrapper_from",
+        "target_wrapper_to",
+        "artifact_release_from",
+        "artifact_release_to",
+    ):
+        _semver(release_axis.get(field), f"official upgrade profile {field}")
+    if release_axis.get("artifact_to_binding") != "contract_bundle.source_revision":
+        raise VerificationError("official upgrade profile release binding is invalid")
+    if release_axis.get("target_wrapper_from") != from_closure["state"].get(
+        "target_wrapper_version"
+    ) or release_axis.get("target_wrapper_to") != to_closure["state"].get(
+        "target_wrapper_version"
+    ):
+        raise VerificationError("official upgrade profile target release axes disagree")
+    if to_closure["source"].get("required_release") != release_axis.get(
+        "artifact_release_to"
+    ):
+        raise VerificationError("official upgrade profile artifact release is not closure-bound")
     if _semver(to_closure.get("closure_version"), "to closure version") <= _semver(
         from_closure.get("closure_version"), "from closure version"
     ):
