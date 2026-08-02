@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "templates" / "target"
 REPO = "MetaInFLow/example-skill"
 FIXED_DATE = "20260731"
-TARGET_BRANCH = "codex/bug/20260731-skill-fix-feedback-flow"
+TARGET_BRANCH = "codex/bug/20260731-alice-skill-fix-feedback-flow"
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:
@@ -79,6 +79,7 @@ def fake_github_bin(root: Path) -> Path:
         """#!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 
 args = sys.argv[1:]
@@ -100,8 +101,8 @@ if args[:2] == ["api", "repos/MetaInFLow/example-skill"]:
     allow_forking = os.environ.get("FAKE_REPO_ALLOW_FORKING", "1") == "1"
     print(json.dumps({
         "private": private,
-        "archived": False,
-        "disabled": False,
+        "archived": os.environ.get("FAKE_REPO_ARCHIVED", "0") == "1",
+        "disabled": os.environ.get("FAKE_REPO_DISABLED", "0") == "1",
         "allow_forking": allow_forking,
     }))
     raise SystemExit(0)
@@ -123,6 +124,67 @@ raise SystemExit(1)
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    real_git = shutil.which("git")
+    assert real_git
+    git_wrapper = binary_dir / "git"
+    git_wrapper.write_text(
+        """#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+real_git = __REAL_GIT__
+args = sys.argv[1:]
+if "ls-remote" in args:
+    if os.environ.get("FAKE_GIT_REMOTE_UNAVAILABLE") == "1":
+        raise SystemExit(1)
+    command_index = args.index("ls-remote")
+    remote_index = command_index + 1
+    while args[remote_index].startswith("--"):
+        remote_index += 1
+    patterns = args[remote_index + 1:]
+    refs = {}
+    for branch in {"main", "master", "uat/current"}:
+        ref = f"refs/heads/{branch}"
+        if ref not in patterns:
+            continue
+        commit = os.environ.get("FAKE_GIT_BASE_HEAD")
+        if not commit:
+            repo = args[args.index("-C") + 1]
+            result = subprocess.run(
+                [real_git, "-C", repo, "rev-parse", f"origin/{branch}"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            commit = result.stdout.strip() if result.returncode == 0 else None
+        if commit:
+            refs[ref] = commit
+    remote_commit = os.environ.get("FAKE_GIT_REMOTE_HEAD")
+    if remote_commit and not refs:
+        remote_branch = os.environ.get("FAKE_GIT_REMOTE_BRANCH")
+        if remote_branch:
+            remote_ref = f"refs/heads/{remote_branch}"
+        else:
+            exact_patterns = [pattern for pattern in patterns if not pattern.endswith("/*")]
+            remote_ref = exact_patterns[-1]
+        refs[remote_ref] = remote_commit
+    matches = []
+    for ref, commit in refs.items():
+        if any(
+            ref.startswith(pattern[:-1]) if pattern.endswith("/*") else ref == pattern
+            for pattern in patterns
+        ):
+            matches.append(f"{commit}\\t{ref}")
+    if matches:
+        print("\\n".join(sorted(matches)))
+        raise SystemExit(0)
+    raise SystemExit(2)
+os.execv(real_git, [real_git, *args])
+""".replace("__REAL_GIT__", repr(real_git)),
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o755)
     return binary_dir
 
 
@@ -328,7 +390,7 @@ def test_clean_new_resume_and_private_ledger_bind_full_identity(tmp_path: Path) 
         (("actor", "id"), "mallory"),
         (("base", "ref"), "origin/master"),
         (("base", "commit"), "0" * 40),
-        (("branch", "target"), "codex/bug/20260731-skill-other"),
+        (("branch", "target"), "codex/bug/20260731-alice-skill-other"),
         (("permission_path", "resolved"), "fork"),
     ]
     for keys, value in identity_mutations:
@@ -403,6 +465,39 @@ def test_stale_ledger_requires_explicit_matching_owner_reconfirmation(tmp_path: 
     assert blocked["resume"]["owner_reconfirmed"] is False
 
 
+def test_resume_without_date_recovers_original_ledger_branch_date(tmp_path: Path) -> None:
+    repo = create_repo(tmp_path)
+    worktree = tmp_path / "isolated-worktree"
+    ledger_root = tmp_path / "private-ledger"
+    env = planner_env(fake_github_bin(tmp_path))
+    initial, initial_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        approve_save_plan=True,
+        date="20200101",
+    )
+    assert initial_code == 0
+    ledger_path = Path(initial["ledger"]["path"])
+    original_branch = initial["branch"]["target"]
+    run(["git", "worktree", "add", "-b", original_branch, str(worktree), "origin/main"], repo)
+
+    resumed, resumed_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        date=None,
+    )
+
+    assert resumed_code == 0
+    assert resumed["resume"]["decision"] == "resume"
+    assert resumed["branch"]["target"] == original_branch
+    assert "stale_ownership" not in blocker_codes(resumed)
+
+
 def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path: Path) -> None:
     binary_dir = fake_github_bin(tmp_path)
     ledger_root = tmp_path / "ledger"
@@ -451,6 +546,7 @@ def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path
     fork_root = tmp_path / "fork"
     fork_root.mkdir()
     fork_repo = create_repo(fork_root)
+    run(["git", "remote", "add", "alice", "https://github.com/alice/example-skill.git"], fork_repo)
     fork, fork_code = execute_plan(
         fork_repo,
         fork_root / "worktree",
@@ -519,16 +615,284 @@ def test_core_snapshot_rejects_lookalike_origin_and_nested_registered_worktree(t
     assert run(["git", "status", "--porcelain=v1", "--untracked-files=all"], outer) == ""
 
 
+def test_core_snapshot_rejects_redirected_push_and_archived_direct(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    push_root = tmp_path / "redirected-push"
+    push_root.mkdir()
+    push_repo = create_repo(push_root)
+    run([
+        "git", "remote", "set-url", "--add", "--push", "origin",
+        f"https://evilgithub.com/{REPO}.git",
+    ], push_repo)
+    redirected, redirected_code = execute_plan(
+        push_repo,
+        push_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert redirected_code == 2
+    assert "missing_origin_push_identity" in blocker_codes(redirected)
+
+    archived_root = tmp_path / "archived"
+    archived_root.mkdir()
+    archived_repo = create_repo(archived_root)
+    archived, archived_code = execute_plan(
+        archived_repo,
+        archived_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_REPO_ARCHIVED="1"),
+    )
+    assert archived_code == 2
+    assert archived["permission_path"]["resolved"] == "local"
+    assert archived["permission_evidence"]["repository"]["write_allowed"] is False
+    assert "permission_expectation_mismatch" in blocker_codes(archived)
+
+
+def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: Path) -> None:
+    binary_dir = fake_github_bin(tmp_path)
+    ledger_root = tmp_path / "ledger"
+
+    actor_root = tmp_path / "actor"
+    actor_root.mkdir()
+    actor_repo = create_repo(actor_root)
+    alice, alice_code = execute_plan(
+        actor_repo,
+        actor_root / "alice-worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    bob, bob_code = execute_plan(
+        actor_repo,
+        actor_root / "bob-worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GH_LOGIN="bob"),
+        actor="bob",
+    )
+    assert alice_code == 0
+    assert bob_code == 0
+    assert alice["branch"]["target"] != bob["branch"]["target"]
+    assert "-alice-skill-" in alice["branch"]["target"]
+    assert "-bob-skill-" in bob["branch"]["target"]
+
+    namespace_root = tmp_path / "namespace-conflict"
+    namespace_root.mkdir()
+    namespace_repo = create_repo(namespace_root)
+    run(["git", "branch", "codex/bug", "origin/main"], namespace_repo)
+    namespace, namespace_code = execute_plan(
+        namespace_repo,
+        namespace_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir),
+    )
+    assert namespace_code == 2
+    assert "branch_namespace_collision" in blocker_codes(namespace)
+
+    remote_root = tmp_path / "live-remote"
+    remote_root.mkdir()
+    remote_repo = create_repo(remote_root)
+    live, live_code = execute_plan(
+        remote_repo,
+        remote_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_repo)),
+    )
+    assert live_code == 2
+    assert "branch_collision" in blocker_codes(live)
+
+    remote_namespace_root = tmp_path / "remote-namespace-conflict"
+    remote_namespace_root.mkdir()
+    remote_namespace_repo = create_repo(remote_namespace_root)
+    remote_namespace, remote_namespace_code = execute_plan(
+        remote_namespace_repo,
+        remote_namespace_root / "worktree",
+        ledger_root,
+        planner_env(
+            binary_dir,
+            FAKE_GIT_REMOTE_BRANCH="codex/bug",
+            FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_namespace_repo),
+        ),
+    )
+    assert remote_namespace_code == 2
+    assert "target_remote_namespace_collision" in blocker_codes(remote_namespace)
+
+    remote_only_root = tmp_path / "remote-only-resume"
+    remote_only_root.mkdir()
+    remote_only_repo = create_repo(remote_only_root)
+    remote_only_worktree = remote_only_root / "worktree"
+    remote_only_ledger = remote_only_root / "ledger"
+    remote_only_initial, remote_only_initial_code = execute_plan(
+        remote_only_repo,
+        remote_only_worktree,
+        remote_only_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert remote_only_initial_code == 0
+    remote_only, remote_only_code = execute_plan(
+        remote_only_repo,
+        remote_only_worktree,
+        remote_only_ledger,
+        planner_env(
+            binary_dir,
+            FAKE_GIT_REMOTE_HEAD=run(["git", "rev-parse", "HEAD"], remote_only_repo),
+        ),
+        resume_plan=remote_only_initial["ledger"]["path"],
+    )
+    assert remote_only_code == 2
+    assert "resume_branch_local_missing" in blocker_codes(remote_only)
+    assert "resume_branch_wrong_base" not in blocker_codes(remote_only)
+
+    base_root = tmp_path / "stale-base"
+    base_root.mkdir()
+    base_repo = create_repo(base_root)
+    stale_base, stale_base_code = execute_plan(
+        base_repo,
+        base_root / "worktree",
+        ledger_root,
+        planner_env(binary_dir, FAKE_GIT_BASE_HEAD="e" * 40),
+    )
+    assert stale_base_code == 2
+    assert "base_remote_mismatch" in blocker_codes(stale_base)
+    assert stale_base["base"]["remote_commit"] == "e" * 40
+
+    dirty_root = tmp_path / "dirty-resume"
+    dirty_root.mkdir()
+    dirty_repo = create_repo(dirty_root)
+    dirty_worktree = dirty_root / "worktree"
+    initial, initial_code = execute_plan(
+        dirty_repo,
+        dirty_worktree,
+        ledger_root,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert initial_code == 0
+    run(["git", "worktree", "add", "-b", initial["branch"]["target"], str(dirty_worktree), "origin/main"], dirty_repo)
+    (dirty_worktree / "untracked.txt").write_text("unknown edits\n", encoding="utf-8")
+    resumed, resumed_code = execute_plan(
+        dirty_repo,
+        dirty_worktree,
+        ledger_root,
+        planner_env(binary_dir),
+        resume_plan=initial["ledger"]["path"],
+    )
+    assert resumed_code == 2
+    assert "requested_worktree_dirty" in blocker_codes(resumed)
+    assert resumed["worktree"]["registered"] is False
+
+    redirected_root = tmp_path / "redirected-resume"
+    redirected_root.mkdir()
+    redirected_repo = create_repo(redirected_root)
+    redirected_worktree = redirected_root / "worktree"
+    redirected_ledger = redirected_root / "ledger"
+    redirected_initial, redirected_initial_code = execute_plan(
+        redirected_repo,
+        redirected_worktree,
+        redirected_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert redirected_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", redirected_initial["branch"]["target"],
+        str(redirected_worktree), "origin/main",
+    ], redirected_repo)
+    canonical_git_dir = run(["git", "rev-parse", "--absolute-git-dir"], redirected_repo)
+    (redirected_worktree / ".git").write_text(
+        f"gitdir: {canonical_git_dir}\n",
+        encoding="utf-8",
+    )
+    redirected, redirected_code = execute_plan(
+        redirected_repo,
+        redirected_worktree,
+        redirected_ledger,
+        planner_env(binary_dir),
+        resume_plan=redirected_initial["ledger"]["path"],
+    )
+    assert redirected_code == 2
+    assert "requested_worktree_status_unavailable" in blocker_codes(redirected)
+    assert redirected["worktree"]["requested_checkout"]["status_reason"] == "worktree_branch_mismatch"
+
+    duplicate_root = tmp_path / "duplicate-registration-resume"
+    duplicate_root.mkdir()
+    duplicate_repo = create_repo(duplicate_root)
+    duplicate_worktree = duplicate_root / "worktree"
+    duplicate_ledger = duplicate_root / "ledger"
+    duplicate_initial, duplicate_initial_code = execute_plan(
+        duplicate_repo,
+        duplicate_worktree,
+        duplicate_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert duplicate_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", duplicate_initial["branch"]["target"],
+        str(duplicate_worktree), "origin/main",
+    ], duplicate_repo)
+    run([
+        "git", "worktree", "add", "--force", str(duplicate_root / "other-worktree"),
+        duplicate_initial["branch"]["target"],
+    ], duplicate_repo)
+    duplicate, duplicate_code = execute_plan(
+        duplicate_repo,
+        duplicate_worktree,
+        duplicate_ledger,
+        planner_env(binary_dir),
+        resume_plan=duplicate_initial["ledger"]["path"],
+    )
+    assert duplicate_code == 2
+    assert "duplicate_branch_worktree_registrations" in blocker_codes(duplicate)
+
+    locked_root = tmp_path / "locked-missing-resume"
+    locked_root.mkdir()
+    locked_repo = create_repo(locked_root)
+    locked_worktree = locked_root / "worktree"
+    locked_ledger = locked_root / "ledger"
+    locked_initial, locked_initial_code = execute_plan(
+        locked_repo,
+        locked_worktree,
+        locked_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert locked_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", locked_initial["branch"]["target"],
+        str(locked_worktree), "origin/main",
+    ], locked_repo)
+    run(["git", "worktree", "lock", "--reason", "owner hold", str(locked_worktree)], locked_repo)
+    shutil.rmtree(locked_worktree)
+    locked, locked_code = execute_plan(
+        locked_repo,
+        locked_worktree,
+        locked_ledger,
+        planner_env(binary_dir),
+        resume_plan=locked_initial["ledger"]["path"],
+    )
+    assert locked_code == 2
+    assert "locked_worktree_registration" in blocker_codes(locked)
+    assert locked["worktree"]["registration_prunable"] is False
+
+
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:
     missing_root = tmp_path / "missing-gh"
     missing_root.mkdir()
     missing_repo = create_repo(missing_root)
     isolated_bin = missing_root / "isolated-bin"
     isolated_bin.mkdir()
-    for command in ("git", "node"):
-        executable = shutil.which(command)
-        assert executable
-        (isolated_bin / command).symlink_to(executable)
+    fake_tools_root = missing_root / "fake-tools"
+    fake_tools_root.mkdir()
+    fake_tools = fake_github_bin(fake_tools_root)
+    (isolated_bin / "git").symlink_to(fake_tools / "git")
+    node = shutil.which("node")
+    assert node
+    (isolated_bin / "node").symlink_to(node)
+    python = shutil.which("python3")
+    assert python
+    (isolated_bin / "python3").symlink_to(python)
     missing_env = {**os.environ, "PATH": str(isolated_bin)}
     missing, missing_code = execute_plan(
         missing_repo,
@@ -854,7 +1218,7 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
 
     mismatches = (
         {"github_repository": "MetaInFLow/other-skill"},
-        {"github_head_ref": "codex/bug/20260731-skill-other"},
+        {"github_head_ref": "codex/bug/20260731-alice-skill-other"},
         {"github_head_repo": "mallory/example-skill"},
         {"github_actor": "mallory"},
         {"github_base_ref": "master"},

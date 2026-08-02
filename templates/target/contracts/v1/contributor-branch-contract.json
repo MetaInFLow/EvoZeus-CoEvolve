@@ -1,13 +1,16 @@
 {
   "$id": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
   "contract": "evozeus.contributor_branch",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "schema_version": "v1",
   "compatibility": { "evozeus": ">=0.4.1", "coevolve_consumer": ">=0.14.0", "unknown_fields": "ignore", "unknown_profile_or_major_version": "fail_closed" },
   "protected_refs": { "exact": ["main", "master", "uat/current", "stable"], "prefixes": ["release/"], "direct_business_write": "deny" },
   "host_compatibility": { "supported_hosts": ["codex", "claude"], "plan_semantics": "identical", "host_input_to_planner": false },
   "branch_naming": {
-    "template": "codex/{type}/{yyyymmdd}-{component}-{summary}",
+    "template": "codex/{type}/{yyyymmdd}-{actor}-{component}-{summary}",
+    "actor_source": "verified_github_login_lowercase",
+    "max_leaf_bytes": 240,
+    "local_ref_namespace_conflicts": "block",
     "types": ["dev", "bug", "refactor", "docs", "test", "chore"],
     "component_pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
     "summary_pattern": "^[a-z0-9]+(?:-[a-z0-9]+){0,6}$",
@@ -78,6 +81,8 @@
     "authority": "live_github_api_evidence",
     "actor_source": "gh api user",
     "repository_permission_source": "gh api graphql repository.viewerPermission",
+    "repository_state_source": "gh api repos/{owner}/{repo}",
+    "direct_repository_state": "not_archived_and_not_disabled",
     "fork_policy_source": "gh api repos/{owner}/{repo}",
     "direct_viewer_permissions": ["ADMIN", "MAINTAIN", "WRITE"],
     "fork_viewer_permissions": ["READ", "TRIAGE"],
@@ -85,7 +90,18 @@
     "expectation_mismatch": "block",
     "unavailable_or_incomplete_evidence": "resolve_local_patch",
     "repo_or_command_arguments_may_grant_permission": false,
-    "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "fork_allowed"]
+    "evidence_fields": ["source", "checked_at", "login", "viewer_permission", "write_allowed", "fork_allowed"]
+  },
+  "remote_resolution": {
+    "authority": "git remote get-url",
+    "fetch_url": "effective_origin_url_must_match_canonical_github_repo",
+    "fetch_identity_before_live_query": "required",
+    "push_urls": "every_effective_origin_push_url_must_match_canonical_github_repo",
+    "canonical_base_state": "live_git_ls_remote_effective_origin_required",
+    "target_branch_state": "live_git_ls_remote_effective_origin_required",
+    "fork_target_remote": "configured_remote_with_exact_actor_fork_fetch_and_push_urls_required",
+    "remote_ref_namespace_conflicts": "block",
+    "local_remote_divergence": "block"
   },
   "issue_resolution": {
     "authority": "live_github_api_evidence",
@@ -99,10 +115,14 @@
   "resume": {
     "key_fields": ["profile", "repo", "base_ref", "issue", "actor", "permission_path", "purpose.type", "purpose.component", "purpose.summary"],
     "owner_field": "actor",
-    "base_match": ["ref", "commit"],
+    "base_match": ["ref", "commit", "target_descends_from_base"],
     "stale_after_days": 14,
     "mismatch_or_stale": "block_and_require_owner_reconfirmation",
     "matching_branch_without_worktree": "recreate_resume_worktree_for_existing_branch",
+    "matching_branch_with_prunable_worktree": "prune_and_recreate_resume_worktree_for_existing_branch",
+    "remote_only_branch": "block_until_explicit_fetch_and_local_branch_creation",
+    "missing_cli_date_source": "validated_resume_plan_target_branch",
+    "evidence_requirements": { "writes": false, "blockers": "empty", "decision": ["new", "resume"], "next_write_action": "not_blocked" },
     "owner_reconfirmation": {
       "cli_flag": "--reconfirm-owner",
       "requires_resume_plan": true,
@@ -110,14 +130,24 @@
       "ledger_refresh_requires": "--approve-save-plan"
     }
   },
-  "worktree": { "required": true, "one_participant_per_branch": true, "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block" },
+  "worktree": { "required": true, "one_participant_per_branch": true, "branch_owner": "verified_actor_in_target_branch", "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "requested_registered_worktree_status_evidence": "required", "registered_worktree_live_identity": ["top_level", "common_dir", "branch"], "duplicate_target_branch_registrations": "block", "locked_registration_with_missing_path": "block_until_explicit_unlock_and_remove_or_prune", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked", "non_directory_ancestor": "occupied_and_blocked", "prunable_registration_with_existing_path": "occupied_and_blocked" },
   "blocking_handling": {
     "dirty_tree": "block",
     "wrong_base": "block",
     "protected_ref_write": "block",
     "branch_collision": "block_without_matching_resume_plan",
+    "invalid_resume_evidence_or_wrong_base": "block",
+    "resume_branch_local_missing": "block_until_explicit_fetch_and_local_branch_creation",
     "stale_ownership": "block_and_require_owner_reconfirmation",
     "canonical_checkout_dirty_or_unavailable": "block",
+    "current_checkout_status_unavailable": "block",
+    "requested_worktree_dirty_or_unavailable": "block",
+    "duplicate_or_locked_worktree_registration": "block",
+    "base_or_target_remote_status_unavailable_or_diverged": "block",
+    "fork_remote_missing_or_mismatched": "block",
+    "branch_leaf_over_max_bytes": "block",
+    "local_branch_namespace_conflict_or_unavailable": "block",
+    "remote_branch_namespace_conflict": "block",
     "actor_or_permission_expectation_mismatch": "block",
     "issue_unavailable_or_invalid": "block",
     "github_unavailable": "local_patch_only"

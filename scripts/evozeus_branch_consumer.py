@@ -19,10 +19,10 @@ from typing import Any
 PROFILE = "coevolve_target_skillware_consumer"
 PROVENANCE_SCHEMA = "evozeus.coevolve.contributor-branch-snapshot-provenance.v1"
 CONTRACT_ID = "evozeus.contributor_branch"
-CONTRACT_VERSION = "1.2.0"
-CORE_REVISION = "58029dea8867c9503452536f0b335663fc388b3d"
-CONTRACT_SHA256 = "139d745757cf78ac5c6b8b6ace5e7fb0014ed772ad188b013e5630585dfb7faa"
-PLANNER_SHA256 = "6f86e88c345547f3d2995e6b632762bad38375d70ce4509d6649b05445fe3256"
+CONTRACT_VERSION = "1.3.0"
+CORE_REVISION = "1ddcf1e58b3ada61495558c0b31984d8e9992199"
+CONTRACT_SHA256 = "047a44a97b29f4784afd1f47945a8c0fb77edd4d3bfff365ef3bbe2fea4e61de"
+PLANNER_SHA256 = "c451cc6e8bf3e23f7b6c36c8c7b3c9129d986819ffb1da8b6294046c9336462e"
 CONTRACT_RELATIVE_PATH = Path("contracts/v1/contributor-branch-contract.json")
 PROVENANCE_RELATIVE_PATH = Path("contracts/v1/contributor-branch-provenance.json")
 PLANNER_RELATIVE_PATH = Path("scripts/evozeus-branch-preflight.mjs")
@@ -256,6 +256,11 @@ def public_safe_plan(plan: dict[str, Any]) -> dict[str, Any]:
     worktree = safe.get("worktree", {})
     for field in ("path", "current_repo_path", "canonical_checkout_path"):
         worktree.pop(field, None)
+    for checkout_name in ("current_checkout", "canonical_checkout", "requested_checkout"):
+        checkout = worktree.get(checkout_name)
+        if isinstance(checkout, dict):
+            checkout.pop("top_level", None)
+            checkout.pop("common_dir", None)
     safe["ledger"] = {
         "schema_version": "evozeus.coevolve.branch-ledger.v1",
         "resume_key": safe.get("resume", {}).get("key"),

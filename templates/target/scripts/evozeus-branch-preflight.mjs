@@ -2,23 +2,23 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DEFAULT_CONTRACT = resolve(ROOT, "contracts/v1/contributor-branch-contract.json");
 
-function git(repoPath, args) {
-  return spawnSync("git", ["-C", repoPath, ...args], {
+function git(repoPath, args, runner = spawnSync) {
+  return runner("git", ["-C", repoPath, ...args], {
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     shell: false
   });
 }
 
-function gitText(repoPath, args, required = true) {
-  const result = git(repoPath, args);
+function gitText(repoPath, args, required = true, runner = spawnSync) {
+  const result = git(repoPath, args, runner);
   if (result.status !== 0) {
     if (!required) return null;
     throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args[0]} failed`);
@@ -47,34 +47,105 @@ function isSameOrDescendant(path, ancestor) {
     || (pathFromAncestor !== ".." && !pathFromAncestor.startsWith(`..${sep}`) && !isAbsolute(pathFromAncestor));
 }
 
+function pathEntryExists(path) {
+  const absolute = resolve(path);
+  try {
+    lstatSync(absolute);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOTDIR") return true;
+    if (error?.code !== "ENOENT") return true;
+  }
+  let cursor = dirname(absolute);
+  while (true) {
+    try {
+      const status = lstatSync(cursor);
+      return status.isSymbolicLink() || !status.isDirectory();
+    } catch (error) {
+      if (error?.code === "ENOTDIR") return true;
+      if (error?.code !== "ENOENT") return true;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
+  }
+}
+
 function parseWorktrees(text) {
   const worktrees = [];
   let current = null;
   for (const line of text.split("\n")) {
     if (line.startsWith("worktree ")) {
-      current = { path: canonicalPath(line.slice(9)), branch: null, bare: false };
+      current = {
+        path: canonicalPath(line.slice(9)),
+        branch: null,
+        bare: false,
+        prunable: false,
+        locked: false,
+        lock_reason: null
+      };
       worktrees.push(current);
     } else if (current && line.startsWith("branch ")) {
       current.branch = line.slice(7);
     } else if (current && line === "bare") {
       current.bare = true;
+    } else if (current && (line === "prunable" || line.startsWith("prunable "))) {
+      current.prunable = true;
+    } else if (current && (line === "locked" || line.startsWith("locked "))) {
+      current.locked = true;
+      current.lock_reason = line === "locked" ? null : line.slice(7);
     }
   }
   return worktrees;
 }
 
-function checkoutStatus(path, { bare = false } = {}) {
-  const reason = bare ? "bare" : (!existsSync(path) ? "missing" : null);
-  if (reason) return { path, available: false, reason, dirty_entries: [] };
-  const result = git(path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+function checkoutStatus(path, descriptor, expectedCommonDir, runner = spawnSync) {
+  const unavailable = (reason, identity = {}) => ({
+    path,
+    available: false,
+    reason,
+    dirty_entries: [],
+    top_level: identity.top_level ?? null,
+    common_dir: identity.common_dir ?? null,
+    branch: identity.branch ?? null,
+    expected_branch: descriptor?.branch ?? null
+  });
+  if (!descriptor) return unavailable("worktree_registration_missing");
+  if (descriptor.bare) return unavailable("bare");
+  if (!existsSync(path)) return unavailable("missing");
+  if (!expectedCommonDir) return unavailable("git_common_dir_unavailable");
+
+  const topLevelValue = gitText(path, ["rev-parse", "--show-toplevel"], false, runner);
+  const commonDirValue = gitText(path, ["rev-parse", "--git-common-dir"], false, runner);
+  const branchResult = git(path, ["symbolic-ref", "--quiet", "HEAD"], runner);
+  if (!topLevelValue || !commonDirValue || ![0, 1].includes(branchResult.status)) {
+    return unavailable("worktree_identity_unavailable");
+  }
+  let topLevel;
+  let commonDir;
+  try {
+    topLevel = canonicalPath(topLevelValue);
+    commonDir = canonicalPath(isAbsolute(commonDirValue) ? commonDirValue : resolve(path, commonDirValue));
+  } catch {
+    return unavailable("worktree_identity_unavailable");
+  }
+  const branch = branchResult.status === 0 ? branchResult.stdout.trim() : null;
+  const identity = { top_level: topLevel, common_dir: commonDir, branch };
+  if (topLevel !== descriptor.path) return unavailable("worktree_top_level_mismatch", identity);
+  if (commonDir !== expectedCommonDir) return unavailable("worktree_common_dir_mismatch", identity);
+  if (branch !== descriptor.branch) return unavailable("worktree_branch_mismatch", identity);
+
+  const result = git(path, ["status", "--porcelain=v1", "--untracked-files=all"], runner);
   if (result.status !== 0) {
-    return { path, available: false, reason: "git_status_failed", dirty_entries: [] };
+    return unavailable("git_status_failed", identity);
   }
   return {
     path,
     available: true,
     reason: null,
-    dirty_entries: result.stdout.trim().split("\n").filter(Boolean)
+    dirty_entries: result.stdout.trim().split("\n").filter(Boolean),
+    ...identity,
+    expected_branch: descriptor.branch
   };
 }
 
@@ -129,6 +200,33 @@ function resumeKeyFor(fields) {
   return `branch_v1_${createHash("sha256").update(source).digest("hex").slice(0, 24)}`;
 }
 
+export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().toISOString().slice(0, 10).replaceAll("-", "")) {
+  if (options.date) return options.date;
+  const target = resumePlan?.branch?.target;
+  const purpose = resumePlan?.purpose;
+  const actor = String(options.actor ?? "").toLowerCase();
+  const prefix = `codex/${options.type}/`;
+  const suffix = `-${actor}-${options.component}-${options.summary}`;
+  if (
+    typeof target === "string"
+    && typeof resumePlan?.actor?.id === "string"
+    && resumePlan.actor.id.toLowerCase() === actor
+    && purpose?.type === options.type
+    && purpose?.component === options.component
+    && purpose?.summary === options.summary
+    && target.startsWith(prefix)
+    && target.endsWith(suffix)
+  ) {
+    const date = target.slice(prefix.length, target.length - suffix.length);
+    if (/^20[0-9]{6}$/.test(date)) return date;
+  }
+  return fallbackDate;
+}
+
+export function targetBranchFor(options, actor) {
+  return `codex/${options.type}/${options.date}-${String(actor).toLowerCase()}-${options.component}-${options.summary}`;
+}
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -145,35 +243,169 @@ export function loadContributorBranchContract(path = DEFAULT_CONTRACT) {
   return contract;
 }
 
-export function collectGitFacts(repoPath, baseRef, targetBranch) {
-  const root = canonicalPath(gitText(repoPath, ["rev-parse", "--show-toplevel"]));
-  const worktrees = parseWorktrees(gitText(root, ["worktree", "list", "--porcelain"]));
-  const currentStatus = checkoutStatus(root);
+function liveRemoteBranch(root, remote, targetBranch, runner) {
+  const ref = `refs/heads/${targetBranch}`;
+  const result = git(root, ["ls-remote", "--exit-code", "--heads", remote, ref], runner);
+  if (result.status === 2) return { available: true, commit: null, reason: null };
+  if (result.status !== 0) return { available: false, commit: null, reason: "git_ls_remote_failed" };
+  const matches = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split(/\s+/));
+  if (
+    matches.length !== 1
+    || matches[0][1] !== ref
+    || !/^[0-9a-f]{40,64}$/i.test(matches[0][0])
+  ) return { available: false, commit: null, reason: "git_ls_remote_invalid" };
+  return { available: true, commit: matches[0][0].toLowerCase(), reason: null };
+}
+
+function liveRemoteTargetBranch(root, remote, targetBranch, runner) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const parts = targetBranch.split("/");
+  const prefixRefs = parts.slice(0, -1).map((_, index) => `refs/heads/${parts.slice(0, index + 1).join("/")}`);
+  const patterns = [...prefixRefs, targetRef, `${targetRef}/*`];
+  const result = git(root, ["ls-remote", "--exit-code", "--heads", remote, ...patterns], runner);
+  if (result.status === 2) return { available: true, commit: null, namespace_conflicts: [], reason: null };
+  if (result.status !== 0) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_failed" };
+  }
+  const matches = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split(/\s+/));
+  if (
+    matches.length === 0
+    || matches.some(([commit, ref]) => !/^[0-9a-f]{40,64}$/i.test(commit) || !ref?.startsWith("refs/heads/"))
+  ) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_invalid" };
+  }
+  const exact = matches.filter(([, ref]) => ref === targetRef);
+  const conflicts = matches
+    .map(([, ref]) => ref)
+    .filter((ref) => ref !== targetRef && (targetRef.startsWith(`${ref}/`) || ref.startsWith(`${targetRef}/`)));
+  if (exact.length > 1 || conflicts.length !== matches.length - exact.length) {
+    return { available: false, commit: null, namespace_conflicts: [], reason: "git_ls_remote_invalid" };
+  }
+  return {
+    available: true,
+    commit: exact[0]?.[0].toLowerCase() ?? null,
+    namespace_conflicts: [...new Set(conflicts)].sort(),
+    reason: null
+  };
+}
+
+function remoteForRepository(root, repository, runner) {
+  if (typeof repository !== "string" || !repository) {
+    return { available: false, name: null, repository: null, reason: "target_repository_missing" };
+  }
+  const names = (gitText(root, ["remote"], false, runner) || "").split(/\r?\n/).filter(Boolean);
+  const matches = names.filter((name) => {
+    const fetchUrls = (gitText(root, ["remote", "get-url", "--all", name], false, runner) || "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const pushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", name], false, runner) || "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    const repos = [...fetchUrls, ...pushUrls].map((url) => githubRepoFromRemote(url));
+    return fetchUrls.length > 0
+      && pushUrls.length > 0
+      && repos.every((repo) => repo?.toLowerCase() === repository.toLowerCase());
+  });
+  if (matches.length === 0) {
+    return { available: false, name: null, repository, reason: "matching_remote_missing" };
+  }
+  return { available: true, name: matches.sort()[0], repository, reason: null };
+}
+
+export function collectGitFacts(
+  repoPath,
+  baseRef,
+  targetBranch,
+  requestedWorktree,
+  canonicalRepository,
+  targetRepository,
+  runner = spawnSync
+) {
+  const root = canonicalPath(gitText(repoPath, ["rev-parse", "--show-toplevel"], true, runner));
+  const worktrees = parseWorktrees(gitText(root, ["worktree", "list", "--porcelain"], true, runner));
+  const commonDirValue = gitText(root, ["rev-parse", "--git-common-dir"], false, runner);
+  const commonDir = commonDirValue
+    ? canonicalPath(isAbsolute(commonDirValue) ? commonDirValue : resolve(root, commonDirValue))
+    : null;
+  const currentDescriptor = worktrees.find((item) => item.path === root);
+  const currentStatus = checkoutStatus(root, currentDescriptor, commonDir, runner);
   const canonicalDescriptor = worktrees[0] || { path: root, bare: false };
   const canonicalStatus = canonicalDescriptor.path === root
     ? currentStatus
-    : checkoutStatus(canonicalDescriptor.path, canonicalDescriptor);
-  const originUrl = gitText(root, ["config", "--get", "remote.origin.url"], false);
-  const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false);
+    : checkoutStatus(canonicalDescriptor.path, canonicalDescriptor, commonDir, runner);
+  const requestedPath = canonicalPath(requestedWorktree);
+  const requestedDescriptor = worktrees.find((item) => item.path === requestedPath);
+  const requestedStatus = requestedDescriptor
+    ? (requestedDescriptor.path === root
+      ? currentStatus
+      : checkoutStatus(requestedDescriptor.path, requestedDescriptor, commonDir, runner))
+    : null;
+  const originUrl = gitText(root, ["remote", "get-url", "origin"], false, runner);
+  const originPushUrls = (gitText(root, ["remote", "get-url", "--push", "--all", "origin"], false, runner) || "")
+    .split(/\r?\n/)
+    .filter(Boolean);
+  const originRepo = githubRepoFromRemote(originUrl);
+  const originPushRepos = originPushUrls.map((url) => githubRepoFromRemote(url));
+  const originIdentityValid = typeof canonicalRepository === "string"
+    && originRepo?.toLowerCase() === canonicalRepository.toLowerCase();
+  const baseCommit = gitText(root, ["rev-parse", "--verify", `${baseRef}^{commit}`], false, runner);
+  const baseBranch = baseRef.startsWith("origin/") ? baseRef.slice("origin/".length) : null;
+  const baseRemote = baseBranch && originIdentityValid
+    ? liveRemoteBranch(root, "origin", baseBranch, runner)
+    : {
+      available: false,
+      commit: null,
+      reason: baseBranch ? "origin_identity_invalid" : "unsupported_base_remote"
+    };
   const localCommit = targetBranch
-    ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false)
+    ? gitText(root, ["show-ref", "--verify", "--hash", `refs/heads/${targetBranch}`], false, runner)
     : null;
-  const remoteCommit = targetBranch
-    ? gitText(root, ["show-ref", "--verify", "--hash", `refs/remotes/origin/${targetBranch}`], false)
-    : null;
+  const localBranchRefsText = gitText(root, ["for-each-ref", "--format=%(refname)", "refs/heads"], false, runner);
+  const localBranchRefs = localBranchRefsText === null
+    ? null
+    : localBranchRefsText.split(/\r?\n/).filter(Boolean);
+  const targetIsCanonical = typeof targetRepository === "string"
+    && typeof canonicalRepository === "string"
+    && targetRepository.toLowerCase() === canonicalRepository.toLowerCase();
+  const targetRemote = targetIsCanonical
+    ? (originIdentityValid
+      ? { available: true, name: "origin", repository: targetRepository, reason: null }
+      : { available: false, name: null, repository: targetRepository, reason: "origin_identity_invalid" })
+    : remoteForRepository(root, targetRepository, runner);
+  const remoteBranch = targetBranch && targetRemote.available
+    ? { ...liveRemoteTargetBranch(root, targetRemote.name, targetBranch, runner), remote: targetRemote.name }
+    : targetBranch
+      ? { available: false, commit: null, namespace_conflicts: [], reason: targetRemote.reason, remote: null }
+      : { available: true, commit: null, namespace_conflicts: [], reason: null };
+  const remoteCommit = remoteBranch.commit;
+  const targetCommit = localCommit || remoteCommit;
+  const targetDescendsFromBase = Boolean(
+    baseCommit
+    && localCommit
+    && git(root, ["merge-base", "--is-ancestor", baseCommit, localCommit], runner).status === 0
+  );
   return {
     root,
     origin_url: originUrl,
-    origin_repo: githubRepoFromRemote(originUrl),
-    head: gitText(root, ["rev-parse", "HEAD"]),
-    current_branch: gitText(root, ["branch", "--show-current"], false),
+    origin_repo: originRepo,
+    origin_push_repos: originPushRepos,
+    head: gitText(root, ["rev-parse", "HEAD"], true, runner),
+    current_branch: gitText(root, ["branch", "--show-current"], false, runner),
     dirty_entries: currentStatus.dirty_entries,
     current_status: currentStatus,
     canonical_status: canonicalStatus,
+    requested_status: requestedStatus,
     base_commit: baseCommit,
-    target_commit: localCommit || remoteCommit,
+    base_remote_status: baseRemote,
+    target_commit: targetCommit,
+    target_local_commit: localCommit,
+    target_remote_commit: remoteCommit,
+    target_remote_status: remoteBranch,
+    target_remote: targetRemote,
+    target_descends_from_base: targetDescendsFromBase,
     target_local: Boolean(localCommit),
-    target_remote: Boolean(remoteCommit),
+    target_remote_exists: Boolean(remoteCommit),
+    local_branch_refs: localBranchRefs,
     worktrees
   };
 }
@@ -202,7 +434,19 @@ export function collectGitHubPermissionEvidence(repo, checkedAt, runner = spawnS
   const viewerPermission = typeof permissionData?.data?.repository?.viewerPermission === "string"
     ? permissionData.data.repository.viewerPermission.toUpperCase()
     : null;
-  const forkPolicyAvailable = Boolean(repositoryData && typeof repositoryData.private === "boolean");
+  const repositoryStateAvailable = Boolean(
+    repositoryData
+    && typeof repositoryData.archived === "boolean"
+    && typeof repositoryData.disabled === "boolean"
+  );
+  const repositoryWriteAllowed = repositoryStateAvailable
+    ? !repositoryData.archived && !repositoryData.disabled
+    : null;
+  const forkPolicyAvailable = Boolean(
+    repositoryStateAvailable
+    && typeof repositoryData.private === "boolean"
+    && (!repositoryData.private || typeof repositoryData.allow_forking === "boolean")
+  );
   const forkAllowed = forkPolicyAvailable
     ? !repositoryData.archived
       && !repositoryData.disabled
@@ -226,6 +470,11 @@ export function collectGitHubPermissionEvidence(repo, checkedAt, runner = spawnS
       permission_source: "gh api graphql repository.viewerPermission",
       permission_available: permissionAvailable,
       viewer_permission: viewerPermission,
+      state_source: `gh api repos/${repo}`,
+      state_available: repositoryStateAvailable,
+      archived: repositoryStateAvailable ? repositoryData.archived : null,
+      disabled: repositoryStateAvailable ? repositoryData.disabled : null,
+      write_allowed: repositoryWriteAllowed,
       fork_policy_source: `gh api repos/${repo}`,
       fork_policy_available: forkPolicyAvailable,
       fork_allowed: forkAllowed
@@ -265,7 +514,10 @@ export function collectGitHubIssueEvidence(repo, issueNumber, checkedAt, runner 
 function resolvePermission(evidence) {
   if (evidence.source !== "github_api") return "local";
   if (!evidence.identity.available || !evidence.repository.permission_available) return "local";
-  if (["ADMIN", "MAINTAIN", "WRITE"].includes(evidence.repository.viewer_permission)) return "direct";
+  if (
+    ["ADMIN", "MAINTAIN", "WRITE"].includes(evidence.repository.viewer_permission)
+    && evidence.repository.write_allowed === true
+  ) return "direct";
   if (
     ["READ", "TRIAGE"].includes(evidence.repository.viewer_permission)
     && evidence.repository.fork_policy_available
@@ -347,12 +599,34 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       }
     }
   }
-  const branchName = `codex/${options.type}/${options.date}-${options.component}-${options.summary}`;
+  const branchName = targetBranchFor(options, resolvedActor);
   const branchCheck = git(facts.root, ["check-ref-format", "--branch", branchName]);
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
+  const targetRef = `refs/heads/${branchName}`;
+  if (!Array.isArray(facts.local_branch_refs)) {
+    addBlocker(blockers, "local_branch_refs_unavailable", "local branch namespace cannot be verified");
+  } else if (facts.local_branch_refs.some(
+    (ref) => ref !== targetRef && (targetRef.startsWith(`${ref}/`) || ref.startsWith(`${targetRef}/`))
+  )) {
+    addBlocker(blockers, "branch_namespace_collision", "an existing local branch occupies a prefix or descendant of the generated target");
+  }
+  const maxLeafBytes = contract.branch_naming.max_leaf_bytes;
+  const branchLeaf = branchName.slice(branchName.lastIndexOf("/") + 1);
+  if (!Number.isInteger(maxLeafBytes) || maxLeafBytes < 1 || Buffer.byteLength(branchLeaf, "utf8") > maxLeafBytes) {
+    addBlocker(blockers, "branch_component_too_long", "generated branch leaf exceeds the contract filesystem limit");
+  }
   if (isProtectedRef(branchName, contract)) addBlocker(blockers, "protected_target", "target branch is protected");
   if (!facts.base_commit) addBlocker(blockers, "missing_base", `base ref does not resolve: ${options.base}`);
-  if (facts.dirty_entries.length > 0) addBlocker(blockers, "dirty_tree", "repository worktree is dirty");
+  if (!facts.base_remote_status?.available || !facts.base_remote_status.commit) {
+    addBlocker(blockers, "base_remote_status_unavailable", "canonical base cannot be verified from the effective origin");
+  } else if (facts.base_commit && facts.base_commit !== facts.base_remote_status.commit) {
+    addBlocker(blockers, "base_remote_mismatch", "local canonical base does not match the live effective origin head");
+  }
+  if (!facts.current_status.available) {
+    addBlocker(blockers, "current_checkout_status_unavailable", "current checkout status cannot be verified");
+  } else if (facts.dirty_entries.length > 0) {
+    addBlocker(blockers, "dirty_tree", "repository worktree is dirty");
+  }
   if (!facts.canonical_status.available) {
     addBlocker(blockers, "canonical_checkout_status_unavailable", "canonical checkout status cannot be verified");
   } else if (facts.canonical_status.dirty_entries.length > 0) {
@@ -362,6 +636,24 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     addBlocker(blockers, "missing_origin_identity", "remote.origin must identify a GitHub OWNER/REPO");
   } else if (facts.origin_repo.toLowerCase() !== options.repo.toLowerCase()) {
     addBlocker(blockers, "repo_remote_mismatch", "remote.origin does not match the requested canonical repo");
+  }
+  if (!Array.isArray(facts.origin_push_repos) || facts.origin_push_repos.length === 0
+      || facts.origin_push_repos.some((repo) => !repo)) {
+    addBlocker(blockers, "missing_origin_push_identity", "every effective origin push URL must identify a GitHub OWNER/REPO");
+  } else if (facts.origin_push_repos.some((repo) => repo.toLowerCase() !== options.repo.toLowerCase())) {
+    addBlocker(blockers, "repo_push_remote_mismatch", "every effective origin push URL must match the requested canonical repo");
+  }
+  if (!facts.target_remote_status?.available) {
+    addBlocker(blockers, "target_remote_status_unavailable", "target branch state cannot be verified from the effective origin");
+  } else if (facts.target_remote_status.namespace_conflicts?.length > 0) {
+    addBlocker(blockers, "target_remote_namespace_collision", "a live remote branch occupies a prefix or descendant of the generated target");
+  }
+  if (
+    facts.target_local_commit
+    && facts.target_remote_commit
+    && facts.target_local_commit !== facts.target_remote_commit
+  ) {
+    addBlocker(blockers, "target_branch_remote_mismatch", "local and live origin target branches resolve to different commits");
   }
 
   const requestedWorktree = canonicalPath(options.worktree);
@@ -395,6 +687,11 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   let ownerReconfirmed = false;
 
   if (resumePlan) {
+    const resumeEvidenceValid = resumePlan.writes === false
+      && Array.isArray(resumePlan.blockers)
+      && resumePlan.blockers.length === 0
+      && resumePlan.next_write_action !== "blocked"
+      && ["new", "resume"].includes(resumePlan.resume?.decision);
     const ownershipTime = Date.parse(resumePlan.ownership?.checked_at ?? "");
     const nowTime = Date.parse(options.now);
     const staleMs = contract.resume.stale_after_days * 86_400_000;
@@ -407,7 +704,9 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       || !Number.isFinite(nowTime)
       || ownershipTime > nowTime
       || nowTime - ownershipTime > staleMs;
-    if (!ownershipMatches) {
+    if (!resumeEvidenceValid) {
+      addBlocker(blockers, "resume_evidence_invalid", "resume plan must be a prior blocker-free zero-write plan");
+    } else if (!ownershipMatches) {
       addBlocker(blockers, "stale_ownership", "resume plan owner, key, or branch does not match");
     } else if (ownershipStale && !options.reconfirm_owner) {
       addBlocker(blockers, "stale_ownership", "resume plan ownership window is stale; Owner reconfirmation is required");
@@ -415,6 +714,10 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       addBlocker(blockers, "stale_base", "resume plan base commit no longer matches the canonical base");
     } else if (!facts.target_commit) {
       addBlocker(blockers, "resume_branch_missing", "resume plan target branch no longer exists");
+    } else if (!facts.target_local_commit) {
+      addBlocker(blockers, "resume_branch_local_missing", "resume target exists only on the live remote; explicit approval is required to fetch it and create the local branch");
+    } else if (!facts.target_descends_from_base) {
+      addBlocker(blockers, "resume_branch_wrong_base", "resume target branch does not descend from the saved canonical base");
     } else {
       decision = "resume";
       resumeValid = true;
@@ -432,14 +735,34 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   }
 
   const registeredAtPath = facts.worktrees.find((item) => item.path === requestedWorktree);
-  const registeredForBranch = facts.worktrees.find((item) => item.branch === `refs/heads/${branchName}`);
-  if (existsSync(requestedWorktree) && !registeredAtPath) {
+  const registrationsForBranch = facts.worktrees.filter((item) => item.branch === `refs/heads/${branchName}`);
+  const registeredPathExists = pathEntryExists(requestedWorktree);
+  const presentRegisteredAtPath = registeredAtPath && registeredPathExists && !registeredAtPath.prunable;
+  if (registeredAtPath?.prunable && registeredPathExists) {
+    addBlocker(blockers, "prunable_worktree_path_occupied", "prunable worktree registration still has an occupied on-disk path");
+  }
+  if (registeredAtPath?.locked && !registeredPathExists) {
+    addBlocker(blockers, "locked_worktree_registration", "missing requested worktree has a locked registration; unlock and remove or prune it explicitly");
+  }
+  if (presentRegisteredAtPath && !facts.requested_status?.available) {
+    addBlocker(blockers, "requested_worktree_status_unavailable", "requested registered worktree status cannot be verified");
+  } else if (presentRegisteredAtPath && facts.requested_status.dirty_entries.length > 0) {
+    addBlocker(blockers, "requested_worktree_dirty", "requested registered worktree is dirty");
+  }
+  const usableRegisteredAtPath = Boolean(
+    presentRegisteredAtPath
+    && facts.requested_status?.available
+    && facts.requested_status.dirty_entries.length === 0
+  );
+  if (registeredPathExists && !registeredAtPath) {
     addBlocker(blockers, "worktree_collision", "requested worktree path exists but is not registered");
   }
   if (registeredAtPath && registeredAtPath.branch !== `refs/heads/${branchName}`) {
     addBlocker(blockers, "worktree_collision", "requested worktree belongs to another branch");
   }
-  if (registeredForBranch && registeredForBranch.path !== requestedWorktree) {
+  if (registrationsForBranch.length > 1) {
+    addBlocker(blockers, "duplicate_branch_worktree_registrations", "target branch is registered at multiple worktree paths");
+  } else if (registrationsForBranch[0] && registrationsForBranch[0].path !== requestedWorktree) {
     addBlocker(blockers, "branch_worktree_collision", "target branch is registered at another worktree path");
   }
 
@@ -458,13 +781,25 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
     profile: options.profile,
     generated_at: options.now,
     repo: { canonical: options.repo, source: sourceRepo, path: facts.root },
-    base: { ref: options.base, commit: facts.base_commit },
+    base: {
+      ref: options.base,
+      commit: facts.base_commit,
+      remote_commit: facts.base_remote_status?.commit ?? null,
+      remote_status_available: Boolean(facts.base_remote_status?.available),
+      remote_status_reason: facts.base_remote_status?.reason ?? null
+    },
     branch: {
       target: branchName,
       class: profile?.branch_class ?? null,
       user_channel_claim: profile?.user_channel_claim ?? null,
       current: facts.current_branch,
-      existing_commit: facts.target_commit
+      existing_commit: facts.target_commit,
+      remote_name: facts.target_remote?.name ?? null,
+      remote_repository: facts.target_remote?.repository ?? null,
+      remote_commit: facts.target_remote_commit,
+      remote_namespace_conflicts: facts.target_remote_status?.namespace_conflicts ?? [],
+      remote_status_available: Boolean(facts.target_remote_status?.available),
+      remote_status_reason: facts.target_remote_status?.reason ?? null
     },
     issue,
     issue_evidence: issueEvidence,
@@ -485,25 +820,55 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       current_repo_path: facts.root,
       canonical_checkout_path: canonicalCheckout,
       isolated: !insideCanonicalCheckout && !nestedRegisteredWorktree,
-      registered: Boolean(registeredAtPath),
+      registered: Boolean(usableRegisteredAtPath),
+      registration_present: Boolean(registeredAtPath),
+      registration_prunable: Boolean(
+        registeredAtPath?.prunable
+        || (registeredAtPath && !registeredPathExists && !registeredAtPath.locked)
+      ),
+      registration_locked: Boolean(registeredAtPath?.locked),
+      registration_lock_reason: registeredAtPath?.lock_reason ?? null,
+      branch_registration_count: registrationsForBranch.length,
       current_checkout: {
         status_available: facts.current_status.available,
-        dirty_entry_count: facts.current_status.dirty_entries.length
+        status_reason: facts.current_status.reason,
+        dirty_entry_count: facts.current_status.dirty_entries.length,
+        top_level: facts.current_status.top_level,
+        common_dir: facts.current_status.common_dir,
+        branch: facts.current_status.branch,
+        expected_branch: facts.current_status.expected_branch
       },
       canonical_checkout: {
         status_source: "git status --porcelain=v1",
         status_available: facts.canonical_status.available,
         status_reason: facts.canonical_status.reason,
-        dirty_entry_count: facts.canonical_status.dirty_entries.length
-      }
+        dirty_entry_count: facts.canonical_status.dirty_entries.length,
+        top_level: facts.canonical_status.top_level,
+        common_dir: facts.canonical_status.common_dir,
+        branch: facts.canonical_status.branch,
+        expected_branch: facts.canonical_status.expected_branch
+      },
+      requested_checkout: facts.requested_status
+        ? {
+          status_available: facts.requested_status.available,
+          status_reason: facts.requested_status.reason,
+          dirty_entry_count: facts.requested_status.dirty_entries.length,
+          top_level: facts.requested_status.top_level,
+          common_dir: facts.requested_status.common_dir,
+          branch: facts.requested_status.branch,
+          expected_branch: facts.requested_status.expected_branch
+        }
+        : null
     },
     ownership: { actor: resolvedActor, checked_at: options.now },
     resume: { key: resumeKey, decision, owner_reconfirmed: ownerReconfirmed },
     next_write_action: blockers.length === 0
       ? (decision === "resume"
-        ? (registeredAtPath
+        ? (usableRegisteredAtPath
           ? "resume_existing_branch_in_isolated_worktree"
-          : "recreate_resume_worktree_for_existing_branch")
+          : (registeredAtPath
+            ? "prune_and_recreate_resume_worktree_for_existing_branch"
+            : "recreate_resume_worktree_for_existing_branch"))
         : permission.next_write_action)
       : "blocked",
     approval_boundaries: contract.approval_boundaries,
@@ -541,7 +906,6 @@ function parseArguments(argv) {
   if (options.reconfirm_owner && !options.resume_plan) {
     throw new Error("--reconfirm-owner requires --resume-plan");
   }
-  options.date ||= new Date().toISOString().slice(0, 10).replaceAll("-", "");
   options.now = new Date().toISOString();
   return options;
 }
@@ -551,12 +915,25 @@ function main() {
   try {
     const options = parseArguments(process.argv.slice(2));
     const contract = loadContributorBranchContract();
-    const provisionalBranch = `codex/${options.type}/${options.date}-${options.component}-${options.summary}`;
-    const facts = collectGitFacts(resolve(options.repo_path), options.base, provisionalBranch);
+    const resumePlan = options.resume_plan ? readJson(resolve(options.resume_plan)) : null;
+    options.date = resolvePlanDate(options, resumePlan);
     const permissionEvidence = collectGitHubPermissionEvidence(options.repo, options.now);
+    const provisionalActor = permissionEvidence.identity.login || options.actor;
+    const provisionalPermission = resolvePermission(permissionEvidence);
+    const provisionalRepository = provisionalPermission === "fork"
+      ? `${provisionalActor}/${options.repo.split("/")[1]}`
+      : options.repo;
+    const provisionalBranch = targetBranchFor(options, provisionalActor);
+    const facts = collectGitFacts(
+      resolve(options.repo_path),
+      options.base,
+      provisionalBranch,
+      options.worktree,
+      options.repo,
+      provisionalRepository
+    );
     const parsedIssue = parseIssue(options.issue, options.repo);
     const issueEvidence = collectGitHubIssueEvidence(options.repo, parsedIssue?.number, options.now);
-    const resumePlan = options.resume_plan ? readJson(resolve(options.resume_plan)) : null;
     plan = buildBranchPlan(options, contract, facts, permissionEvidence, issueEvidence, resumePlan);
   } catch (error) {
     plan = {
