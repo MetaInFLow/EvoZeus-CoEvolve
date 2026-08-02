@@ -528,12 +528,29 @@ def test_resume_accepts_v130_legacy_hyphenated_branch_encoding(tmp_path: Path) -
         env,
         resume_plan=str(ledger_path),
         date=None,
+        approve_save_plan=True,
     )
 
     assert resumed_code == 0
     assert resumed["resume"]["decision"] == "resume"
     assert resumed["branch"]["target"] == legacy_branch
     assert "stale_ownership" not in blocker_codes(resumed)
+
+    refreshed = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert refreshed["contract"]["version"] == "1.3.1"
+    resumed_again, resumed_again_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        date=None,
+    )
+
+    assert resumed_again_code == 0
+    assert resumed_again["resume"]["decision"] == "resume"
+    assert resumed_again["branch"]["target"] == legacy_branch
+    assert "stale_ownership" not in blocker_codes(resumed_again)
 
 
 def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path: Path) -> None:
