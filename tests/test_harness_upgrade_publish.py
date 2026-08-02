@@ -8,10 +8,13 @@ from pathlib import Path
 
 from scripts.evozeus_wrapper_bootstrap import copy_templates
 from scripts.evozeus_harness_publish import (
+    _default_existing_pr,
     plan_admin_upgrade_all,
     publish_admin_upgrade_all,
     publish_target_upgrade,
     resolve_github_admin_access,
+    resolve_official_upgrade_source,
+    run_command,
     verify_canonical_github_origin,
 )
 from scripts.evozeus_wrapper_lifecycle import (
@@ -214,15 +217,114 @@ class AdminUpgradePlanningTest(unittest.TestCase):
             self.assertEqual(report["status"], "busy")
             self.assertFalse(report["writes"])
 
+    def test_failed_pr_creation_records_a_recoverable_remote_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            plan = self.upgrade_plan()
+            plan["targets"] = plan["targets"][:1]
+
+            report = publish_admin_upgrade_all(
+                home,
+                Path("/tmp/wrapper"),
+                "v0.13.0",
+                approve=True,
+                upgrade_planner=lambda *args, **kwargs: plan,
+                access_resolver=lambda repo: {
+                    "repo": repo,
+                    "viewer": "anthonyf",
+                    "permission": "ADMIN",
+                    "is_admin": True,
+                    "default_branch": "main",
+                    "url": f"https://github.com/{repo}",
+                    "error": None,
+                },
+                target_publisher=lambda item, **kwargs: {
+                    "repo": item["repo"],
+                    "status": "pr_creation_failed",
+                    "writes": True,
+                    "branch": "evozeus/harness-v0.12.1-to-v0.13.0",
+                    "commit": "a" * 40,
+                    "pr_url": None,
+                    "worktree": "/Users/private/recovery-worktree",
+                    "error": (
+                        "PR creation failed after the branch push at "
+                        "https://oauth2:secret-token@github.com/MetaInFLow/admin-skill"
+                    ),
+                    "remote_side_effect": {
+                        "kind": "branch_push",
+                        "repo": item["repo"],
+                        "branch": "evozeus/harness-v0.12.1-to-v0.13.0",
+                        "commit": "a" * 40,
+                        "target_base_ref": "main",
+                        "target_base_commit": "b" * 40,
+                        "source_revision": "v0.13.0",
+                        "plan_identity": "c" * 64,
+                        "recovery": "retry_same_upgrade",
+                    },
+                },
+                run_id="upgrade_pr_failure_001",
+            )
+
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(report["failed_count"], 1)
+            run_payload = json.loads(
+                (home / ".evozeus/skills/runs/upgrade_pr_failure_001.json").read_text()
+            )
+            effect = run_payload["results"][0]["remote_side_effect"]
+            self.assertEqual(effect["kind"], "branch_push")
+            self.assertEqual(effect["recovery"], "retry_same_upgrade")
+            self.assertNotIn("secret-token", json.dumps(run_payload))
+            self.assertNotIn("/Users/private", json.dumps(run_payload))
+            events = [
+                json.loads(line)
+                for line in (home / ".evozeus/skills/events.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(events[0]["event"], "harness_upgrade_pr_creation_failed")
+            self.assertEqual(events[0]["commit"], "a" * 40)
+
 
 class GitHubAccessTest(unittest.TestCase):
+    def test_existing_pr_lookup_returns_live_head_and_base_identity(self):
+        calls = []
+        payload = [
+            {
+                "html_url": "https://github.com/MetaInFLow/example/pull/7",
+                "number": 7,
+                "body": "bound plan",
+                "head": {
+                    "ref": "evozeus/harness-v0.12.1-to-v0.13.0",
+                    "sha": "a" * 40,
+                    "repo": {"full_name": "MetaInFLow/example"},
+                },
+                "base": {
+                    "ref": "main",
+                    "sha": "b" * 40,
+                    "repo": {"full_name": "MetaInFLow/example"},
+                },
+            }
+        ]
+
+        def runner(args, cwd=None):
+            calls.append(args)
+            return completed(stdout=json.dumps(payload))
+
+        existing = _default_existing_pr(
+            "MetaInFLow/example",
+            "evozeus/harness-v0.12.1-to-v0.13.0",
+            runner=runner,
+        )
+
+        self.assertEqual(existing["head_commit"], "a" * 40)
+        self.assertEqual(existing["base_commit"], "b" * 40)
+        self.assertIn("head=MetaInFLow:evozeus/harness-v0.12.1-to-v0.13.0", calls[0])
+
     def test_resolves_admin_permission_from_authenticated_github_viewer(self):
         payload = {
             "data": {
                 "viewer": {"login": "anthonyf"},
                 "repository": {
                     "viewerPermission": "ADMIN",
-                    "defaultBranchRef": {"name": "main"},
+                    "defaultBranchRef": {"name": "main", "target": {"oid": "a" * 40}},
                     "url": "https://github.com/MetaInFLow/example",
                 },
             }
@@ -236,6 +338,7 @@ class GitHubAccessTest(unittest.TestCase):
         self.assertTrue(access["is_admin"])
         self.assertEqual(access["viewer"], "anthonyf")
         self.assertEqual(access["default_branch"], "main")
+        self.assertEqual(access["default_branch_oid"], "a" * 40)
 
     def test_rejects_a_canonical_checkout_pointing_at_another_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,6 +396,96 @@ class GitHubAccessTest(unittest.TestCase):
             self.assertNotIn(credential, str(raised.exception))
             self.assertNotIn("oauth2", str(raised.exception))
 
+
+class OfficialUpgradeSourceTest(unittest.TestCase):
+    def initialize_source(self, root: Path, version: str = "v0.13.0") -> Path:
+        source = root / "source"
+        source.mkdir()
+        manifest_path = source / "contracts/v1/manifest.json"
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "evozeus.coevolve.contract-manifest.v1",
+                    "bundle_id": "evozeus-coevolve",
+                    "bundle_version": "v1.0.0",
+                    "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
+                    "source_revision": version,
+                    "files": [],
+                }
+            )
+            + "\n"
+        )
+        subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(source),
+                "-c", "user.name=EvoZeus Test",
+                "-c", "user.email=evozeus@example.invalid",
+                "commit", "-qm", "release source",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(source), "remote", "add", "origin",
+                "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(source), "tag", version], check=True)
+        return source
+
+    @staticmethod
+    def resolve_source(source: Path, version: str = "v0.13.0") -> dict:
+        head = subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", f"{version}^{{commit}}"],
+            text=True,
+        ).strip()
+
+        def runner(args, cwd=None):
+            if "ls-remote" in args:
+                return completed(stdout=f"{head}\trefs/tags/{version}\n")
+            return run_command(args, cwd)
+
+        return resolve_official_upgrade_source(source, version, runner=runner)
+
+    def test_binds_source_to_official_clean_tagged_commit_and_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.initialize_source(Path(tmp))
+
+            evidence = self.resolve_source(source)
+
+            head = subprocess.check_output(
+                ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+            ).strip()
+            self.assertEqual(evidence["source_revision"], head)
+            self.assertEqual(evidence["source_tag"], "v0.13.0")
+            self.assertRegex(evidence["contract_manifest_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_rejects_dirty_or_tag_mismatched_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.initialize_source(Path(tmp))
+            (source / "untracked.txt").write_text("dirty\n")
+            with self.assertRaisesRegex(RuntimeError, "source checkout must be clean"):
+                self.resolve_source(source)
+
+            (source / "untracked.txt").unlink()
+            (source / "next.txt").write_text("next\n")
+            subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+            subprocess.run(
+                [
+                    "git", "-C", str(source),
+                    "-c", "user.name=EvoZeus Test",
+                    "-c", "user.email=evozeus@example.invalid",
+                    "commit", "-qm", "next commit",
+                ],
+                check=True,
+            )
+            with self.assertRaisesRegex(RuntimeError, "tag does not resolve to source HEAD"):
+                self.resolve_source(source)
+
     def test_redacts_credentials_from_origin_command_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
             canonical = Path(tmp) / "canonical"
@@ -344,18 +537,37 @@ class IsolatedPublishTest(unittest.TestCase):
         return remote, canonical
 
     @staticmethod
+    def live_admin(repo: str) -> dict:
+        return {
+            "repo": repo,
+            "viewer": "anthonyf",
+            "permission": "ADMIN",
+            "is_admin": True,
+            "default_branch": "main",
+            "default_branch_oid": None,
+            "url": f"https://github.com/{repo}",
+            "error": None,
+        }
+
+    @staticmethod
+    def trusted_source(_wrapper_root: Path, version: str) -> dict:
+        return {
+            "schema_version": "evozeus.coevolve.harness-upgrade-source.v1",
+            "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
+            "source_tag": version,
+            "source_revision": "d" * 40,
+            "contract_manifest_sha256": "e" * 64,
+            "contract_bundle_id": "evozeus-coevolve",
+            "contract_bundle_version": "v1.0.0",
+        }
+
+    @staticmethod
     def publish_target(canonical: Path, repo: str = "MetaInFLow/example") -> dict:
         return {
             "repo": repo,
             "target": str(canonical),
             "wrapper_version": "v0.12.1",
-            "github": {
-                "viewer": "anthonyf",
-                "permission": "ADMIN",
-                "is_admin": True,
-                "default_branch": "main",
-                "url": f"https://github.com/{repo}",
-            },
+            "github": IsolatedPublishTest.live_admin(repo),
         }
 
     def test_publishes_from_isolated_worktree_and_preserves_canonical_checkout(self):
@@ -421,6 +633,8 @@ class IsolatedPublishTest(unittest.TestCase):
                 existing_pr_resolver=lambda repo, branch: None,
                 pr_creator=lambda **kwargs: "https://github.com/MetaInFLow/example/pull/2",
                 origin_verifier=lambda repo, canonical: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
             )
 
             self.assertEqual(report["status"], "published")
@@ -484,6 +698,8 @@ class IsolatedPublishTest(unittest.TestCase):
                 existing_pr_resolver=lambda repo, branch: None,
                 pr_creator=lambda **kwargs: self.fail("PR must not be created"),
                 origin_verifier=lambda repo, canonical: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
             )
 
             self.assertEqual(report["status"], "up_to_date")
@@ -518,6 +734,8 @@ class IsolatedPublishTest(unittest.TestCase):
                 existing_pr_resolver=lambda repo, branch: None,
                 pr_creator=lambda **kwargs: "https://github.com/MetaInFLow/example/pull/3",
                 origin_verifier=lambda repo, checkout: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
             )
 
             self.assertEqual(report["status"], "published")
@@ -558,6 +776,8 @@ class IsolatedPublishTest(unittest.TestCase):
                 "existing_pr_resolver": lambda repo, branch: None,
                 "pr_creator": lambda **kwargs: "https://github.com/MetaInFLow/example/pull/4",
                 "origin_verifier": lambda repo, checkout: repo,
+                "access_resolver": self.live_admin,
+                "source_resolver": self.trusted_source,
             }
             first = publish_target_upgrade(run_id="upgrade_reuse_1", **arguments)
             second = publish_target_upgrade(run_id="upgrade_reuse_2", **arguments)
@@ -578,6 +798,238 @@ class IsolatedPublishTest(unittest.TestCase):
             self.assertEqual(remote_head, second["commit"])
             self.assertFalse(Path(first["worktree"]).exists())
             self.assertFalse(Path(second["worktree"]).exists())
+
+    def test_rechecks_live_admin_before_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, canonical = self.initialize_remote_repo(
+                root,
+                {"SKILL.md": "# Business Skill\n"},
+            )
+            permissions = iter(("ADMIN", "WRITE"))
+
+            def live_access(repo):
+                permission = next(permissions)
+                return {
+                    **self.live_admin(repo),
+                    "permission": permission,
+                    "is_admin": permission == "ADMIN",
+                }
+
+            def migrate(worktree, latest_version, **kwargs):
+                (worktree / "upgrade.txt").write_text(latest_version + "\n")
+                return {"writes": True, "changed_files": ["upgrade.txt"]}
+
+            with self.assertRaisesRegex(PermissionError, "live GitHub ADMIN"):
+                publish_target_upgrade(
+                    self.publish_target(canonical),
+                    home=root / "home",
+                    wrapper_root=root / "wrapper",
+                    latest_version="v0.13.0",
+                    run_id="upgrade_permission_changed_before_push",
+                    migrator=migrate,
+                    existing_pr_resolver=lambda repo, branch: None,
+                    pr_creator=lambda **kwargs: self.fail("PR must not be created"),
+                    origin_verifier=lambda repo, checkout: repo,
+                    access_resolver=live_access,
+                    source_resolver=self.trusted_source,
+                )
+
+            branch = "refs/heads/evozeus/harness-v0.12.1-to-v0.13.0"
+            self.assertNotEqual(
+                subprocess.run(
+                    ["git", "--git-dir", str(remote), "rev-parse", "--verify", branch],
+                    capture_output=True,
+                ).returncode,
+                0,
+            )
+
+    def test_rechecks_live_admin_before_pr_creation_and_records_the_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, canonical = self.initialize_remote_repo(
+                root,
+                {"SKILL.md": "# Business Skill\n"},
+            )
+            permissions = iter(("ADMIN", "ADMIN", "WRITE"))
+
+            def live_access(repo):
+                permission = next(permissions)
+                return {
+                    **self.live_admin(repo),
+                    "permission": permission,
+                    "is_admin": permission == "ADMIN",
+                }
+
+            def migrate(worktree, latest_version, **kwargs):
+                (worktree / "upgrade.txt").write_text(latest_version + "\n")
+                return {"writes": True, "changed_files": ["upgrade.txt"]}
+
+            result = publish_target_upgrade(
+                self.publish_target(canonical),
+                home=root / "home",
+                wrapper_root=root / "wrapper",
+                latest_version="v0.13.0",
+                run_id="upgrade_permission_changed_before_pr",
+                migrator=migrate,
+                existing_pr_resolver=lambda repo, branch: None,
+                pr_creator=lambda **kwargs: self.fail("PR must not be created"),
+                origin_verifier=lambda repo, checkout: repo,
+                access_resolver=live_access,
+                source_resolver=self.trusted_source,
+            )
+
+            self.assertEqual(result["status"], "pr_creation_failed")
+            self.assertIn("live GitHub ADMIN", result["error"])
+            self.assertEqual(result["remote_side_effect"]["commit"], result["commit"])
+            self.assertIsNone(result["worktree"])
+            remote_head = subprocess.check_output(
+                [
+                    "git",
+                    "--git-dir",
+                    str(remote),
+                    "rev-parse",
+                    "refs/heads/evozeus/harness-v0.12.1-to-v0.13.0",
+                ],
+                text=True,
+            ).strip()
+            self.assertEqual(remote_head, result["commit"])
+
+            retry = publish_target_upgrade(
+                self.publish_target(canonical),
+                home=root / "home",
+                wrapper_root=root / "wrapper",
+                latest_version="v0.13.0",
+                run_id="upgrade_permission_retry",
+                migrator=migrate,
+                existing_pr_resolver=lambda repo, branch: None,
+                pr_creator=lambda **kwargs: "https://github.com/MetaInFLow/example/pull/8",
+                origin_verifier=lambda repo, checkout: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
+            )
+
+            self.assertEqual(retry["status"], "published")
+            self.assertEqual(retry["branch"], result["branch"])
+            retry_worktree = (
+                root
+                / "home/.evozeus/worktrees/harness-upgrade"
+                / "upgrade_permission_retry/MetaInFLow--example"
+            )
+            self.assertFalse(retry_worktree.exists())
+
+    def test_pr_creation_failure_is_recoverable_and_retry_reuses_exact_live_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, canonical = self.initialize_remote_repo(
+                root,
+                {"SKILL.md": "# Business Skill\n"},
+            )
+            created: dict[str, str] = {}
+
+            def migrate(worktree, latest_version, **kwargs):
+                (worktree / "upgrade.txt").write_text(latest_version + "\n")
+                return {"writes": True, "changed_files": ["upgrade.txt"]}
+
+            def create_then_fail(**kwargs):
+                created.update(kwargs)
+                raise RuntimeError(
+                    "transport closed after creating "
+                    "https://oauth2:secret-token@github.com/MetaInFLow/example"
+                )
+
+            first = publish_target_upgrade(
+                self.publish_target(canonical),
+                home=root / "home",
+                wrapper_root=root / "wrapper",
+                latest_version="v0.13.0",
+                run_id="upgrade_pr_failure_then_retry",
+                migrator=migrate,
+                existing_pr_resolver=lambda repo, branch: None,
+                pr_creator=create_then_fail,
+                origin_verifier=lambda repo, checkout: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
+            )
+
+            self.assertEqual(first["status"], "pr_creation_failed")
+            self.assertNotIn("secret-token", first["error"])
+            base_commit = subprocess.check_output(
+                ["git", "-C", str(canonical), "rev-parse", "refs/remotes/origin/main"],
+                text=True,
+            ).strip()
+            live_pr = {
+                "url": "https://github.com/MetaInFLow/example/pull/9",
+                "number": 9,
+                "body": created["body"],
+                "head_ref": first["branch"],
+                "head_commit": first["commit"],
+                "head_repo": "MetaInFLow/example",
+                "base_ref": "main",
+                "base_commit": base_commit,
+                "base_repo": "MetaInFLow/example",
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "live head/base mismatch"):
+                publish_target_upgrade(
+                    self.publish_target(canonical),
+                    home=root / "home",
+                    wrapper_root=root / "wrapper",
+                    latest_version="v0.13.0",
+                    run_id="upgrade_wrong_existing_identity",
+                    migrator=lambda *args, **kwargs: self.fail("migration must not rerun"),
+                    existing_pr_resolver=lambda repo, branch: {
+                        **live_pr,
+                        "base_commit": "f" * 40,
+                    },
+                    pr_creator=lambda **kwargs: self.fail("PR must not be duplicated"),
+                    origin_verifier=lambda repo, checkout: repo,
+                    access_resolver=self.live_admin,
+                    source_resolver=self.trusted_source,
+                )
+
+            second = publish_target_upgrade(
+                self.publish_target(canonical),
+                home=root / "home",
+                wrapper_root=root / "wrapper",
+                latest_version="v0.13.0",
+                run_id="upgrade_pr_failure_retry",
+                migrator=lambda *args, **kwargs: self.fail("migration must not rerun"),
+                existing_pr_resolver=lambda repo, branch: live_pr,
+                pr_creator=lambda **kwargs: self.fail("PR must not be duplicated"),
+                origin_verifier=lambda repo, checkout: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
+            )
+
+            self.assertEqual(second["status"], "existing_pr")
+            self.assertEqual(second["commit"], first["commit"])
+            self.assertEqual(second["pr_url"], live_pr["url"])
+
+    def test_same_name_open_pr_without_bound_identity_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, canonical = self.initialize_remote_repo(
+                root,
+                {"SKILL.md": "# Business Skill\n"},
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "cannot be safely reused"):
+                publish_target_upgrade(
+                    self.publish_target(canonical),
+                    home=root / "home",
+                    wrapper_root=root / "wrapper",
+                    latest_version="v0.13.0",
+                    run_id="upgrade_unbound_existing_pr",
+                    migrator=lambda *args, **kwargs: self.fail("migration must not run"),
+                    existing_pr_resolver=lambda repo, branch: (
+                        "https://github.com/MetaInFLow/example/pull/10"
+                    ),
+                    pr_creator=lambda **kwargs: self.fail("PR must not be created"),
+                    origin_verifier=lambda repo, checkout: repo,
+                    access_resolver=self.live_admin,
+                    source_resolver=self.trusted_source,
+                )
 
     def test_real_publisher_output_passes_official_upgrade_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -679,12 +1131,17 @@ class IsolatedPublishTest(unittest.TestCase):
                 existing_pr_resolver=lambda repo, branch: None,
                 pr_creator=create_pr,
                 origin_verifier=lambda repo, checkout: repo,
+                access_resolver=self.live_admin,
+                source_resolver=self.trusted_source,
             )
 
             self.assertEqual(report["status"], "published")
             self.assertEqual(report["branch"], "evozeus/harness-v0.14.0-to-v0.15.0")
             self.assertIn("official_harness_upgrade", created_pr["body"])
             self.assertIn("MetaInFLow/EvoZeus-CoEvolve@v0.15.0", created_pr["body"])
+            self.assertIn(f"- Source revision: `{'d' * 40}`", created_pr["body"])
+            self.assertIn(f"- Contract manifest SHA-256: `{'e' * 64}`", created_pr["body"])
+            self.assertIn("evozeus-harness-upgrade-plan:v1", created_pr["body"])
             self.assertIn(f"- Branch: `{report['branch']}`", created_pr["body"])
             self.assertNotIn(".evozeus-wrapper/CHANGELOG.md", report["changed_files"])
             for path in report["changed_files"]:

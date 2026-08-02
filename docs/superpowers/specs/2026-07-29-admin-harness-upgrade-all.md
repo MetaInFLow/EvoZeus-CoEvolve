@@ -27,9 +27,11 @@ evozeus harness upgrade-all --publish
 2. GitHub 是 repo 管理权限事实源。
 3. 每个目标 repo 独立查询当前登录身份的 `viewerPermission`。
 4. 只有 `ADMIN` 可以进入升级 worktree、push 和 PR 创建阶段。
-5. `MAINTAIN`、`WRITE`、`TRIAGE`、`READ` 和未知权限只进入跳过清单。
-6. 所有发布都走独立分支和 PR；禁止直接写默认分支。
-7. UAT Harness 不得向目标 repo 默认分支发布；批量发布只消费权威 Stable CoEvolve Release。
+5. push 前和 PR 创建前分别重新查询 live `ADMIN`、actor、default branch 与 base commit；规划期权限不作为执行授权。
+6. `MAINTAIN`、`WRITE`、`TRIAGE`、`READ` 和未知权限只进入跳过清单。
+7. 所有发布都走独立分支和 PR；禁止直接写默认分支。
+8. UAT Harness 不得向目标 repo 默认分支发布；批量发布只消费权威 Stable CoEvolve Release。
+9. `wrapper-root` 必须是 clean 的独立 Git checkout，origin 精确指向官方 CoEvolve repo，本地 tag、远端 tag 与 HEAD 必须解析到同一 commit；contract manifest 与其声明文件必须通过摘要核验。
 
 ## 执行流程
 
@@ -50,16 +52,17 @@ Registry discovery
 
 - worktree 根目录：`~/.evozeus/worktrees/harness-upgrade/<run-id>/<owner>--<repo>`。
 - 分支：`evozeus/harness-<from>-to-<to>`。
-- 相同 head branch 已存在开放 PR 时复用，不重复创建。
+- 相同 head branch 已存在开放 PR 时，只有 live head/base repo、ref、commit，以及 PR marker 中的 official source commit、contract manifest SHA-256 和 plan identity 全部匹配才复用；证据缺失或冲突立即阻断。
 - canonical repo 工作区保持不变。
 - 单 repo 失败不影响已创建的其他 PR；批次状态为 `partial`。
-- 失败 worktree保留并返回恢复路径；成功 worktree清理。
+- push 前失败保留 worktree 和恢复路径；push 已成功时以确定性 branch/commit 与账本作为恢复点并清理 worktree，避免重试时占用同一分支；成功 worktree清理。
+- push 成功但 PR 创建失败时，Run Ledger 和 Event Ledger 记录脱敏的 branch、commit、base、source revision、plan identity 与恢复动作；重试使用同一确定性分支，并在精确 live PR 已存在时幂等复用。
 
 ## 审计
 
 - 批次报告：`~/.evozeus/skills/runs/<run-id>.json`。
 - 事件账本：`~/.evozeus/skills/events.jsonl`。
-- 只记录 repo、版本、commit、PR、状态和时间，不记录 raw session、客户资料或 secret。
+- 只记录 repo、版本、branch/commit、PR、target base、official source revision、manifest digest、plan identity、恢复动作、状态和时间，不记录 raw session、客户资料、local path 或 secret。
 
 ## 验收标准
 
