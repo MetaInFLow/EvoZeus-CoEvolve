@@ -21,7 +21,7 @@
     },
     {
       "path": "user-prompt-lesson-runtime-lifecycle.json",
-      "sha256": "920960c9af965b78f32c064dd8feee2baad90e6316f4a131c45611f8313467e2",
+      "sha256": "7e1f34f2a464124a876c47f9c395f473bc228aadc2d4df7ad04b4eb0cbaa5ba7",
       "role": "external-runtime-dependency"
     }
   ]

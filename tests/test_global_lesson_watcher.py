@@ -71,7 +71,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             "components": {
                 "evozeus": {
                     "version": "v0.5.0",
-                    "commit": "d54ad32d0cb23043055098f0fe32f5378296209d",
+                    "commit": "4dc94613ee01c6bd3c7fa8f5f123c6fe398742f4",
                     "source": {"kind": "git", "ref": "test"},
                     "required_paths": [CORE_DISPATCHER_SOURCE.as_posix()],
                 },

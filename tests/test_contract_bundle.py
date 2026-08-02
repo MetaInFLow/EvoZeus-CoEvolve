@@ -59,7 +59,7 @@ def test_contract_manifest_depends_on_core_owned_user_prompt_runtime() -> None:
         "schema_version": "evozeus.coevolve.external-runtime-dependency.v1",
         "component_id": "evozeus_user_prompt_lesson_runtime",
         "repository": "MetaInFLow/EvoZeus",
-        "source_revision": "d54ad32d0cb23043055098f0fe32f5378296209d",
+        "source_revision": "4dc94613ee01c6bd3c7fa8f5f123c6fe398742f4",
         "availability": "unreleased",
         "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
         "api": "evozeus.user-prompt.lesson-runtime.v1",
