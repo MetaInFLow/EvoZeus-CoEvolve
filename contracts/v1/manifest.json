@@ -8,6 +8,18 @@
     "min_inclusive": "0.1.0",
     "max_exclusive": "0.3.0"
   },
+  "external_component_dependencies": [
+    {
+      "component_id": "evozeus_user_prompt_lesson_runtime",
+      "repository": "MetaInFLow/EvoZeus",
+      "source_revision": "d54ad32d0cb23043055098f0fe32f5378296209d",
+      "availability": "unreleased",
+      "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
+      "api": "evozeus.user-prompt.lesson-runtime.v1",
+      "dispatcher": ".evozeus/hooks/evozeus_wrapper_dispatcher.py",
+      "owner": "evozeus-core"
+    }
+  ],
   "files": [
     {
       "path": "schemas/attachment-v1.schema.json",

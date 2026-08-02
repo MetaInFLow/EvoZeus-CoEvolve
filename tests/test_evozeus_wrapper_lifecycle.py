@@ -57,7 +57,12 @@ from scripts.evozeus_wrapper_lifecycle import (
     wrapper_manifest_status,
 )
 from scripts.evozeus_wrapper_global_hook import (
+    CORE_DISPATCHER_SCHEMA,
+    CORE_DISPATCHER_STATE,
+    CORE_USER_PROMPT_RUNTIME_API,
+    GLOBAL_DISPATCHER,
     GLOBAL_DISPATCHER_COMMAND,
+    GLOBAL_HOOK_STATE,
     apply_global_hook_install,
     apply_global_hook_uninstall,
     plan_global_hook_install,
@@ -77,6 +82,41 @@ from scripts.evozeus_wrapper_preflight import (
     root_entry_path as preflight_root_entry_path,
     runtime_pointer_scope as preflight_runtime_pointer_scope,
 )
+
+
+def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
+    dispatcher = home / GLOBAL_DISPATCHER
+    dispatcher.parent.mkdir(parents=True, exist_ok=True)
+    if source is None:
+        dispatcher.write_text(
+            "#!/usr/bin/env python3\n"
+            f'SCHEMA_VERSION = "{CORE_DISPATCHER_SCHEMA}"\n'
+            f'USER_PROMPT_RUNTIME_API = "{CORE_USER_PROMPT_RUNTIME_API}"\n',
+            encoding="utf-8",
+        )
+    else:
+        dispatcher.write_text(
+            source.read_text(encoding="utf-8")
+            + f'\n# {CORE_DISPATCHER_SCHEMA}\n# {CORE_USER_PROMPT_RUNTIME_API}\n',
+            encoding="utf-8",
+        )
+    dispatcher.chmod(0o700)
+    (home / CORE_DISPATCHER_STATE).write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "wrapper_source": "channel-managed",
+                "source_repository": "MetaInFLow/EvoZeus",
+                "installed_version": "v0.5.0",
+                "core_version": "v0.5.0",
+                "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
+                "trust_status": "verified_by_product_manifest",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return dispatcher
 
 
 def create_complete_legacy_target(target: Path) -> str:
@@ -1481,6 +1521,29 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertFalse(
             integration["capabilities"]["repo_maintenance_hook"]["covers_skill_invocation"]
         )
+        prompt_watcher = integration["capabilities"]["global_prompt_lesson_watcher"]
+        self.assertEqual(prompt_watcher["event"], "UserPromptSubmit")
+        self.assertEqual(prompt_watcher["scope"], "all_user_prompts")
+        self.assertFalse(prompt_watcher["installed"])
+        self.assertFalse(prompt_watcher["covers_skill_invocation"])
+
+    def test_preflight_rejects_prompt_watcher_invocation_or_portable_install_claims(self):
+        manifest = build_wrapper_manifest(
+            "MetaInFLow/skill",
+            "v0.14.0",
+            [".codex/hooks.json", CODEX_START_HOOK_SCRIPT],
+            [],
+        )
+        watcher = manifest["integration"]["capabilities"]["global_prompt_lesson_watcher"]
+        watcher["installed"] = True
+        watcher["native_enforced"] = True
+        watcher["covers_skill_invocation"] = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                check_integration_contract(target, manifest)
 
     def test_detected_skill_entry_requires_actual_status_prelude(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1919,6 +1982,7 @@ class TargetSkillDiagnosisTest(unittest.TestCase):
             skill_dir = target / "skills" / "sales-coach"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text('---\nname: "sales-coach"\n---\n', encoding="utf-8")
+            seed_core_global_dispatcher(home)
             apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
 
             def runner(args, cwd=None):
@@ -2523,6 +2587,7 @@ class GlobalHookLifecycleTest(unittest.TestCase):
             }
             hooks_path.write_text(json.dumps(unrelated), encoding="utf-8")
 
+            seed_core_global_dispatcher(home)
             first = apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
             second = apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
             merged = json.loads(hooks_path.read_text(encoding="utf-8"))
@@ -2541,6 +2606,7 @@ class GlobalHookLifecycleTest(unittest.TestCase):
     def test_global_hook_uninstall_removes_only_evozeus_registration(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
+            seed_core_global_dispatcher(home)
             apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
             hooks_path = home / ".codex" / "hooks.json"
             hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
@@ -2588,6 +2654,7 @@ class GlobalHookLifecycleTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            seed_core_global_dispatcher(home)
             apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
             installed = json.loads(hooks_path.read_text(encoding="utf-8"))
             installed_commands = [
@@ -2615,6 +2682,10 @@ class GlobalHookLifecycleTest(unittest.TestCase):
             hooks_path.parent.mkdir(parents=True)
             original_hooks = '{"hooks":{"PreToolUse":[]}}\n'
             hooks_path.write_text(original_hooks, encoding="utf-8")
+            dispatcher = seed_core_global_dispatcher(home)
+            core_state = home / CORE_DISPATCHER_STATE
+            dispatcher_before = dispatcher.read_bytes()
+            core_state_before = core_state.read_bytes()
 
             from scripts import evozeus_wrapper_global_hook as global_hook
 
@@ -2635,12 +2706,14 @@ class GlobalHookLifecycleTest(unittest.TestCase):
                 apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
 
             self.assertEqual(hooks_path.read_text(encoding="utf-8"), original_hooks)
-            self.assertFalse((home / ".evozeus/hooks/evozeus_wrapper_dispatcher.py").exists())
-            self.assertFalse((home / ".evozeus/hooks/state.json").exists())
+            self.assertEqual(dispatcher.read_bytes(), dispatcher_before)
+            self.assertEqual(core_state.read_bytes(), core_state_before)
+            self.assertFalse((home / GLOBAL_HOOK_STATE).exists())
 
     def test_global_hook_trust_is_recorded_separately_after_explicit_approval(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
+            seed_core_global_dispatcher(home)
             apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
 
             pending = read_global_hook_status(home)
@@ -2654,6 +2727,7 @@ class GlobalHookLifecycleTest(unittest.TestCase):
     def test_global_hook_cli_plans_and_installs_with_explicit_approval(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
+            seed_core_global_dispatcher(home)
             environment = {**os.environ, "HOME": str(home)}
 
             plan = subprocess.run(
@@ -2868,6 +2942,10 @@ class GlobalDispatcherTest(unittest.TestCase):
             consumer = Path(tmp) / "consumer-workspace"
             consumer.mkdir()
             self.create_wrapped_target(home, "consumer-skill", "v0.9.1")
+            seed_core_global_dispatcher(
+                home,
+                Path("templates/global/evozeus_wrapper_dispatcher.py"),
+            )
             apply_global_hook_install(home=home, wrapper_root=Path.cwd(), approve=True)
             dispatcher = home / ".evozeus/hooks/evozeus_wrapper_dispatcher.py"
 
@@ -3367,9 +3445,13 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             home = root / "home"
             wrapper_root = self.create_wrapper_source(root)
             target = self.create_upgrade_target(home, "refresh-global", initialize_git=True)
+            installed_dispatcher = seed_core_global_dispatcher(home)
+            dispatcher_before = installed_dispatcher.read_bytes()
             apply_global_hook_install(home, wrapper_root, approve=True)
-            installed_dispatcher = home / ".evozeus/hooks/evozeus_wrapper_dispatcher.py"
-            installed_dispatcher.write_text("# outdated dispatcher\n", encoding="utf-8")
+            hooks_path = home / ".codex/hooks.json"
+            hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
+            hooks["hooks"].pop("UserPromptSubmit")
+            hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
 
             def fake_plan(target_path, latest_version, **kwargs):
                 return {
@@ -3411,10 +3493,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
 
             self.assertEqual(report["status"], "applied")
             self.assertEqual(report["global_hook_refresh"]["status"], "installed")
-            self.assertEqual(
-                installed_dispatcher.read_bytes(),
-                (wrapper_root / "templates/global/evozeus_wrapper_dispatcher.py").read_bytes(),
-            )
+            self.assertEqual(installed_dispatcher.read_bytes(), dispatcher_before)
             self.assertEqual(read_global_hook_status(home)["trust_status"], "pending_review")
             self.assertEqual(migration_sources, [wrapper_root.resolve()])
             self.assertEqual(

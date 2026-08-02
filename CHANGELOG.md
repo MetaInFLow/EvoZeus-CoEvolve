@@ -4,9 +4,27 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+### Added
+
+- Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
+- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision as an external component dependency.
+
 ### Changed
 
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
+
+### Fixed
+
+- Converted malformed non-list `SessionStart` and `UserPromptSubmit` values into read-only lifecycle status errors.
+- Preserved the Core-owned dispatcher and product state across CoEvolve install, refresh, trust updates, and uninstall.
+
+### Security
+
+- Blocked lifecycle installation until the Core-owned dispatcher and product-managed state pass ownership and API checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
+
+### Verification
+
+- Added lifecycle coverage for missing or incompatible Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership, and optional zero-mutation execution against a real Core checkout.
 
 ## [v0.14.0] - 2026-07-30
 

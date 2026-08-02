@@ -14,11 +14,15 @@ GLOBAL_DISPATCHER_COMMAND = (
     '/usr/bin/python3 "$HOME/.evozeus/hooks/evozeus_wrapper_dispatcher.py"'
 )
 GLOBAL_HOOK_EVENT = "SessionStart"
+GLOBAL_PROMPT_HOOK_EVENT = "UserPromptSubmit"
 GLOBAL_HOOK_MATCHER = "startup|resume"
 GLOBAL_HOOKS_CONFIG = Path(".codex/hooks.json")
 GLOBAL_DISPATCHER = Path(".evozeus/hooks/evozeus_wrapper_dispatcher.py")
-GLOBAL_HOOK_STATE = Path(".evozeus/hooks/state.json")
+CORE_DISPATCHER_STATE = Path(".evozeus/hooks/state.json")
+GLOBAL_HOOK_STATE = Path(".evozeus/hooks/coevolve-lifecycle.json")
 GLOBAL_HOOK_BACKUPS = Path(".evozeus/backups/global-hooks")
+CORE_DISPATCHER_SCHEMA = "evozeus.channel-coevolve-dispatcher.v2"
+CORE_USER_PROMPT_RUNTIME_API = "evozeus.user-prompt.lesson-runtime.v1"
 HARNESS_UPGRADE_BACKUPS = Path(".evozeus/backups/harness-upgrades")
 LATEST_VERSION_CACHE = Path(".evozeus/cache/evozeus-wrapper-latest.json")
 LATEST_VERSION_CACHE_LIMIT_SECONDS = 86400
@@ -45,27 +49,26 @@ def _paths(home: Path) -> dict[str, Path]:
     return {
         "hooks": home / GLOBAL_HOOKS_CONFIG,
         "dispatcher": home / GLOBAL_DISPATCHER,
+        "core_state": home / CORE_DISPATCHER_STATE,
         "state": home / GLOBAL_HOOK_STATE,
         "backups": home / GLOBAL_HOOK_BACKUPS,
     }
 
 
-def _dispatcher_template(wrapper_root: Path) -> Path:
-    return wrapper_root.expanduser().resolve() / "templates/global/evozeus_wrapper_dispatcher.py"
-
-
-def _dispatcher_entry() -> dict[str, Any]:
-    return {
-        "matcher": GLOBAL_HOOK_MATCHER,
-        "hooks": [
-            {
-                "type": "command",
-                "command": GLOBAL_DISPATCHER_COMMAND,
-                "timeout": 30,
-                "statusMessage": "Checking EvoZeus harnesses",
-            }
-        ],
+def _dispatcher_entry(event: str) -> dict[str, Any]:
+    handler = {
+        "type": "command",
+        "command": GLOBAL_DISPATCHER_COMMAND,
+        "timeout": 30 if event == GLOBAL_HOOK_EVENT else 3,
     }
+    if event == GLOBAL_HOOK_EVENT:
+        handler["statusMessage"] = "Checking EvoZeus harnesses"
+    else:
+        handler["additionalContextLimit"] = 1200
+    entry: dict[str, Any] = {"hooks": [handler]}
+    if event == GLOBAL_HOOK_EVENT:
+        entry["matcher"] = GLOBAL_HOOK_MATCHER
+    return entry
 
 
 def _read_hooks_config(path: Path) -> dict[str, Any]:
@@ -83,6 +86,43 @@ def _read_hooks_config(path: Path) -> dict[str, Any]:
     if not isinstance(hooks, dict):
         raise ValueError("global hooks config hooks must be a JSON object")
     return data
+
+
+def _core_runtime_status(paths: dict[str, Path]) -> tuple[bool, dict[str, Any], list[str]]:
+    errors: list[str] = []
+    dispatcher = paths["dispatcher"]
+    core_state_path = paths["core_state"]
+    core_state: dict[str, Any] = {}
+    if not dispatcher.is_file() or dispatcher.is_symlink():
+        errors.append("Core-owned global dispatcher is missing or is not a regular file")
+    else:
+        try:
+            source = dispatcher.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"Core-owned global dispatcher cannot be read: {exc}")
+        else:
+            if CORE_DISPATCHER_SCHEMA not in source:
+                errors.append("Core-owned global dispatcher schema marker is missing")
+            if CORE_USER_PROMPT_RUNTIME_API not in source:
+                errors.append("Core-owned UserPromptSubmit Lesson runtime marker is missing")
+    if not core_state_path.is_file() or core_state_path.is_symlink():
+        errors.append("Core-owned global dispatcher state is missing or invalid")
+    else:
+        try:
+            loaded = json.loads(core_state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            errors.append(f"invalid Core-owned global dispatcher state: {exc}")
+        else:
+            core_state = loaded if isinstance(loaded, dict) else {}
+            if (
+                core_state.get("schema_version") != 2
+                or core_state.get("wrapper_source") != "channel-managed"
+                or core_state.get("source_repository") != "MetaInFLow/EvoZeus"
+                or core_state.get("runtime_api") != CORE_USER_PROMPT_RUNTIME_API
+                or core_state.get("trust_status") != "verified_by_product_manifest"
+            ):
+                errors.append("Core-owned global dispatcher state is not product-managed")
+    return not errors, core_state, errors
 
 
 def _entry_has_dispatcher(entry: object) -> bool:
@@ -115,26 +155,34 @@ def _without_dispatcher_handlers(entry: dict[str, Any]) -> tuple[dict[str, Any] 
     return preserved_entry, removed
 
 
-def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    merged = json.loads(json.dumps(config))
-    hooks = merged.setdefault("hooks", {})
-    session_start = hooks.setdefault(GLOBAL_HOOK_EVENT, [])
-    if not isinstance(session_start, list):
-        raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
-
+def _merge_event_registration(
+    hooks: dict[str, Any], event: str
+) -> bool:
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        raise ValueError(f"global hooks {event} must be a list")
     preserved: list[dict[str, Any]] = []
     found = False
-    for index, entry in enumerate(session_start):
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}] must be an object")
+            raise ValueError(f"global hooks {event}[{index}] must be an object")
         try:
             preserved_entry, removed = _without_dispatcher_handlers(entry)
         except ValueError as exc:
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}]: {exc}") from exc
+            raise ValueError(f"global hooks {event}[{index}]: {exc}") from exc
         found = found or removed
         if preserved_entry is not None:
             preserved.append(preserved_entry)
-    hooks[GLOBAL_HOOK_EVENT] = [*preserved, _dispatcher_entry()]
+    hooks[event] = [*preserved, _dispatcher_entry(event)]
+    return found
+
+
+def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    merged = json.loads(json.dumps(config))
+    hooks = merged.setdefault("hooks", {})
+    found = False
+    for event in (GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT):
+        found = _merge_event_registration(hooks, event) or found
     if merged == config:
         return merged, "already_registered"
     return merged, "refresh" if found else "merge"
@@ -143,22 +191,29 @@ def _merge_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, An
 def _without_dispatcher_registration(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     updated = json.loads(json.dumps(config))
     hooks = updated.setdefault("hooks", {})
-    session_start = hooks.get(GLOBAL_HOOK_EVENT, [])
-    if not isinstance(session_start, list):
-        raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
-    preserved: list[dict[str, Any]] = []
     removed = False
-    for index, entry in enumerate(session_start):
-        if not isinstance(entry, dict):
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}] must be an object")
-        try:
-            preserved_entry, entry_removed = _without_dispatcher_handlers(entry)
-        except ValueError as exc:
-            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT}[{index}]: {exc}") from exc
-        removed = removed or entry_removed
-        if preserved_entry is not None:
-            preserved.append(preserved_entry)
-    hooks[GLOBAL_HOOK_EVENT] = preserved
+    for event in (GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT):
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"global hooks {event} must be a list")
+        preserved: list[dict[str, Any]] = []
+        event_removed = False
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(f"global hooks {event}[{index}] must be an object")
+            try:
+                preserved_entry, entry_removed = _without_dispatcher_handlers(entry)
+            except ValueError as exc:
+                raise ValueError(f"global hooks {event}[{index}]: {exc}") from exc
+            removed = removed or entry_removed
+            event_removed = event_removed or entry_removed
+            if preserved_entry is not None:
+                preserved.append(preserved_entry)
+        if event_removed:
+            if preserved:
+                hooks[event] = preserved
+            else:
+                hooks.pop(event, None)
     return updated, removed
 
 
@@ -179,10 +234,13 @@ def _version_key(tag: str) -> tuple[int, int, int] | None:
 
 def _state_payload(wrapper_root: Path) -> dict[str, Any]:
     return {
-        "schema_version": 1,
-        "wrapper_source": str(wrapper_root.expanduser().resolve()),
-        "installed_version": _latest_changelog_version(wrapper_root),
+        "schema_version": 2,
+        "owner": "MetaInFLow/EvoZeus-CoEvolve",
+        "lifecycle_version": _latest_changelog_version(wrapper_root),
+        "runtime_owner": "MetaInFLow/EvoZeus",
+        "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
         "command": GLOBAL_DISPATCHER_COMMAND,
+        "events": [GLOBAL_HOOK_EVENT, GLOBAL_PROMPT_HOOK_EVENT],
         "installation_status": "installed",
         "trust_status": "pending_review",
         "trust_status_source": "requires_user_confirmation_after_codex_hooks_review",
@@ -200,7 +258,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def _snapshot(paths: dict[str, Path], backup_root: Path) -> dict[str, bytes | None]:
     snapshots: dict[str, bytes | None] = {}
     backup_root.mkdir(parents=True, exist_ok=False)
-    for name in ("hooks", "dispatcher", "state"):
+    for name in ("hooks", "state"):
         path = paths[name]
         data = path.read_bytes() if path.is_file() else None
         snapshots[name] = data
@@ -226,7 +284,6 @@ def _restore(paths: dict[str, Path], snapshots: dict[str, bytes | None]) -> None
 
 def plan_global_hook_install(home: Path, wrapper_root: Path) -> dict[str, Any]:
     paths = _paths(home)
-    template = _dispatcher_template(wrapper_root)
     errors: list[str] = []
     action = None
     try:
@@ -234,8 +291,8 @@ def plan_global_hook_install(home: Path, wrapper_root: Path) -> dict[str, Any]:
         _, action = _merge_dispatcher_registration(config)
     except ValueError as exc:
         errors.append(str(exc))
-    if not template.is_file():
-        errors.append(f"global dispatcher template is missing: {template}")
+    runtime_ready, _, runtime_errors = _core_runtime_status(paths)
+    errors.extend(runtime_errors)
     return {
         "stage": "global_hook_install",
         "status": "blocked" if errors else "planned",
@@ -244,6 +301,8 @@ def plan_global_hook_install(home: Path, wrapper_root: Path) -> dict[str, Any]:
         "registration_action": action,
         "hooks_config_exists": paths["hooks"].is_file(),
         "dispatcher_exists": paths["dispatcher"].is_file(),
+        "core_runtime_ready": runtime_ready,
+        "core_state_exists": paths["core_state"].is_file(),
         "state_exists": paths["state"].is_file(),
         "errors": errors,
     }
@@ -251,34 +310,65 @@ def plan_global_hook_install(home: Path, wrapper_root: Path) -> dict[str, Any]:
 
 def read_global_hook_status(home: Path) -> dict[str, Any]:
     paths = _paths(home)
-    errors: list[str] = []
-    registered = False
+    runtime_ready, core_state, errors = _core_runtime_status(paths)
+    session_registered = False
+    prompt_registered = False
     try:
         config = _read_hooks_config(paths["hooks"])
         session_start = config.get("hooks", {}).get(GLOBAL_HOOK_EVENT, [])
-        registered = any(_entry_has_dispatcher(entry) for entry in session_start)
+        if not isinstance(session_start, list):
+            raise ValueError(f"global hooks {GLOBAL_HOOK_EVENT} must be a list")
+        session_registered = any(_entry_has_dispatcher(entry) for entry in session_start)
+        prompt_submit = config.get("hooks", {}).get(GLOBAL_PROMPT_HOOK_EVENT, [])
+        if not isinstance(prompt_submit, list):
+            raise ValueError(f"global hooks {GLOBAL_PROMPT_HOOK_EVENT} must be a list")
+        prompt_registered = any(_entry_has_dispatcher(entry) for entry in prompt_submit)
     except ValueError as exc:
         errors.append(str(exc))
     state: dict[str, Any] = {}
-    if paths["state"].is_file():
+    if paths["state"].is_file() and not paths["state"].is_symlink():
         try:
             loaded = json.loads(paths["state"].read_text(encoding="utf-8"))
             state = loaded if isinstance(loaded, dict) else {}
-        except json.JSONDecodeError as exc:
+        except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid global hook state JSON: {exc}")
-    installed = registered and paths["dispatcher"].is_file() and bool(state)
+        if state and (
+            state.get("schema_version") != 2
+            or state.get("owner") != "MetaInFLow/EvoZeus-CoEvolve"
+            or state.get("runtime_api") != CORE_USER_PROMPT_RUNTIME_API
+        ):
+            errors.append("global hook lifecycle state has an incompatible owner or runtime API")
+            state = {}
+    elif paths["state"].exists():
+        errors.append("global hook lifecycle state must be a regular file")
+    registered = session_registered and prompt_registered
+    any_registered = session_registered or prompt_registered
+    installed = registered and runtime_ready and bool(state)
+    upgrade_required = any_registered and not installed
     return {
         "stage": "global_hook_status",
-        "status": "installed" if installed else "not_installed",
+        "status": "installed" if installed else "upgrade_required" if upgrade_required else "not_installed",
         "writes": False,
         "mode": "global_session_dispatcher",
+        "capabilities": [
+            "global_session_dispatcher",
+            "global_prompt_lesson_watcher",
+        ],
         "scope": "all_registered_wrapped_skills",
         "native_enforced": installed and state.get("trust_status") == "trusted",
         "registration_installed": registered,
+        "any_registration_installed": any_registered,
+        "session_registration_installed": session_registered,
+        "prompt_registration_installed": prompt_registered,
         "dispatcher_installed": paths["dispatcher"].is_file(),
+        "runtime_endpoint_ready": runtime_ready,
+        "runtime_owner": "MetaInFLow/EvoZeus",
+        "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
+        "core_state_installed": paths["core_state"].is_file(),
+        "core_runtime_version": core_state.get("core_version"),
         "state_installed": bool(state),
         "trust_status": state.get("trust_status", "not_installed"),
-        "installed_version": state.get("installed_version"),
+        "installed_version": state.get("lifecycle_version"),
         "errors": errors,
     }
 
@@ -291,14 +381,11 @@ def apply_global_hook_install(home: Path, wrapper_root: Path, *, approve: bool =
         return {**plan, "status": "approval_required"}
 
     paths = _paths(home)
-    template = _dispatcher_template(wrapper_root).read_bytes()
     config = _read_hooks_config(paths["hooks"])
     merged, registration_action = _merge_dispatcher_registration(config)
     status = read_global_hook_status(home)
     if (
         registration_action == "already_registered"
-        and paths["dispatcher"].is_file()
-        and paths["dispatcher"].read_bytes() == template
         and status["status"] == "installed"
     ):
         return {**plan, "status": "already_installed", "approved": True, "errors": []}
@@ -307,8 +394,6 @@ def apply_global_hook_install(home: Path, wrapper_root: Path, *, approve: bool =
     backup_root = paths["backups"] / transaction_id
     snapshots = _snapshot(paths, backup_root)
     try:
-        _atomic_write(paths["dispatcher"], template)
-        paths["dispatcher"].chmod(0o755)
         _atomic_write(
             paths["hooks"],
             (json.dumps(merged, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
@@ -354,7 +439,7 @@ def apply_global_hook_uninstall(home: Path, *, approve: bool = False) -> dict[st
             "registration_found": removed,
             "errors": [],
         }
-    if not removed and not paths["dispatcher"].exists() and not paths["state"].exists():
+    if not removed and not paths["state"].exists():
         return {
             "stage": "global_hook_uninstall",
             "status": "already_uninstalled",
@@ -365,14 +450,14 @@ def apply_global_hook_uninstall(home: Path, *, approve: bool = False) -> dict[st
     backup_root = paths["backups"] / _utc_transaction_id()
     snapshots = _snapshot(paths, backup_root)
     try:
-        _atomic_write(
-            paths["hooks"],
-            (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-        )
-        for name in ("dispatcher", "state"):
-            path = paths[name]
-            if path.is_file() or path.is_symlink():
-                path.unlink()
+        if removed:
+            _atomic_write(
+                paths["hooks"],
+                (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            )
+        state_path = paths["state"]
+        if state_path.is_file() or state_path.is_symlink():
+            state_path.unlink()
     except Exception:
         _restore(paths, snapshots)
         raise
@@ -634,6 +719,19 @@ def plan_upgrade_all(
             "targets": [],
         }
 
+    global_hook_status = read_global_hook_status(home)
+    if (
+        global_hook_status["any_registration_installed"]
+        and not global_hook_status["runtime_endpoint_ready"]
+    ):
+        return {
+            "stage": "harness_upgrade_all",
+            "status": "blocked",
+            "writes": False,
+            "errors": global_hook_status["errors"],
+            "targets": [],
+        }
+
     latest_resolution = _resolve_authoritative_upgrade_latest(home, latest_resolver)
     authoritative_latest = latest_resolution.get("version")
     if authoritative_latest != latest_version:
@@ -861,7 +959,7 @@ def apply_upgrade_all(
             "errors": [str(exc)],
             "administrator_authorities": authorities,
         }
-    refresh_installed_global_hook = read_global_hook_status(home)["status"] == "installed"
+    refresh_installed_global_hook = read_global_hook_status(home)["any_registration_installed"]
     backup_root = home / HARNESS_UPGRADE_BACKUPS / _utc_transaction_id()
     snapshots: list[dict[str, Any]] = []
     for index, item in enumerate(plan["targets"]):

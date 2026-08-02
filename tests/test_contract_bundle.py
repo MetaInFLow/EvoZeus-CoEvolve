@@ -44,6 +44,24 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
         assert entry["sha256"] == sha256_file(BUNDLE / entry["path"])
 
 
+def test_contract_manifest_depends_on_core_owned_user_prompt_runtime() -> None:
+    manifest = json.loads((BUNDLE / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["source_revision"] == "v0.14.0"
+    assert manifest["external_component_dependencies"] == [
+        {
+            "component_id": "evozeus_user_prompt_lesson_runtime",
+            "repository": "MetaInFLow/EvoZeus",
+            "source_revision": "d54ad32d0cb23043055098f0fe32f5378296209d",
+            "availability": "unreleased",
+            "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
+            "api": "evozeus.user-prompt.lesson-runtime.v1",
+            "dispatcher": ".evozeus/hooks/evozeus_wrapper_dispatcher.py",
+            "owner": "evozeus-core",
+        }
+    ]
+
+
 def test_external_sidecar_inventory_has_no_target_writes() -> None:
     inventory = json.loads(
         (BUNDLE / "target-template-inventory.json").read_text(encoding="utf-8")
