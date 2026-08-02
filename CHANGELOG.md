@@ -7,7 +7,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Added
 
 - Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
-- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision as an external component dependency.
+- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound v1.1.0 contract file that remains compatible with the Core v1 bundle loader.
 
 ### Changed
 
@@ -20,7 +20,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Security
 
-- Blocked lifecycle installation until the Core-owned dispatcher and product-managed state pass ownership and API checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
+- Blocked lifecycle installation until the Core-owned dispatcher is byte-identical to the active product component and all control paths pass HOME containment and symlink checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
 
 ### Verification
 

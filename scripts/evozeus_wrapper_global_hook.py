@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import stat
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +25,13 @@ GLOBAL_HOOK_STATE = Path(".evozeus/hooks/coevolve-lifecycle.json")
 GLOBAL_HOOK_BACKUPS = Path(".evozeus/backups/global-hooks")
 CORE_DISPATCHER_SCHEMA = "evozeus.channel-coevolve-dispatcher.v2"
 CORE_USER_PROMPT_RUNTIME_API = "evozeus.user-prompt.lesson-runtime.v1"
+CORE_PRODUCT_HOME = Path(".evozeus")
+CORE_ACTIVE_CHANNEL = CORE_PRODUCT_HOME / "active-channel.json"
+CORE_CHANNEL_STATE = CORE_PRODUCT_HOME / "channel-state.json"
+CORE_DISPATCHER_SOURCE = Path("scripts/evozeus-coevolve-dispatcher.py")
+CORE_ACTIVE_CHANNEL_SCHEMA = "evozeus.active-channel.v1"
+CORE_CHANNEL_STATE_SCHEMA = "evozeus.channel-state.v1"
+CORE_PRODUCT_MANIFEST_SCHEMA = "evozeus.product-channel.v2"
 HARNESS_UPGRADE_BACKUPS = Path(".evozeus/backups/harness-upgrades")
 LATEST_VERSION_CACHE = Path(".evozeus/cache/evozeus-wrapper-latest.json")
 LATEST_VERSION_CACHE_LIMIT_SECONDS = 86400
@@ -50,6 +59,8 @@ def _paths(home: Path) -> dict[str, Path]:
         "hooks": home / GLOBAL_HOOKS_CONFIG,
         "dispatcher": home / GLOBAL_DISPATCHER,
         "core_state": home / CORE_DISPATCHER_STATE,
+        "active_channel": home / CORE_ACTIVE_CHANNEL,
+        "channel_state": home / CORE_CHANNEL_STATE,
         "state": home / GLOBAL_HOOK_STATE,
         "backups": home / GLOBAL_HOOK_BACKUPS,
     }
@@ -88,40 +99,240 @@ def _read_hooks_config(path: Path) -> dict[str, Any]:
     return data
 
 
+def _safe_node_under(
+    root: Path,
+    path: Path,
+    *,
+    final_kind: str,
+) -> Path | None:
+    """Return a non-symlink node contained below root, checking every component."""
+    root = root.expanduser().resolve()
+    if not path.is_absolute():
+        return None
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    if not relative.parts or ".." in relative.parts:
+        return None
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError:
+        return None
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        return None
+    cursor = root
+    for index, part in enumerate(relative.parts):
+        cursor = cursor / part
+        try:
+            mode = cursor.lstat().st_mode
+        except OSError:
+            return None
+        if stat.S_ISLNK(mode):
+            return None
+        final = index == len(relative.parts) - 1
+        if not final and not stat.S_ISDIR(mode):
+            return None
+        if final and final_kind == "file" and not stat.S_ISREG(mode):
+            return None
+        if final and final_kind == "directory" and not stat.S_ISDIR(mode):
+            return None
+    return cursor
+
+
+def _safe_absolute_node_under(
+    root: Path,
+    value: object,
+    *,
+    final_kind: str,
+) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        return None
+    return _safe_node_under(root, path, final_kind=final_kind)
+
+
+def _read_json_object(path: Path, *, max_bytes: int = 1024 * 1024) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"JSON control file exceeds {max_bytes} bytes: {path}")
+    loaded = json.loads(raw.decode("utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"JSON control file must contain an object: {path}")
+    return loaded
+
+
+def _product_manifest_digest(manifest: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
 def _core_runtime_status(paths: dict[str, Path]) -> tuple[bool, dict[str, Any], list[str]]:
     errors: list[str] = []
+    home = paths["hooks"].parents[1]
+    product_home = home / CORE_PRODUCT_HOME
     dispatcher = paths["dispatcher"]
     core_state_path = paths["core_state"]
     core_state: dict[str, Any] = {}
-    if not dispatcher.is_file() or dispatcher.is_symlink():
-        errors.append("Core-owned global dispatcher is missing or is not a regular file")
-    else:
+    safe_dispatcher = _safe_node_under(home, dispatcher, final_kind="file")
+    safe_core_state = _safe_node_under(home, core_state_path, final_kind="file")
+    safe_active = _safe_node_under(home, paths["active_channel"], final_kind="file")
+    safe_channel_state = _safe_node_under(home, paths["channel_state"], final_kind="file")
+    if safe_dispatcher is None:
+        errors.append(
+            "Core-owned global dispatcher is missing, outside resolved HOME, or uses a symlink"
+        )
+    if safe_core_state is None:
+        errors.append(
+            "Core-owned global dispatcher state is missing, outside resolved HOME, or uses a symlink"
+        )
+    if safe_active is None:
+        errors.append("Core active-channel control file is missing or unsafe")
+    if safe_channel_state is None:
+        errors.append("Core channel-state control file is missing or unsafe")
+
+    active: dict[str, Any] = {}
+    channel_state: dict[str, Any] = {}
+    if safe_active is not None:
         try:
-            source = dispatcher.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            active = _read_json_object(safe_active)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"invalid Core active-channel control file: {exc}")
+    if safe_channel_state is not None:
+        try:
+            channel_state = _read_json_object(safe_channel_state)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"invalid Core channel-state control file: {exc}")
+    if safe_core_state is not None:
+        try:
+            core_state = _read_json_object(safe_core_state)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"invalid Core-owned global dispatcher state: {exc}")
+
+    channel = active.get("channel")
+    if safe_active is not None and (
+        active.get("schema_version") != CORE_ACTIVE_CHANNEL_SCHEMA
+        or channel not in {"stable", "uat"}
+    ):
+        errors.append("Core active-channel control file is not product-managed")
+    if (
+        safe_channel_state is not None
+        and channel_state.get("schema_version") != CORE_CHANNEL_STATE_SCHEMA
+    ):
+        errors.append("Core channel-state control file is not product-managed")
+
+    channels = channel_state.get("channels") if isinstance(channel_state, dict) else None
+    entry = channels.get(channel) if isinstance(channels, dict) and channel else None
+    if not isinstance(entry, dict):
+        entry = {}
+        if active and channel_state:
+            errors.append("Core active channel has no installed product entry")
+    manifest = entry.get("manifest") if isinstance(entry, dict) else None
+    if not isinstance(manifest, dict):
+        manifest = {}
+        if entry:
+            errors.append("Core active product entry has no manifest")
+    if manifest and (
+        manifest.get("schema_version") != CORE_PRODUCT_MANIFEST_SCHEMA
+        or manifest.get("channel") != channel
+        or entry.get("manifest_digest") != _product_manifest_digest(manifest)
+    ):
+        errors.append("Core active product manifest or digest is invalid")
+
+    components = manifest.get("components") if isinstance(manifest, dict) else None
+    core_component = components.get("evozeus") if isinstance(components, dict) else None
+    coevolve_component = components.get("coevolve") if isinstance(components, dict) else None
+    if not isinstance(core_component, dict):
+        if manifest:
+            errors.append("Core active product manifest has no EvoZeus component")
+        core_component = {}
+    if not isinstance(coevolve_component, dict):
+        if manifest:
+            errors.append("Core active product manifest has no CoEvolve component")
+        coevolve_component = {}
+
+    install_root = _safe_absolute_node_under(
+        product_home,
+        entry.get("install_root"),
+        final_kind="directory",
+    ) if entry else None
+    component_roots = entry.get("component_roots") if isinstance(entry, dict) else None
+    core_root_value = component_roots.get("evozeus") if isinstance(component_roots, dict) else None
+    core_root = _safe_absolute_node_under(
+        install_root,
+        core_root_value,
+        final_kind="directory",
+    ) if install_root is not None else None
+    if entry and install_root is None:
+        errors.append("Core active product install root is outside the product home or unsafe")
+    if entry and (
+        core_root is None
+        or core_root != install_root / "evozeus"
+    ):
+        errors.append("Core active EvoZeus component root is outside its install root or unsafe")
+
+    source_dispatcher: Path | None = None
+    if core_root is not None:
+        required_paths = core_component.get("required_paths") if isinstance(core_component, dict) else None
+        if not isinstance(required_paths, list) or CORE_DISPATCHER_SOURCE.as_posix() not in {
+            value for value in required_paths if isinstance(value, str)
+        }:
+            errors.append("Core product manifest does not govern the dispatcher source")
+        source_dispatcher = _safe_node_under(
+            core_root,
+            core_root / CORE_DISPATCHER_SOURCE,
+            final_kind="file",
+        )
+        if source_dispatcher is None:
+            errors.append("Core product dispatcher source is missing or unsafe")
+
+    dispatcher_bytes: bytes | None = None
+    if safe_dispatcher is not None:
+        try:
+            dispatcher_bytes = safe_dispatcher.read_bytes()
+        except OSError as exc:
+            errors.append(f"Core-owned global dispatcher cannot be read: {exc}")
+    if dispatcher_bytes is not None:
+        try:
+            dispatcher_source = dispatcher_bytes.decode("utf-8")
+        except UnicodeError as exc:
             errors.append(f"Core-owned global dispatcher cannot be read: {exc}")
         else:
-            if CORE_DISPATCHER_SCHEMA not in source:
+            if CORE_DISPATCHER_SCHEMA not in dispatcher_source:
                 errors.append("Core-owned global dispatcher schema marker is missing")
-            if CORE_USER_PROMPT_RUNTIME_API not in source:
+            if CORE_USER_PROMPT_RUNTIME_API not in dispatcher_source:
                 errors.append("Core-owned UserPromptSubmit Lesson runtime marker is missing")
-    if not core_state_path.is_file() or core_state_path.is_symlink():
-        errors.append("Core-owned global dispatcher state is missing or invalid")
-    else:
+    if source_dispatcher is not None and dispatcher_bytes is not None:
         try:
-            loaded = json.loads(core_state_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            errors.append(f"invalid Core-owned global dispatcher state: {exc}")
+            source_bytes = source_dispatcher.read_bytes()
+        except OSError as exc:
+            errors.append(f"Core product dispatcher source cannot be read: {exc}")
         else:
-            core_state = loaded if isinstance(loaded, dict) else {}
-            if (
-                core_state.get("schema_version") != 2
-                or core_state.get("wrapper_source") != "channel-managed"
-                or core_state.get("source_repository") != "MetaInFLow/EvoZeus"
-                or core_state.get("runtime_api") != CORE_USER_PROMPT_RUNTIME_API
-                or core_state.get("trust_status") != "verified_by_product_manifest"
-            ):
-                errors.append("Core-owned global dispatcher state is not product-managed")
+            if dispatcher_bytes != source_bytes:
+                errors.append("Core-owned global dispatcher does not match the active product component")
+
+    expected_command = f'/usr/bin/python3 "{dispatcher}"'
+    if safe_core_state is not None and (
+        core_state.get("schema_version") != 2
+        or core_state.get("wrapper_source") != "channel-managed"
+        or core_state.get("source_repository") != "MetaInFLow/EvoZeus"
+        or core_state.get("runtime_api") != CORE_USER_PROMPT_RUNTIME_API
+        or core_state.get("trust_status") != "verified_by_product_manifest"
+        or core_state.get("installation_status") != "installed"
+        or core_state.get("active_channel_source") != "active-channel.json"
+        or core_state.get("command") != expected_command
+        or core_state.get("core_version") != core_component.get("version")
+        or core_state.get("installed_version") != coevolve_component.get("version")
+    ):
+        errors.append("Core-owned global dispatcher state is not bound to the active product")
     return not errors, core_state, errors
 
 

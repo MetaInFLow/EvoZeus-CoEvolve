@@ -41,7 +41,8 @@ CoEvolve 只把同一 Core-owned dispatcher 注册到两个事件。Core 的 `Us
 
 ## 4. 固定 Core Runtime 依赖
 
-CoEvolve `contracts/v1/manifest.json` 固定：
+CoEvolve 通过 `contracts/v1/manifest.json` 声明并 hash-bind
+`contracts/v1/user-prompt-lesson-runtime-lifecycle.json`。依赖文件固定：
 
 - dependency repo：`MetaInFLow/EvoZeus`；
 - Unreleased Core PR 与精确 source revision；
@@ -50,9 +51,11 @@ CoEvolve `contracts/v1/manifest.json` 固定：
 
 CoEvolve 安装前必须验证：
 
-1. dispatcher 和 Core state 均为 regular file，且不接受 symlink；
-2. Core state 为 `channel-managed` 且信任来源为产品 manifest；
-3. dispatcher 包含 Core schema 与 `evozeus.user-prompt.lesson-runtime.v1` marker。
+1. dispatcher、Core state、`active-channel.json` 与 `channel-state.json` 均位于 resolved HOME 内；逐层拒绝 symlink；
+2. active channel entry 的产品 manifest digest 有效，Core component root 位于产品 install root 内；
+3. 产品 manifest 的 Core component 明确治理 dispatcher source，已安装 dispatcher 与该 source 字节完全一致；
+4. Core state 的版本、command、runtime API 与 active product components 一致；
+5. dispatcher 包含 Core schema 与 `evozeus.user-prompt.lesson-runtime.v1` marker。
 
 Core runtime 缺失或版本过旧时，CoEvolve lifecycle 安装在任何写入前阻塞。每轮执行期的渠道、attachment、摘要、路径、transport 与隐私校验由 Core 负责并 fail-open。
 
@@ -69,6 +72,8 @@ Core runtime 缺失或版本过旧时，CoEvolve lifecycle 安装在任何写入
 - 仅有旧 `SessionStart` 注册的安装状态为 `upgrade_required`。
 - 刷新 Hook 会改变 trust hash；安装后重新通过 Codex `/hooks` 审核。
 - 卸载只移除 EvoZeus handler 与 CoEvolve lifecycle state，保留第三方 handler、Core dispatcher 和 Core state。
+- contract bundle 从 `v1.0.0` 升为 `v1.1.0`；Core installer 在 `packs/coevolve/v1.1.0` 新建不可变版本目录并切换 `current`，保留历史 `v1.0.0`，禁止同版本原地改写。
+- 旧 CoEvolve dispatcher/state 必须先由 Core 产品渠道迁移为 channel-managed runtime；Core 证据不完整时 Hook refresh 保持零写入并报告 blocked。
 
 ## 7. 完成边界
 

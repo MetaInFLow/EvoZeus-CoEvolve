@@ -57,12 +57,16 @@ from scripts.evozeus_wrapper_lifecycle import (
     wrapper_manifest_status,
 )
 from scripts.evozeus_wrapper_global_hook import (
+    CORE_ACTIVE_CHANNEL,
+    CORE_CHANNEL_STATE,
     CORE_DISPATCHER_SCHEMA,
+    CORE_DISPATCHER_SOURCE,
     CORE_DISPATCHER_STATE,
     CORE_USER_PROMPT_RUNTIME_API,
     GLOBAL_DISPATCHER,
     GLOBAL_DISPATCHER_COMMAND,
     GLOBAL_HOOK_STATE,
+    _product_manifest_digest,
     apply_global_hook_install,
     apply_global_hook_uninstall,
     plan_global_hook_install,
@@ -85,32 +89,96 @@ from scripts.evozeus_wrapper_preflight import (
 
 
 def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
+    home = home.expanduser().resolve()
+    product_home = home / ".evozeus"
+    install_root = product_home / "worktrees/uat/test-product"
+    core_root = install_root / "evozeus"
+    source_dispatcher = core_root / CORE_DISPATCHER_SOURCE
+    source_dispatcher.parent.mkdir(parents=True, exist_ok=True)
     dispatcher = home / GLOBAL_DISPATCHER
     dispatcher.parent.mkdir(parents=True, exist_ok=True)
     if source is None:
-        dispatcher.write_text(
+        source_dispatcher.write_text(
             "#!/usr/bin/env python3\n"
             f'SCHEMA_VERSION = "{CORE_DISPATCHER_SCHEMA}"\n'
             f'USER_PROMPT_RUNTIME_API = "{CORE_USER_PROMPT_RUNTIME_API}"\n',
             encoding="utf-8",
         )
     else:
-        dispatcher.write_text(
+        source_dispatcher.write_text(
             source.read_text(encoding="utf-8")
             + f'\n# {CORE_DISPATCHER_SCHEMA}\n# {CORE_USER_PROMPT_RUNTIME_API}\n',
             encoding="utf-8",
         )
+    dispatcher.write_bytes(source_dispatcher.read_bytes())
     dispatcher.chmod(0o700)
+    manifest = {
+        "schema_version": "evozeus.product-channel.v2",
+        "product_version": "v0.5.0",
+        "channel": "uat",
+        "generated_at": "2026-08-02T00:00:00Z",
+        "components": {
+            "evozeus": {
+                "version": "v0.5.0",
+                "commit": "d54ad32d0cb23043055098f0fe32f5378296209d",
+                "source": {"kind": "git", "ref": "test"},
+                "required_paths": [CORE_DISPATCHER_SOURCE.as_posix()],
+            },
+            "coevolve": {
+                "version": "v0.14.0",
+                "commit": "97cbf7aa00000000000000000000000000000000",
+                "source": {"kind": "git", "ref": "test"},
+                "required_paths": ["scripts/evozeus_wrapper.py"],
+            },
+        },
+        "embedded": {},
+        "compatibility": {
+            "runtime_min_inclusive": "0.2.0",
+            "runtime_max_exclusive": "0.3.0",
+            "coevolve_contract": "v1.1.0",
+        },
+    }
+    (home / CORE_ACTIVE_CHANNEL).write_text(
+        json.dumps(
+            {
+                "schema_version": "evozeus.active-channel.v1",
+                "channel": "uat",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (home / CORE_CHANNEL_STATE).write_text(
+        json.dumps(
+            {
+                "schema_version": "evozeus.channel-state.v1",
+                "channels": {
+                    "stable": None,
+                    "uat": {
+                        "manifest": manifest,
+                        "manifest_digest": _product_manifest_digest(manifest),
+                        "install_root": str(install_root),
+                        "component_roots": {"evozeus": str(core_root)},
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     (home / CORE_DISPATCHER_STATE).write_text(
         json.dumps(
             {
                 "schema_version": 2,
                 "wrapper_source": "channel-managed",
                 "source_repository": "MetaInFLow/EvoZeus",
-                "installed_version": "v0.5.0",
+                "installed_version": "v0.14.0",
                 "core_version": "v0.5.0",
                 "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                 "trust_status": "verified_by_product_manifest",
+                "active_channel_source": "active-channel.json",
+                "command": f'/usr/bin/python3 "{dispatcher}"',
+                "installation_status": "installed",
             }
         )
         + "\n",

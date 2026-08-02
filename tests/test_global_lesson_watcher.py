@@ -10,7 +10,10 @@ import tempfile
 import unittest
 
 from scripts.evozeus_wrapper_global_hook import (
+    CORE_ACTIVE_CHANNEL,
+    CORE_CHANNEL_STATE,
     CORE_DISPATCHER_SCHEMA,
+    CORE_DISPATCHER_SOURCE,
     CORE_DISPATCHER_STATE,
     CORE_USER_PROMPT_RUNTIME_API,
     GLOBAL_DISPATCHER,
@@ -18,6 +21,7 @@ from scripts.evozeus_wrapper_global_hook import (
     GLOBAL_HOOK_STATE,
     apply_global_hook_install,
     apply_global_hook_uninstall,
+    _product_manifest_digest,
     read_global_hook_status,
     record_global_hook_trust,
 )
@@ -35,6 +39,12 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
         source: Path | None = None,
         include_lesson_marker: bool = True,
     ) -> tuple[Path, Path]:
+        home = home.expanduser().resolve()
+        product_home = home / ".evozeus"
+        install_root = product_home / "worktrees/uat/test-product"
+        core_root = install_root / "evozeus"
+        source_dispatcher = core_root / CORE_DISPATCHER_SOURCE
+        source_dispatcher.parent.mkdir(parents=True, exist_ok=True)
         dispatcher = home / GLOBAL_DISPATCHER
         dispatcher.parent.mkdir(parents=True, exist_ok=True)
         if source is None:
@@ -43,15 +53,70 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                 if include_lesson_marker
                 else ""
             )
-            dispatcher.write_text(
+            source_dispatcher.write_text(
                 "#!/usr/bin/env python3\n"
                 f'SCHEMA_VERSION = "{CORE_DISPATCHER_SCHEMA}"\n'
                 f"{marker}",
                 encoding="utf-8",
             )
         else:
-            shutil.copy2(source, dispatcher)
+            shutil.copy2(source, source_dispatcher)
+        shutil.copy2(source_dispatcher, dispatcher)
         dispatcher.chmod(0o700)
+        manifest = {
+            "schema_version": "evozeus.product-channel.v2",
+            "product_version": "v0.5.0",
+            "channel": "uat",
+            "generated_at": "2026-08-02T00:00:00Z",
+            "components": {
+                "evozeus": {
+                    "version": "v0.5.0",
+                    "commit": "d54ad32d0cb23043055098f0fe32f5378296209d",
+                    "source": {"kind": "git", "ref": "test"},
+                    "required_paths": [CORE_DISPATCHER_SOURCE.as_posix()],
+                },
+                "coevolve": {
+                    "version": "v0.14.0",
+                    "commit": "97cbf7aa00000000000000000000000000000000",
+                    "source": {"kind": "git", "ref": "test"},
+                    "required_paths": ["scripts/evozeus_wrapper.py"],
+                },
+            },
+            "embedded": {},
+            "compatibility": {
+                "runtime_min_inclusive": "0.2.0",
+                "runtime_max_exclusive": "0.3.0",
+                "coevolve_contract": "v1.1.0",
+            },
+        }
+        (home / CORE_ACTIVE_CHANNEL).write_text(
+            json.dumps(
+                {
+                    "schema_version": "evozeus.active-channel.v1",
+                    "channel": "uat",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (home / CORE_CHANNEL_STATE).write_text(
+            json.dumps(
+                {
+                    "schema_version": "evozeus.channel-state.v1",
+                    "channels": {
+                        "stable": None,
+                        "uat": {
+                            "manifest": manifest,
+                            "manifest_digest": _product_manifest_digest(manifest),
+                            "install_root": str(install_root),
+                            "component_roots": {"evozeus": str(core_root)},
+                        },
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         core_state = home / CORE_DISPATCHER_STATE
         core_state.write_text(
             json.dumps(
@@ -59,10 +124,13 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                     "schema_version": 2,
                     "wrapper_source": "channel-managed",
                     "source_repository": "MetaInFLow/EvoZeus",
-                    "installed_version": "v0.5.0",
+                    "installed_version": "v0.14.0",
                     "core_version": "v0.5.0",
                     "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                     "trust_status": "verified_by_product_manifest",
+                    "active_channel_source": "active-channel.json",
+                    "command": f'/usr/bin/python3 "{dispatcher}"',
+                    "installation_status": "installed",
                 }
             )
             + "\n",
@@ -95,6 +163,126 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             )
             self.assertFalse((home / ".codex/hooks.json").exists())
             self.assertFalse((home / GLOBAL_HOOK_STATE).exists())
+
+    def test_install_rejects_self_asserted_markers_and_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            dispatcher = home / GLOBAL_DISPATCHER
+            dispatcher.parent.mkdir(parents=True)
+            dispatcher.write_text(
+                "# arbitrary program\n"
+                f"# {CORE_DISPATCHER_SCHEMA}\n"
+                f"# {CORE_USER_PROMPT_RUNTIME_API}\n",
+                encoding="utf-8",
+            )
+            (home / CORE_DISPATCHER_STATE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "wrapper_source": "channel-managed",
+                        "source_repository": "MetaInFLow/EvoZeus",
+                        "installed_version": "v0.14.0",
+                        "core_version": "v0.5.0",
+                        "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
+                        "trust_status": "verified_by_product_manifest",
+                        "active_channel_source": "active-channel.json",
+                        "command": f'/usr/bin/python3 "{dispatcher}"',
+                        "installation_status": "installed",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            report = apply_global_hook_install(home, ROOT, approve=True)
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertTrue(
+                any("active-channel" in error for error in report["errors"])
+            )
+            self.assertFalse((home / ".codex/hooks.json").exists())
+
+    def test_install_rejects_symlinked_core_runtime_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            dispatcher, core_state = self._seed_core_runtime(home)
+            outside_hooks = root / "outside-hooks"
+            outside_hooks.mkdir()
+            shutil.copy2(dispatcher, outside_hooks / dispatcher.name)
+            shutil.copy2(core_state, outside_hooks / core_state.name)
+            shutil.rmtree(dispatcher.parent)
+            dispatcher.parent.symlink_to(outside_hooks, target_is_directory=True)
+
+            report = apply_global_hook_install(home, ROOT, approve=True)
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertTrue(any("symlink" in error for error in report["errors"]))
+            self.assertFalse((home / ".codex/hooks.json").exists())
+
+    def test_install_binds_dispatcher_bytes_to_active_core_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            dispatcher, _ = self._seed_core_runtime(home)
+            dispatcher.write_text(
+                "# different arbitrary program\n"
+                f"# {CORE_DISPATCHER_SCHEMA}\n"
+                f"# {CORE_USER_PROMPT_RUNTIME_API}\n",
+                encoding="utf-8",
+            )
+
+            report = apply_global_hook_install(home, ROOT, approve=True)
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertIn(
+                "Core-owned global dispatcher does not match the active product component",
+                report["errors"],
+            )
+
+    def test_install_rejects_active_core_root_outside_product_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            self._seed_core_runtime(home)
+            channel_state_path = home / CORE_CHANNEL_STATE
+            channel_state = json.loads(channel_state_path.read_text(encoding="utf-8"))
+            entry = channel_state["channels"]["uat"]
+            outside_install = root / "outside-product"
+            outside_core = outside_install / "evozeus"
+            outside_core.mkdir(parents=True)
+            source = Path(entry["component_roots"]["evozeus"]) / CORE_DISPATCHER_SOURCE
+            destination = outside_core / CORE_DISPATCHER_SOURCE
+            destination.parent.mkdir(parents=True)
+            shutil.copy2(source, destination)
+            entry["install_root"] = str(outside_install)
+            entry["component_roots"]["evozeus"] = str(outside_core)
+            channel_state_path.write_text(json.dumps(channel_state) + "\n", encoding="utf-8")
+
+            report = apply_global_hook_install(home, ROOT, approve=True)
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertTrue(
+                any("outside the product home" in error for error in report["errors"])
+            )
+
+    def test_install_reports_incomplete_product_evidence_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            self._seed_core_runtime(home)
+            channel_state_path = home / CORE_CHANNEL_STATE
+            channel_state = json.loads(channel_state_path.read_text(encoding="utf-8"))
+            channel_state["channels"]["uat"].pop("manifest")
+            channel_state_path.write_text(json.dumps(channel_state) + "\n", encoding="utf-8")
+
+            report = apply_global_hook_install(home, ROOT, approve=True)
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertIn("Core active product entry has no manifest", report["errors"])
 
     def test_install_owns_registrations_and_preserves_core_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +423,13 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             hooks["hooks"]["SessionStart"].append(
                 {"hooks": [{"type": "command", "command": "python3 keep.py"}]}
             )
+            hooks["hooks"]["UserPromptSubmit"].append(
+                {
+                    "hooks": [
+                        {"type": "command", "command": "python3 keep-prompt.py"}
+                    ]
+                }
+            )
             hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
             dispatcher_before = dispatcher.read_bytes()
             core_state_before = core_state.read_bytes()
@@ -246,6 +441,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             self.assertEqual(report["status"], "uninstalled")
             self.assertNotIn(GLOBAL_DISPATCHER_COMMAND, serialized)
             self.assertIn("python3 keep.py", serialized)
+            self.assertIn("python3 keep-prompt.py", serialized)
             self.assertEqual(dispatcher.read_bytes(), dispatcher_before)
             self.assertEqual(core_state.read_bytes(), core_state_before)
             self.assertFalse((home / GLOBAL_HOOK_STATE).exists())
