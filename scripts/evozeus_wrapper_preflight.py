@@ -2394,11 +2394,19 @@ def check_branch_pr_metadata(
         fail("PR verified actor must use a GitHub login")
     def branch_token(value: str) -> str:
         return str(value).lower().replace("-", "_")
-    branch_match = re.fullmatch(
-        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(branch_token(verified_actor))}-{re.escape(branch_token(component))}-{re.escape(branch_token(summary))}",
-        values["Target branch"],
+    encoded_branch_pattern = (
+        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-"
+        rf"{re.escape(branch_token(verified_actor))}-"
+        rf"{re.escape(branch_token(component))}-{re.escape(branch_token(summary))}"
     )
-    if not branch_match:
+    legacy_branch_pattern = (
+        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-"
+        rf"{re.escape(str(verified_actor).lower())}-"
+        rf"{re.escape(component)}-{re.escape(summary)}"
+    )
+    branch_match = re.fullmatch(encoded_branch_pattern, values["Target branch"])
+    legacy_branch_match = re.fullmatch(legacy_branch_pattern, values["Target branch"])
+    if not branch_match and not legacy_branch_match:
         fail("PR target branch does not match the contributor branch namespace")
     issue_match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)", values["Issue"])
     if not issue_match or issue_match.group(1).lower() != repo.lower():

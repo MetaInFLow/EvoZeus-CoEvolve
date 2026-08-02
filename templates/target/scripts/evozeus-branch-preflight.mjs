@@ -206,7 +206,10 @@ export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().t
   const purpose = resumePlan?.purpose;
   const actor = String(options.actor ?? "").toLowerCase();
   const prefix = `codex/${options.type}/`;
-  const suffix = `-${encodeBranchToken(actor)}-${encodeBranchToken(options.component)}-${encodeBranchToken(options.summary)}`;
+  const suffixes = [
+    `-${encodeBranchToken(actor)}-${encodeBranchToken(options.component)}-${encodeBranchToken(options.summary)}`,
+    `-${actor}-${options.component}-${options.summary}`,
+  ];
   if (
     typeof target === "string"
     && typeof resumePlan?.actor?.id === "string"
@@ -215,10 +218,12 @@ export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().t
     && purpose?.component === options.component
     && purpose?.summary === options.summary
     && target.startsWith(prefix)
-    && target.endsWith(suffix)
   ) {
-    const date = target.slice(prefix.length, target.length - suffix.length);
-    if (/^20[0-9]{6}$/.test(date)) return date;
+    for (const suffix of suffixes) {
+      if (!target.endsWith(suffix)) continue;
+      const date = target.slice(prefix.length, target.length - suffix.length);
+      if (/^20[0-9]{6}$/.test(date)) return date;
+    }
   }
   return fallbackDate;
 }
@@ -227,8 +232,23 @@ function encodeBranchToken(value) {
   return String(value).toLowerCase().replaceAll("-", "_");
 }
 
+function legacyTargetBranchFor(options, actor) {
+  return `codex/${options.type}/${options.date}-${String(actor).toLowerCase()}-${options.component}-${options.summary}`;
+}
+
 export function targetBranchFor(options, actor) {
   return `codex/${options.type}/${options.date}-${encodeBranchToken(actor)}-${encodeBranchToken(options.component)}-${encodeBranchToken(options.summary)}`;
+}
+
+function targetBranchForResume(options, actor, resumePlan) {
+  const legacyTarget = legacyTargetBranchFor(options, actor);
+  if (
+    resumePlan?.contract?.version === "1.3.0"
+    && resumePlan?.branch?.target === legacyTarget
+  ) {
+    return legacyTarget;
+  }
+  return targetBranchFor(options, actor);
 }
 
 function readJson(path) {
@@ -603,7 +623,7 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       }
     }
   }
-  const branchName = targetBranchFor(options, resolvedActor);
+  const branchName = targetBranchForResume(options, resolvedActor, resumePlan);
   const branchCheck = git(facts.root, ["check-ref-format", "--branch", branchName]);
   if (branchCheck.status !== 0) addBlocker(blockers, "invalid_branch", "generated branch fails git check-ref-format");
   const targetRef = `refs/heads/${branchName}`;
@@ -927,7 +947,7 @@ function main() {
     const provisionalRepository = provisionalPermission === "fork"
       ? `${provisionalActor}/${options.repo.split("/")[1]}`
       : options.repo;
-    const provisionalBranch = targetBranchFor(options, provisionalActor);
+    const provisionalBranch = targetBranchForResume(options, provisionalActor, resumePlan);
     const facts = collectGitFacts(
       resolve(options.repo_path),
       options.base,
