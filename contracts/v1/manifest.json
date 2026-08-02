@@ -12,7 +12,7 @@
     {
       "component_id": "evozeus_user_prompt_lesson_runtime",
       "repository": "MetaInFLow/EvoZeus",
-      "source_revision": "a68f650f96b62634f3ccaad45d843f03da21d4d5",
+      "source_revision": "d54ad32d0cb23043055098f0fe32f5378296209d",
       "availability": "unreleased",
       "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
       "api": "evozeus.user-prompt.lesson-runtime.v1",

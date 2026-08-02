@@ -98,7 +98,7 @@ def _core_runtime_status(paths: dict[str, Path]) -> tuple[bool, dict[str, Any], 
     else:
         try:
             source = dispatcher.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             errors.append(f"Core-owned global dispatcher cannot be read: {exc}")
         else:
             if CORE_DISPATCHER_SCHEMA not in source:
@@ -110,7 +110,7 @@ def _core_runtime_status(paths: dict[str, Path]) -> tuple[bool, dict[str, Any], 
     else:
         try:
             loaded = json.loads(core_state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             errors.append(f"invalid Core-owned global dispatcher state: {exc}")
         else:
             core_state = loaded if isinstance(loaded, dict) else {}

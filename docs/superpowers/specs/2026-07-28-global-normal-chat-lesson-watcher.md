@@ -1,6 +1,6 @@
 # EvoZeus 普通 Chat Lesson 自动捕捉
 
-状态：对内-已通过，等待跨 Repo 集成与产品渠道 UAT
+状态：Partial（CoEvolve lifecycle 已实现；Session Signal/Core runtime 集成与产品渠道 UAT 待完成）
 Related issue: https://github.com/MetaInFLow/EvoZeus-CoEvolve/issues/29
 Companion PR: https://github.com/MetaInFLow/EvoZeus-session-signal-skill/pull/9
 Core runtime PR: https://github.com/MetaInFLow/EvoZeus/pull/50
@@ -71,6 +71,13 @@ Core runtime 缺失或版本过旧时，CoEvolve lifecycle 安装在任何写入
 - 卸载只移除 EvoZeus handler 与 CoEvolve lifecycle state，保留第三方 handler、Core dispatcher 和 Core state。
 
 ## 7. 完成边界
+
+当前能力状态分层如下：
+
+- CoEvolve lifecycle：`Implemented`，本 PR 的 Hook 注册、刷新、卸载与 fail-open 生命周期已实现并通过回归。
+- Session Signal companion：`Partial`，依赖 PR #9 合入并完成真实 fresh-chat UAT。
+- Core runtime：`Partial`，依赖 PR #50 合入并由产品渠道发布固定组件。
+- 产品渠道内嵌与完整 UAT：`Planned`，尚未执行发布或真实用户验证。
 
 本 PR 只 `Addresses #29`。Issue 保持打开，直到：
 
