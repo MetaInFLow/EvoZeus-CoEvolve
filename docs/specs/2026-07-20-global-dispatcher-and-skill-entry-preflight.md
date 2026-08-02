@@ -6,7 +6,7 @@
 - 当前缺陷：target repo 内的 `.codex/hooks.json` 只在 canonical repo 作为活动项目时生效，却被 manifest 描述成已覆盖任意 consumer workspace 的 Skill 调用。
 - 目标：准确表达每种检查能力的作用域，并提供当前 Codex 能支持的最强组合方案。
 
-2026-07-28 补充：Issue #29 在 user-level command 上增加 `UserPromptSubmit` Lesson watcher。CoEvolve 负责注册、目标 inventory、活动产品渠道组件发现与 fail-open transport；Session Signal companion 负责普通 Chat 候选判断、目标选择和模型指引。该能力仍不承担 exact Skill invocation enforcement；详细合同见 [`2026-07-28-global-normal-chat-lesson-watcher.md`](../superpowers/specs/2026-07-28-global-normal-chat-lesson-watcher.md)。
+2026-07-28 补充：Issue #29 在 Core-owned user-level command 上增加 `UserPromptSubmit` Lesson runtime。CoEvolve 负责 Hook 注册、刷新、卸载与 trust lifecycle；Core 负责目标 inventory 消费、活动产品渠道组件发现与 fail-open transport；Session Signal 负责普通 Chat 候选判断、目标选择和模型指引。该能力仍不承担 exact Skill invocation enforcement；详细合同见 [`2026-07-28-global-normal-chat-lesson-watcher.md`](../superpowers/specs/2026-07-28-global-normal-chat-lesson-watcher.md)。
 
 ## 平台事实
 
@@ -15,14 +15,14 @@
 | 方案 | 原生强制 | 精确绑定某个 Skill | 实际时机 |
 |---|---|---|---|
 | 全局 `SessionStart` dispatcher | 是 | 否 | 每个任务启动时检查全部 wrapped Skills |
-| 全局 `UserPromptSubmit` Lesson watcher | 是（逐轮执行） | 否 | Skill 选择前把当前轮次转发给已验证 Session Signal companion；fail-open、零持久化 |
+| 全局 `UserPromptSubmit` Lesson watcher | 是（逐轮执行） | 否 | Skill 选择前进入 Core-owned runtime；Core 调用已验证 Session Signal 方法，fail-open、零持久化 |
 | `SKILL.md` 入口 preflight | 否 | 基本是 | Agent 选中 Skill 后按指令检查 |
 | MCP/tool 网关 | 可强制 | 仅限工具化路径 | 具体工具调用前 |
 | 未来 `SkillInvoke` 事件 | 是 | 是 | Skill 被选中时 |
 
 补充边界：
 
-- `UserPromptSubmit` 发生在 Skill 选择前，且该事件不能依靠 matcher 精确绑定 Skill。因此 CoEvolve 只提供注册目标 inventory 与可信 companion transport，方法判断归 Session Signal，不作为 exact Skill invocation enforcement。
+- `UserPromptSubmit` 发生在 Skill 选择前，且该事件不能依靠 matcher 精确绑定 Skill。因此 CoEvolve 只提供 Hook lifecycle，Core 提供目标 inventory 消费与可信 transport，方法判断归 Session Signal，不作为 exact Skill invocation enforcement。
 - MCP 不必取消自然语言入口，但只有统一进入 MCP/tool 的关键执行路径才能被 `PreToolUse` 强制拦截。纯分析型 Skill 不适合强制工具化。
 - Plugin 可以提供稳定的 hook 分发路径，但仍受现有生命周期事件限制，不等于拥有 `SkillInvoke`。
 - target repo 内的 project hook 对 canonical repo 维护仍然有价值，但不覆盖 consumer workspace 中的 installed-Skill 调用。

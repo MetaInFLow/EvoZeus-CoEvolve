@@ -9,7 +9,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Added an admin-gated Harness `upgrade-all --publish` flow that validates live GitHub `ADMIN` permission per registered repo, migrates eligible targets in isolated worktrees, pushes one upgrade branch per repo, and creates or reuses Pull Requests.
 - Added local batch run and append-only event ledgers under `~/.evozeus/skills/` without storing raw sessions or target business content.
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
-- Added user-level `UserPromptSubmit` registration that delegates normal Chat Lesson candidate evaluation to a fixed Session Signal component; detection remains read-only and fail-open.
+- Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh and uninstall lifecycle.
 - Added a target-local Contributor Branch Gate backed by a hash-bound EvoZeus Core v1 contract/planner snapshot, read-only live-evidence consumer, private resume ledger, and public-safe PR metadata.
 
 ### Changed
@@ -23,7 +23,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Fixed
 
 - Converted malformed non-list `SessionStart` and `UserPromptSubmit` event values into read-only global Hook status errors instead of raising during diagnostics or `upgrade-all`.
-- Kept canonical project inventory under `~/.evozeus/.projects` when `EVOZEUS_HOME` points component discovery at a custom product directory.
+- Kept canonical project pointers under `~/.evozeus/.projects`; the Core runtime consumes that fixed registry independently of a custom product home.
+- Preserved the Core-owned dispatcher and product state across CoEvolve install, refresh, trust updates and uninstall.
 
 ### Security
 
@@ -41,12 +42,12 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Verification
 
 - Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
-- Full regression suite passes with `269 passed` and `11 subtests passed`, including the explicit Session Signal companion smoke.
+- Full regression suite and explicit Core dispatcher/Session Signal smoke pass on the final stacked head; the exact count is recorded in the PR verification section after integration.
 - Contributor branch tests cover clean new/resume, dirty tree, wrong base, collision, fork-only, no-PR local, missing/partial GitHub evidence, snapshot integrity, private ledger binding, planner timeout, exit/blocker consistency, and stderr/path redaction.
 - A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
 - Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
 - Legacy status, self-evolution, wrapper, and migration-note removal now stops at a type-specific terminal signature. Missing terminals block before writes; following business prose and H3-only sections remain byte-preserved even without an H1/H2 Markdown boundary.
-- UserPromptSubmit integration tests cover verified active-channel discovery, `v0.1.0`, missing/damaged/symlinked components, subprocess timeout, oversized target inventory, neutral/ambiguous turns and zero-persistence execution against the real companion contract.
+- UserPromptSubmit lifecycle tests cover Core-owned runtime markers, dual-event idempotency, third-party Hook preservation, verified active-channel discovery, missing/damaged/symlinked components, subprocess timeout, oversized target inventory, neutral/ambiguous turns, zero-persistence execution, and real companion smoke.
 - Administrator publication tests cover declared legacy source deletion, credential redaction, repeated deterministic branch reuse after an earlier PR is no longer open, and real publisher output accepted by the trusted-base official-upgrade gate.
 
 ## [v0.14.0] - 2026-07-30

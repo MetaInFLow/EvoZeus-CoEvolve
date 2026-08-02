@@ -200,7 +200,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - 目标 Harness 必须安装并校验 contributor branch consumer、Core contract/planner snapshot 与 provenance；manifest/ledger 不得提供权限结论，Core live evidence 保持唯一权限来源。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
-- `global_prompt_lesson_watcher` 只负责 `UserPromptSubmit` 注册、registered-target inventory、活动产品渠道组件发现与 fail-open subprocess transport。Session Signal companion 独占候选判断、目标选择和 model-only guidance；`contracts/v1/manifest.json` 以 `availability: unreleased` 固定尚未发布的 `v0.1.1` component manifest、API、entrypoint 与 SHA-256。产品渠道发布后才更新 availability。
+- `global_prompt_lesson_watcher` 由 CoEvolve 负责 `UserPromptSubmit` 注册、刷新、卸载与 trust lifecycle。EvoZeus Core 独占 registered-target inventory 消费、活动产品渠道组件发现、attachment/checksum 与 fail-open subprocess transport；Session Signal 独占候选判断、目标选择和 model-only guidance。`contracts/v1/manifest.json` 以 `availability: unreleased` 固定 Core runtime PR、精确 revision、API、dispatcher 路径与 owner。
 
 ## Case: GitHub-backed Skill already exists
 

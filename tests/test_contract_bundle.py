@@ -1,5 +1,4 @@
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 
@@ -45,22 +44,22 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
         assert entry["sha256"] == sha256_file(BUNDLE / entry["path"])
 
 
-def test_contract_manifest_fixes_external_session_signal_attachment() -> None:
+def test_contract_manifest_depends_on_core_owned_user_prompt_runtime() -> None:
     manifest = json.loads((BUNDLE / "manifest.json").read_text(encoding="utf-8"))
-    dispatcher_path = ROOT / "templates/global/evozeus_wrapper_dispatcher.py"
-    spec = importlib.util.spec_from_file_location("contract_dispatcher", dispatcher_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
 
     assert manifest["source_revision"] == "v0.14.0"
     assert manifest["external_component_dependencies"] == [
-        module.SESSION_SIGNAL_ATTACHMENT
+        {
+            "component_id": "evozeus_user_prompt_lesson_runtime",
+            "repository": "MetaInFLow/EvoZeus",
+            "source_revision": "a68f650f96b62634f3ccaad45d843f03da21d4d5",
+            "availability": "unreleased",
+            "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
+            "api": "evozeus.user-prompt.lesson-runtime.v1",
+            "dispatcher": ".evozeus/hooks/evozeus_wrapper_dispatcher.py",
+            "owner": "evozeus-core",
+        }
     ]
-    assert module.SESSION_SIGNAL_ATTACHMENT["availability"] == "unreleased"
-    assert module.SESSION_SIGNAL_ATTACHMENT["component_manifest_sha256"] == (
-        "d9a80f46875cbd290d2686387aa5862aa21c86a0fbbcccae8940ef9110169682"
-    )
 
 
 def test_external_sidecar_inventory_has_no_target_writes() -> None:

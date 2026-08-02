@@ -15,7 +15,7 @@
 - 用户明确确认后运行 `hook global install --approve --json`，结构化合并 `~/.codex/hooks.json`。
 - 安装后通过 `/hooks` 审核，再用 `hook global trust --status trusted --approve --json` 记录审核结果。
 - global dispatcher 在 `SessionStart` 聚合检查全部 registered wrapped Skills，不精确绑定随后被选中的某个 Skill。
-- 同一 user-level command 在 `UserPromptSubmit` 把普通 Chat 用户轮次和注册目标清单交给活动产品渠道内已验证的 Session Signal companion，无需先 `@Skill`；它不持久化候选，也不精确证明目标 Skill。
+- 同一 Core-owned user-level command 在 `UserPromptSubmit` 执行普通 Chat Lesson runtime；CoEvolve 只管理注册生命周期，Core 读取注册目标并执行已验证的 Session Signal 方法。该能力不持久化候选，也不精确证明目标 Skill。
 
 ## 调用
 

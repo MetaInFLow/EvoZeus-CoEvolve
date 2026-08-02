@@ -42,7 +42,7 @@ The identity line starts with Unicode `🧙🏻‍♂️` and includes the click
 
 - `repo_maintenance_hook`: project-local `SessionStart` coverage for canonical repository maintenance only.
 - `global_session_dispatcher`: user-level `SessionStart` coverage that checks all registered wrapped Skills before a task starts.
-- `global_prompt_lesson_watcher`: user-level `UserPromptSubmit` coverage that supplies registered-target inventory and delegates to the digest-bound active-channel Session Signal component; it is advisory and never records automatically.
+- `global_prompt_lesson_watcher`: user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; Core consumes registered targets and invokes the digest-bound Session Signal method. It is advisory and never records automatically.
 - `skill_entry_preflight`: the instruction surface checks the selected Skill before its business flow; this is prompt-compliance fallback.
 - `bootstrap_skill`: plugin lifecycle can load a control Skill, but it does not add a Skill-invocation event.
 - `manual_only`: wrapper commands must be run manually.
@@ -77,7 +77,7 @@ The manifest records `dashboard.deployment_mode=opt_in_github_pages`. Push and w
    - use GitHub user/org/public search only as fallback when wrapper state is absent.
 3. Before running the Skill, check whether GitHub has a newer release:
    `python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py version --repo {{REPO_NAME}}`
-4. A trusted global prompt watcher may receive model-only guidance from the verified Session Signal component before this Skill is explicitly invoked. Finish the business correction, form a concise redacted Lesson, and show only the generated `EvoZeus · Lesson` Notice in `待记录` state. Run feedback audit for deterministic Issue preparation; its JSON stays internal. Do not create an Issue or start a fix without the corresponding authorization.
+4. A trusted global prompt watcher may receive model-only guidance through the Core-owned runtime before this Skill is explicitly invoked. Finish the business correction, form a concise redacted Lesson, and show only the generated `EvoZeus · Lesson` Notice in `待记录` state. Run feedback audit for deterministic Issue preparation; its JSON stays internal. Do not create an Issue or start a fix without the corresponding authorization.
 5. Create a Skill Feedback Issue only after explicit submission confirmation.
 6. Wait for a separate explicit fix authorization before creating a branch or design doc.
 7. Run the read-only contributor branch plan and show repo, base ref/commit, Issue, target branch, verified actor, resolved permission/evidence, isolated worktree, next action, and blockers.
