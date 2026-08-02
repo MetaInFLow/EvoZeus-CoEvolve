@@ -25,9 +25,9 @@ v1 门禁把这组事实压缩成一个可展示、可恢复、可阻断的 bran
 
 ## 权威来源与供应链
 
-权威文件来自 EvoZeus Core revision `1ddcf1e58b3ada61495558c0b31984d8e9992199`：
+权威文件来自 EvoZeus Core revision `6f3efecc022b43a2724bc67becb67332ef746bc2`：
 
-- contract：`evozeus.contributor_branch` `1.3.0`
+- contract：`evozeus.contributor_branch` `1.3.1`
 - planner：`scripts/evozeus-branch-preflight.mjs`
 - canonical contract `$id`：`https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json`
 

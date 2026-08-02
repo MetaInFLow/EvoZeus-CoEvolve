@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = ROOT / "templates" / "target"
 REPO = "MetaInFLow/example-skill"
 FIXED_DATE = "20260731"
-TARGET_BRANCH = "codex/bug/20260731-alice-skill-fix-feedback-flow"
+TARGET_BRANCH = "codex/bug/20260731-alice-skill-fix_feedback_flow"
 
 
 def run(args: list[str], cwd: Path | None = None) -> str:

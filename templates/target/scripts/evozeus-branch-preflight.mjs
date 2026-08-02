@@ -206,7 +206,7 @@ export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().t
   const purpose = resumePlan?.purpose;
   const actor = String(options.actor ?? "").toLowerCase();
   const prefix = `codex/${options.type}/`;
-  const suffix = `-${actor}-${options.component}-${options.summary}`;
+  const suffix = `-${encodeBranchToken(actor)}-${encodeBranchToken(options.component)}-${encodeBranchToken(options.summary)}`;
   if (
     typeof target === "string"
     && typeof resumePlan?.actor?.id === "string"
@@ -223,8 +223,12 @@ export function resolvePlanDate(options, resumePlan, fallbackDate = new Date().t
   return fallbackDate;
 }
 
+function encodeBranchToken(value) {
+  return String(value).toLowerCase().replaceAll("-", "_");
+}
+
 export function targetBranchFor(options, actor) {
-  return `codex/${options.type}/${options.date}-${String(actor).toLowerCase()}-${options.component}-${options.summary}`;
+  return `codex/${options.type}/${options.date}-${encodeBranchToken(actor)}-${encodeBranchToken(options.component)}-${encodeBranchToken(options.summary)}`;
 }
 
 function readJson(path) {
