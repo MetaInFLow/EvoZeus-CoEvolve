@@ -32,6 +32,7 @@ evozeus harness upgrade-all --publish
 7. 所有发布都走独立分支和 PR；禁止直接写默认分支。
 8. UAT Harness 不得向目标 repo 默认分支发布；批量发布只消费权威 Stable CoEvolve Release。
 9. `wrapper-root` 必须是 clean 的独立 Git checkout，origin 精确指向官方 CoEvolve repo，本地 tag、远端 tag 与 HEAD 必须解析到同一 commit；contract manifest 与其声明文件必须通过摘要核验。
+10. 目标 canonical checkout 的 origin fetch URL 与 push URL 都必须精确指向目标 GitHub repo，禁止用独立 pushurl 绕过目标身份检查。
 
 ## 执行流程
 
@@ -43,8 +44,9 @@ Registry discovery
   -> isolated worktree from origin/default-branch
   -> managed Harness migration
   -> structure/preflight + git diff check
-  -> commit + push branch
-  -> create or reuse one PR
+  -> commit + owner-only prepared receipt
+  -> push new branch + live head verification + pushed receipt
+  -> create PR + live PR read-back
   -> append local run and event ledger
 ```
 
@@ -52,17 +54,21 @@ Registry discovery
 
 - worktree 根目录：`~/.evozeus/worktrees/harness-upgrade/<run-id>/<owner>--<repo>`。
 - 分支：`evozeus/harness-<from>-to-<to>`。
-- 相同 head branch 已存在开放 PR 时，只有 live head/base repo、ref、commit，以及 PR marker 中的 official source commit、contract manifest SHA-256 和 plan identity 全部匹配才复用；证据缺失或冲突立即阻断。
+- Recovery Receipt：`~/.evozeus/skills/harness-upgrade-receipts/<owner>/<repo>/<branch-sha256>.json`；目录固定 `0700`，文件固定 `0600`，禁止 symlink 与路径逃逸。
+- Receipt 在 push 前以 `prepared` 原子落盘，绑定 repo、verified actor、target base/head、official source tag/commit、manifest digest、changed-files digest 和 plan identity；远端 head 精确匹配后转为 `pushed`，PR read-back 通过后转为 `pr_created`。
+- 相同 head branch 或开放 PR 只在本地 Receipt、live head/base repo/ref/commit、PR marker 全部一致时复用。PR marker 是公开审计信息，不能单独证明发布来源。
+- 已有远端 branch 或 PR 缺少匹配 Receipt 时返回 `manual_review_required`，不迁移、不 force push、不创建或复用 PR。
 - canonical repo 工作区保持不变。
 - 单 repo 失败不影响已创建的其他 PR；批次状态为 `partial`。
 - push 前失败保留 worktree 和恢复路径；push 已成功时以确定性 branch/commit 与账本作为恢复点并清理 worktree，避免重试时占用同一分支；成功 worktree清理。
-- push 成功但 PR 创建失败时，Run Ledger 和 Event Ledger 记录脱敏的 branch、commit、base、source revision、plan identity 与恢复动作；重试使用同一确定性分支，并在精确 live PR 已存在时幂等复用。
+- push 成功但 PR 创建失败时，Receipt 是立即可用的本地恢复事实源；Run Ledger 和 Event Ledger 记录 branch、commit、base、source revision、manifest/changed-files digest、plan identity 与恢复动作。重试只消费 Receipt 精确绑定的同一 commit。
 
 ## 审计
 
 - 批次报告：`~/.evozeus/skills/runs/<run-id>.json`。
 - 事件账本：`~/.evozeus/skills/events.jsonl`。
-- 只记录 repo、版本、branch/commit、PR、target base、official source revision、manifest digest、plan identity、恢复动作、状态和时间，不记录 raw session、客户资料、local path 或 secret。
+- 只记录 repo、版本、branch/commit、PR、target base、official source revision、manifest/changed-files digest、plan identity、恢复动作、稳定 error code、白名单错误摘要、状态和时间。
+- raw exception、command argv、absolute local path、Authorization/Bearer、token/query secret 不进入 Run Ledger 或 Event Ledger。
 
 ## 验收标准
 
@@ -73,3 +79,5 @@ Registry discovery
 5. Managed Harness升级保留Skill业务内容。
 6. 相同升级重复执行不会创建重复 PR。
 7. 本地Run Ledger完整记录成功、跳过和失败。
+8. 公开 marker 自行构造、同名远端 branch、PR body 篡改、PR 创建后 head/base 漂移均无法绕过 Receipt 与 live read-back。
+9. push 后进程中断时，`prepared` Receipt 与精确 remote head 可恢复为 `pushed`；任何不一致进入人工审查。

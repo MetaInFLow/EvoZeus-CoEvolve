@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -28,14 +29,32 @@ CommandRunner = Callable[[list[str], Path | None], dict[str, Any]]
 UPGRADE_PLAN_SCHEMA = "evozeus.coevolve.harness-upgrade-plan.v1"
 UPGRADE_PLAN_MARKER = "evozeus-harness-upgrade-plan:v1"
 UPGRADE_SOURCE_REPOSITORY = "MetaInFLow/EvoZeus-CoEvolve"
+UPGRADE_RECEIPT_SCHEMA = "evozeus.coevolve.harness-upgrade-recovery-receipt.v1"
+UPGRADE_RECEIPT_STATES = {"prepared", "pushed", "pr_created"}
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+SAFE_ERROR_SUMMARIES = {
+    "command_failed": "A required local or GitHub command failed.",
+    "existing_pr_untrusted": "An existing Harness upgrade pull request requires manual review.",
+    "existing_remote_untrusted": "An existing Harness upgrade branch requires manual review.",
+    "github_admin_required": "Live GitHub ADMIN verification did not pass.",
+    "github_context_changed": "The live GitHub actor or default branch changed during publication.",
+    "pr_creation_failed": "The upgrade branch was pushed, but the pull request could not be verified.",
+    "pr_readback_failed": "The created pull request could not be verified from live GitHub state.",
+    "publisher_reported_failure": "The target publisher reported a failure.",
+    "publish_failed": "Harness upgrade publication failed.",
+    "receipt_invalid": "The local Harness upgrade recovery receipt is invalid or unsafe.",
+    "source_verification_failed": "The official Harness source could not be verified.",
+}
 
 
-def _redact_url_credentials(value: str) -> str:
-    return re.sub(
-        r"(?i)((?:https?|ssh)://)[^\s/]*@",
-        r"\1",
-        value,
-    )
+class HarnessPublishError(RuntimeError):
+    def __init__(self, code: str, summary: str | None = None) -> None:
+        if code not in SAFE_ERROR_SUMMARIES:
+            code = "publish_failed"
+        self.code = code
+        self.summary = summary or SAFE_ERROR_SUMMARIES[code]
+        super().__init__(self.summary)
 
 
 def run_command(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
@@ -63,8 +82,7 @@ def _call_runner(runner, args: list[str], cwd: Path | None = None) -> dict[str, 
 def _checked(runner, args: list[str], cwd: Path | None = None) -> str:
     result = _call_runner(runner, args, cwd)
     if result.get("returncode") != 0:
-        detail = (result.get("stderr") or result.get("stdout") or "command failed").strip()
-        raise RuntimeError(f"{' '.join(args)}: {_redact_url_credentials(detail)}")
+        raise HarnessPublishError("command_failed")
     return str(result.get("stdout") or "").strip()
 
 
@@ -84,6 +102,22 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _error_record(value: Any, fallback_code: str = "publish_failed") -> dict[str, str]:
+    code = value.code if isinstance(value, HarnessPublishError) else fallback_code
+    if code not in SAFE_ERROR_SUMMARIES:
+        code = fallback_code if fallback_code in SAFE_ERROR_SUMMARIES else "publish_failed"
+    return {
+        "error_code": code,
+        "error_summary": SAFE_ERROR_SUMMARIES[code],
+    }
+
+
+def _validated_run_id(run_id: str) -> str:
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        raise HarnessPublishError("publish_failed")
+    return run_id
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -97,6 +131,191 @@ def _split_repo(repo: str) -> tuple[str, str]:
     if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
         raise ValueError(f"invalid GitHub repository name: {repo}")
     return parts[0], parts[1]
+
+
+def _normalized_changed_files(changed_files: Any) -> list[str]:
+    if not isinstance(changed_files, (list, set, tuple)):
+        raise HarnessPublishError("receipt_invalid")
+    normalized: set[str] = set()
+    for item in changed_files:
+        if (
+            not isinstance(item, str)
+            or not item
+            or any(character in item for character in ("\x00", "\r", "\n"))
+        ):
+            raise HarnessPublishError("receipt_invalid")
+        path = Path(item)
+        if path.is_absolute() or ".." in path.parts:
+            raise HarnessPublishError("receipt_invalid")
+        normalized.add(path.as_posix())
+    return sorted(normalized)
+
+
+def _changed_files_sha256(changed_files: Any) -> str:
+    normalized = _normalized_changed_files(changed_files)
+    return hashlib.sha256(
+        json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _receipt_path(home: Path, repo: str, branch: str) -> Path:
+    owner, name = _split_repo(repo)
+    branch_key = hashlib.sha256(branch.encode("utf-8")).hexdigest()
+    home_root = home.expanduser().resolve()
+    return (
+        home_root
+        / ".evozeus"
+        / "skills"
+        / "harness-upgrade-receipts"
+        / owner
+        / name
+        / f"{branch_key}.json"
+    )
+
+
+def _receipt_directory_chain(home: Path, repo: str, branch: str) -> tuple[Path, list[Path]]:
+    path = _receipt_path(home, repo, branch)
+    home_root = home.expanduser().resolve()
+    relative = path.parent.relative_to(home_root)
+    cursor = home_root
+    chain: list[Path] = []
+    for part in relative.parts:
+        cursor /= part
+        chain.append(cursor)
+    return path, chain
+
+
+def _read_upgrade_receipt(home: Path, repo: str, branch: str) -> dict[str, Any] | None:
+    path, chain = _receipt_directory_chain(home, repo, branch)
+    private_root_seen = False
+    for directory in chain:
+        if not directory.exists() and not directory.is_symlink():
+            return None
+        if directory.is_symlink() or not directory.is_dir():
+            raise HarnessPublishError("receipt_invalid")
+        if directory.name == "harness-upgrade-receipts":
+            private_root_seen = True
+        if private_root_seen and stat.S_IMODE(directory.stat().st_mode) != 0o700:
+            raise HarnessPublishError("receipt_invalid")
+    if not path.exists() and not path.is_symlink():
+        return None
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or stat.S_IMODE(path.stat().st_mode) != 0o600
+    ):
+        raise HarnessPublishError("receipt_invalid")
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HarnessPublishError("receipt_invalid") from exc
+    if not isinstance(receipt, dict):
+        raise HarnessPublishError("receipt_invalid")
+    return receipt
+
+
+def _ensure_private_receipt_parent(home: Path, repo: str, branch: str) -> Path:
+    path, chain = _receipt_directory_chain(home, repo, branch)
+    private_root_seen = False
+    for directory in chain:
+        if directory.exists() or directory.is_symlink():
+            if directory.is_symlink() or not directory.is_dir():
+                raise HarnessPublishError("receipt_invalid")
+        else:
+            directory.mkdir(mode=0o700)
+        if directory.name == "harness-upgrade-receipts":
+            private_root_seen = True
+        if private_root_seen:
+            os.chmod(directory, 0o700)
+    return path
+
+
+def _atomic_private_receipt(path: Path, receipt: dict[str, Any]) -> None:
+    if path.exists() or path.is_symlink():
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or stat.S_IMODE(path.stat().st_mode) != 0o600
+        ):
+            raise HarnessPublishError("receipt_invalid")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            os.chmod(temporary, 0o600)
+            json.dump(receipt, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        os.chmod(path, 0o600)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        raise HarnessPublishError("receipt_invalid") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _write_upgrade_receipt(
+    home: Path,
+    repo: str,
+    branch: str,
+    *,
+    metadata: dict[str, str],
+    changed_files: Any,
+    state: str,
+    previous: dict[str, Any] | None = None,
+    pr_url: str | None = None,
+) -> dict[str, Any]:
+    if state not in UPGRADE_RECEIPT_STATES:
+        raise HarnessPublishError("receipt_invalid")
+    normalized = _normalized_changed_files(changed_files)
+    if metadata.get("changed_files_sha256") != _changed_files_sha256(normalized):
+        raise HarnessPublishError("receipt_invalid")
+    created_at = (previous or {}).get("created_at") or _utc_now()
+    receipt: dict[str, Any] = {
+        "schema_version": UPGRADE_RECEIPT_SCHEMA,
+        "state": state,
+        "created_at": created_at,
+        "updated_at": _utc_now(),
+        "plan": metadata,
+        "changed_files": normalized,
+    }
+    if pr_url is not None:
+        receipt["pr_url"] = pr_url
+    path = _ensure_private_receipt_parent(home, repo, branch)
+    _atomic_private_receipt(path, receipt)
+    return receipt
+
+
+def _validated_receipt_plan(
+    receipt: Any,
+    expected: dict[str, str],
+) -> tuple[list[str], str]:
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema_version") != UPGRADE_RECEIPT_SCHEMA
+        or receipt.get("state") not in UPGRADE_RECEIPT_STATES
+        or receipt.get("plan") != expected
+    ):
+        raise HarnessPublishError("receipt_invalid")
+    changed_files = _normalized_changed_files(receipt.get("changed_files"))
+    if expected.get("changed_files_sha256") != _changed_files_sha256(changed_files):
+        raise HarnessPublishError("receipt_invalid")
+    return changed_files, str(receipt["state"])
 
 
 def resolve_github_admin_access(repo: str, runner=run_command) -> dict[str, Any]:
@@ -131,7 +350,8 @@ def resolve_github_admin_access(repo: str, runner=run_command) -> dict[str, Any]
             "default_branch": None,
             "default_branch_oid": None,
             "url": None,
-            "error": (result.get("stderr") or result.get("stdout") or "GitHub permission check failed").strip(),
+            "error": SAFE_ERROR_SUMMARIES["github_admin_required"],
+            "error_code": "github_admin_required",
         }
     try:
         payload = json.loads(result.get("stdout") or "{}")
@@ -157,7 +377,8 @@ def resolve_github_admin_access(repo: str, runner=run_command) -> dict[str, Any]
             "default_branch": None,
             "default_branch_oid": None,
             "url": None,
-            "error": f"invalid GitHub permission response: {exc}",
+            "error": SAFE_ERROR_SUMMARIES["github_admin_required"],
+            "error_code": "github_admin_required",
         }
     return {
         "repo": repo,
@@ -168,6 +389,7 @@ def resolve_github_admin_access(repo: str, runner=run_command) -> dict[str, Any]
         "default_branch_oid": default_branch_oid,
         "url": repository.get("url"),
         "error": None,
+        "error_code": None,
     }
 
 
@@ -207,16 +429,45 @@ def _redacted_remote(remote: str) -> str:
 
 
 def verify_canonical_github_origin(repo: str, canonical: Path, runner=run_command) -> str:
-    remote = _checked(
+    fetch_remote = _checked(
         runner,
-        ["git", "-C", str(canonical), "remote", "get-url", "origin"],
+        ["git", "-C", str(canonical), "remote", "get-url", "--all", "origin"],
     )
-    resolved = _github_repo_from_remote(remote)
-    if resolved is None or resolved.casefold() != repo.casefold():
-        raise RuntimeError(
-            f"canonical origin does not match {repo}: {_redacted_remote(remote)}"
+    push_remote = _checked(
+        runner,
+        ["git", "-C", str(canonical), "remote", "get-url", "--push", "--all", "origin"],
+    )
+    fetch_remotes = [item for item in fetch_remote.splitlines() if item.strip()]
+    push_remotes = [item for item in push_remote.splitlines() if item.strip()]
+    if (
+        not fetch_remotes
+        or not push_remotes
+        or any(
+            (resolved := _github_repo_from_remote(remote)) is None
+            or resolved.casefold() != repo.casefold()
+            for remote in [*fetch_remotes, *push_remotes]
         )
+    ):
+        raise RuntimeError(f"canonical origin does not match {repo}")
     return repo
+
+
+def _official_source_regular_file(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HarnessPublishError("source_verification_failed")
+    cursor = root
+    for part in relative.parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise HarnessPublishError("source_verification_failed")
+    try:
+        resolved = cursor.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise HarnessPublishError("source_verification_failed") from exc
+    if not resolved.is_file():
+        raise HarnessPublishError("source_verification_failed")
+    return resolved
 
 
 def resolve_official_upgrade_source(
@@ -278,9 +529,10 @@ def resolve_official_upgrade_source(
     if remote_tag_commit is None or remote_tag_commit.casefold() != head.casefold():
         raise RuntimeError("official Harness remote release tag does not resolve to source HEAD")
 
-    manifest_path = root / "contracts/v1/manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise RuntimeError("official Harness contract manifest is missing or unsafe")
+    manifest_path = _official_source_regular_file(
+        root,
+        Path("contracts/v1/manifest.json"),
+    )
     manifest_bytes = manifest_path.read_bytes()
     try:
         manifest = json.loads(manifest_bytes)
@@ -288,6 +540,8 @@ def resolve_official_upgrade_source(
         raise RuntimeError("official Harness contract manifest is invalid") from exc
     if not isinstance(manifest, dict):
         raise RuntimeError("official Harness contract manifest is invalid")
+    if manifest.get("schema_version") != "evozeus.coevolve.contract-manifest.v1":
+        raise RuntimeError("official Harness contract manifest schema is unsupported")
     if manifest.get("source_repository") != UPGRADE_SOURCE_REPOSITORY:
         raise RuntimeError("official Harness contract manifest source repository mismatch")
     if manifest.get("source_revision") != latest_version:
@@ -315,9 +569,10 @@ def resolve_official_upgrade_source(
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
         ):
             raise RuntimeError("official Harness contract manifest file entry is invalid")
-        source_path = root / "contracts/v1" / relative
-        if source_path.is_symlink() or not source_path.is_file():
-            raise RuntimeError(f"official Harness contract file is missing or unsafe: {relative}")
+        source_path = _official_source_regular_file(
+            root,
+            Path("contracts/v1") / relative,
+        )
         actual_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
         if actual_sha != expected_sha:
             raise RuntimeError(f"official Harness contract file digest mismatch: {relative}")
@@ -408,7 +663,8 @@ def plan_admin_upgrade_all(
                 "is_admin": False,
                 "default_branch": None,
                 "url": None,
-                "error": str(exc),
+                "error": SAFE_ERROR_SUMMARIES["github_admin_required"],
+                "error_code": "github_admin_required",
             }
         item = {**target, "github": access}
         if access.get("is_admin") is True:
@@ -422,6 +678,7 @@ def plan_admin_upgrade_all(
                     "viewer": access.get("viewer"),
                     "permission": access.get("permission"),
                     "error": access.get("error"),
+                    "error_code": access.get("error_code"),
                 }
             )
     return {
@@ -466,8 +723,7 @@ def _default_existing_pr(repo: str, branch: str, runner=run_command) -> dict[str
         ],
     )
     if result.get("returncode") != 0:
-        detail = (result.get("stderr") or result.get("stdout") or "GitHub PR lookup failed").strip()
-        raise RuntimeError(_redact_url_credentials(detail))
+        raise HarnessPublishError("command_failed")
     try:
         payload = json.loads(result.get("stdout") or "[]")
     except json.JSONDecodeError as exc:
@@ -502,10 +758,7 @@ def _require_live_admin(repo: str, access_resolver) -> dict[str, Any]:
     try:
         access = access_resolver(repo)
     except Exception as exc:
-        raise PermissionError(
-            f"live GitHub ADMIN verification failed for {repo}: "
-            f"{_redact_url_credentials(str(exc))}"
-        ) from exc
+        raise PermissionError(f"live GitHub ADMIN verification failed for {repo}") from exc
     if not isinstance(access, dict):
         raise PermissionError(f"live GitHub ADMIN verification failed for {repo}")
     resolved_repo = access.get("repo")
@@ -574,6 +827,7 @@ def _upgrade_plan_metadata(
     base_commit: str,
     head_ref: str,
     head_commit: str,
+    changed_files_sha256: str,
 ) -> dict[str, str]:
     identity = {
         "schema_version": UPGRADE_PLAN_SCHEMA,
@@ -591,6 +845,7 @@ def _upgrade_plan_metadata(
         "target_base_commit": base_commit,
         "target_head_ref": head_ref,
         "target_head_commit": head_commit,
+        "changed_files_sha256": changed_files_sha256,
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -723,6 +978,186 @@ def _remote_branch_oid(canonical: Path, branch: str, runner) -> str | None:
     return fields[0]
 
 
+def _manual_review_result(
+    *,
+    repo: str,
+    branch: str,
+    commit: str | None,
+    source: dict[str, str],
+    base_ref: str,
+    base_commit: str,
+    code: str,
+) -> dict[str, Any]:
+    return {
+        "repo": repo,
+        "status": "manual_review_required",
+        "writes": False,
+        "branch": branch,
+        "commit": commit,
+        "pr_url": None,
+        "worktree": None,
+        "source_revision": source["source_revision"],
+        "source_tag": source["source_tag"],
+        "contract_manifest_sha256": source["contract_manifest_sha256"],
+        "target_base_ref": base_ref,
+        "target_base_commit": base_commit,
+        **_error_record(HarnessPublishError(code), code),
+    }
+
+
+def _validated_created_pr_url(value: Any, repo: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(
+        rf"https://github\.com/{re.escape(repo)}/pull/[1-9][0-9]*",
+        value.strip(),
+        re.IGNORECASE,
+    ):
+        raise HarnessPublishError("pr_readback_failed")
+    return value.strip()
+
+
+def _upgrade_pr_body(
+    *,
+    source: dict[str, str],
+    current_version: str,
+    latest_version: str,
+    branch: str,
+    base_commit: str,
+    commit: str,
+    run_id: str,
+    metadata: dict[str, str],
+    changed_files: list[str],
+) -> str:
+    changed_file_lines = "\n".join(f"- `{path}`" for path in changed_files)
+    return (
+        "## Official Harness upgrade\n\n"
+        "- Profile: `official_harness_upgrade`\n"
+        f"- Source: `{source['source_repository']}@{source['source_tag']}`\n"
+        f"- Source revision: `{source['source_revision']}`\n"
+        f"- Contract manifest SHA-256: `{source['contract_manifest_sha256']}`\n"
+        f"- From: `{current_version}`\n"
+        f"- To: `{latest_version}`\n"
+        f"- Branch: `{branch}`\n"
+        f"- Target base: `{metadata['target_base_ref']}@{base_commit}`\n"
+        f"- Target head: `{branch}@{commit}`\n"
+        f"- Changed files SHA-256: `{metadata['changed_files_sha256']}`\n"
+        f"- Plan identity: `{metadata['plan_identity']}`\n"
+        f"- Run: `{run_id}`\n\n"
+        f"{_upgrade_plan_marker(metadata)}\n\n"
+        "## Changed files\n\n"
+        f"{changed_file_lines}\n\n"
+        "This PR refreshes official EvoZeus-managed Harness outputs while preserving "
+        "the target Skill changelog and business content."
+    )
+
+
+def _expected_metadata_from_receipt(
+    receipt: dict[str, Any],
+    *,
+    repo: str,
+    actor: str,
+    source: dict[str, str],
+    current_version: str,
+    latest_version: str,
+    base_ref: str,
+    base_commit: str,
+    head_ref: str,
+    head_commit: str,
+) -> tuple[dict[str, str], list[str], str]:
+    changed_files = _normalized_changed_files(receipt.get("changed_files"))
+    metadata = _upgrade_plan_metadata(
+        repo=repo,
+        actor=actor,
+        source=source,
+        current_version=current_version,
+        latest_version=latest_version,
+        base_ref=base_ref,
+        base_commit=base_commit,
+        head_ref=head_ref,
+        head_commit=head_commit,
+        changed_files_sha256=_changed_files_sha256(changed_files),
+    )
+    _, state = _validated_receipt_plan(receipt, metadata)
+    return metadata, changed_files, state
+
+
+def _create_and_verify_pr(
+    *,
+    repo: str,
+    canonical: Path,
+    home: Path,
+    branch: str,
+    commit: str,
+    default_branch: str,
+    base_commit: str,
+    initial_access: dict[str, Any],
+    source: dict[str, str],
+    current_version: str,
+    latest_version: str,
+    run_id: str,
+    metadata: dict[str, str],
+    changed_files: list[str],
+    receipt: dict[str, Any],
+    access_resolver,
+    existing_pr_resolver,
+    pr_creator,
+    runner,
+) -> tuple[str, dict[str, Any]]:
+    pr_access = _require_live_admin(repo, access_resolver)
+    _require_same_live_context(repo, initial_access, pr_access)
+    current_base_commit = _fetch_base_commit(
+        canonical,
+        default_branch,
+        runner,
+        access=pr_access,
+    )
+    if current_base_commit.casefold() != base_commit.casefold():
+        raise HarnessPublishError("github_context_changed")
+    pushed_oid = _remote_branch_oid(canonical, branch, runner)
+    if pushed_oid is None or pushed_oid.casefold() != commit.casefold():
+        raise HarnessPublishError("pr_readback_failed")
+
+    returned_url = _validated_created_pr_url(
+        pr_creator(
+            repo=repo,
+            branch=branch,
+            base=default_branch,
+            title=f"chore(evozeus): upgrade Harness to {latest_version}",
+            body=_upgrade_pr_body(
+                source=source,
+                current_version=current_version,
+                latest_version=latest_version,
+                branch=branch,
+                base_commit=base_commit,
+                commit=commit,
+                run_id=run_id,
+                metadata=metadata,
+                changed_files=changed_files,
+            ),
+        ),
+        repo,
+    )
+    live_pr = existing_pr_resolver(repo, branch)
+    if live_pr is None:
+        raise HarnessPublishError("pr_readback_failed")
+    verified_url = _validated_existing_pr_url(repo, live_pr, metadata)
+    if verified_url.casefold() != returned_url.casefold():
+        raise HarnessPublishError("pr_readback_failed")
+    final_oid = _remote_branch_oid(canonical, branch, runner)
+    if final_oid is None or final_oid.casefold() != commit.casefold():
+        raise HarnessPublishError("pr_readback_failed")
+    updated_receipt = _write_upgrade_receipt(
+        home,
+        repo,
+        branch,
+        metadata=metadata,
+        changed_files=changed_files,
+        state="pr_created",
+        previous=receipt,
+        pr_url=verified_url,
+    )
+    return verified_url, updated_receipt
+
+
 def publish_target_upgrade(
     target: dict[str, Any],
     *,
@@ -738,10 +1173,18 @@ def publish_target_upgrade(
     access_resolver=None,
     source_resolver=None,
 ) -> dict[str, Any]:
+    run_id = _validated_run_id(run_id)
     repo = target["repo"]
     canonical = Path(target["target"]).expanduser().resolve()
     current_version = target.get("wrapper_version") or "unknown"
     branch = _branch_name(current_version, latest_version)
+    if migrator is migrate_target_layout:
+        try:
+            source_root = wrapper_root.expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise HarnessPublishError("source_verification_failed") from exc
+        if source_root != Path(__file__).resolve().parents[1]:
+            raise HarnessPublishError("source_verification_failed")
     source_resolver = source_resolver or (
         lambda source_root, version: resolve_official_upgrade_source(
             source_root,
@@ -780,38 +1223,200 @@ def publish_target_upgrade(
     )
     remote_branch_oid = _remote_branch_oid(canonical, branch, runner)
     existing_pr = existing_pr_resolver(repo, branch)
-    if existing_pr:
-        if remote_branch_oid is None:
-            raise RuntimeError(
-                "same-name open Harness upgrade PR cannot be safely reused: remote head is missing"
-            )
-        expected = _upgrade_plan_metadata(
+    try:
+        receipt = _read_upgrade_receipt(home, repo, branch)
+    except HarnessPublishError:
+        return _manual_review_result(
             repo=repo,
-            actor=initial_access["viewer"],
+            branch=branch,
+            commit=remote_branch_oid,
             source=source,
-            current_version=current_version,
-            latest_version=latest_version,
             base_ref=default_branch,
             base_commit=base_commit,
-            head_ref=branch,
-            head_commit=remote_branch_oid,
+            code="receipt_invalid",
         )
-        pr_url = _validated_existing_pr_url(repo, existing_pr, expected)
+
+    if remote_branch_oid is not None or existing_pr is not None:
+        code = "existing_pr_untrusted" if existing_pr is not None else "existing_remote_untrusted"
+        if remote_branch_oid is None or receipt is None:
+            return _manual_review_result(
+                repo=repo,
+                branch=branch,
+                commit=remote_branch_oid,
+                source=source,
+                base_ref=default_branch,
+                base_commit=base_commit,
+                code=code,
+            )
+        try:
+            metadata, changed_files, receipt_state = _expected_metadata_from_receipt(
+                receipt,
+                repo=repo,
+                actor=initial_access["viewer"],
+                source=source,
+                current_version=current_version,
+                latest_version=latest_version,
+                base_ref=default_branch,
+                base_commit=base_commit,
+                head_ref=branch,
+                head_commit=remote_branch_oid,
+            )
+        except HarnessPublishError:
+            return _manual_review_result(
+                repo=repo,
+                branch=branch,
+                commit=remote_branch_oid,
+                source=source,
+                base_ref=default_branch,
+                base_commit=base_commit,
+                code="receipt_invalid",
+            )
+
+        receipt_was_updated = False
+        if existing_pr is not None:
+            try:
+                pr_url = _validated_existing_pr_url(repo, existing_pr, metadata)
+                if receipt_state == "pr_created" and receipt.get("pr_url") != pr_url:
+                    raise HarnessPublishError("existing_pr_untrusted")
+                final_oid = _remote_branch_oid(canonical, branch, runner)
+                if final_oid is None or final_oid.casefold() != remote_branch_oid.casefold():
+                    raise HarnessPublishError("existing_pr_untrusted")
+            except (HarnessPublishError, RuntimeError):
+                return _manual_review_result(
+                    repo=repo,
+                    branch=branch,
+                    commit=remote_branch_oid,
+                    source=source,
+                    base_ref=default_branch,
+                    base_commit=base_commit,
+                    code="existing_pr_untrusted",
+                )
+            if receipt_state != "pr_created":
+                receipt = _write_upgrade_receipt(
+                    home,
+                    repo,
+                    branch,
+                    metadata=metadata,
+                    changed_files=changed_files,
+                    state="pr_created",
+                    previous=receipt,
+                    pr_url=pr_url,
+                )
+                receipt_was_updated = True
+            return {
+                "repo": repo,
+                "status": "existing_pr",
+                "writes": receipt_was_updated,
+                "branch": branch,
+                "commit": remote_branch_oid,
+                "pr_url": pr_url,
+                "worktree": None,
+                "source_revision": source["source_revision"],
+                "source_tag": source["source_tag"],
+                "contract_manifest_sha256": source["contract_manifest_sha256"],
+                "changed_files_sha256": metadata["changed_files_sha256"],
+                "plan_identity": metadata["plan_identity"],
+                "target_base_ref": default_branch,
+                "target_base_commit": base_commit,
+            }
+
+        if receipt_state == "pr_created":
+            return _manual_review_result(
+                repo=repo,
+                branch=branch,
+                commit=remote_branch_oid,
+                source=source,
+                base_ref=default_branch,
+                base_commit=base_commit,
+                code="existing_pr_untrusted",
+            )
+        if receipt_state == "prepared":
+            receipt = _write_upgrade_receipt(
+                home,
+                repo,
+                branch,
+                metadata=metadata,
+                changed_files=changed_files,
+                state="pushed",
+                previous=receipt,
+            )
+            receipt_was_updated = True
+        try:
+            pr_url, _ = _create_and_verify_pr(
+                repo=repo,
+                canonical=canonical,
+                home=home,
+                branch=branch,
+                commit=remote_branch_oid,
+                default_branch=default_branch,
+                base_commit=base_commit,
+                initial_access=initial_access,
+                source=source,
+                current_version=current_version,
+                latest_version=latest_version,
+                run_id=run_id,
+                metadata=metadata,
+                changed_files=changed_files,
+                receipt=receipt,
+                access_resolver=access_resolver,
+                existing_pr_resolver=existing_pr_resolver,
+                pr_creator=pr_creator,
+                runner=runner,
+            )
+        except Exception as exc:
+            return {
+                "repo": repo,
+                "status": "pr_creation_failed",
+                "writes": True,
+                "branch": branch,
+                "commit": remote_branch_oid,
+                "pr_url": None,
+                "worktree": None,
+                "changed_files": changed_files,
+                **_error_record(exc, "pr_creation_failed"),
+                "remote_side_effect": {
+                    "kind": "branch_push",
+                    "repo": repo,
+                    "branch": branch,
+                    "commit": remote_branch_oid,
+                    "target_base_ref": default_branch,
+                    "target_base_commit": base_commit,
+                    "source_revision": source["source_revision"],
+                    "source_tag": source["source_tag"],
+                    "contract_manifest_sha256": source["contract_manifest_sha256"],
+                    "changed_files_sha256": metadata["changed_files_sha256"],
+                    "plan_identity": metadata["plan_identity"],
+                    "recovery": "retry_same_upgrade",
+                },
+            }
         return {
             "repo": repo,
-            "status": "existing_pr",
-            "writes": False,
+            "status": "published",
+            "writes": True,
             "branch": branch,
             "commit": remote_branch_oid,
             "pr_url": pr_url,
             "worktree": None,
+            "changed_files": changed_files,
             "source_revision": source["source_revision"],
             "source_tag": source["source_tag"],
             "contract_manifest_sha256": source["contract_manifest_sha256"],
-            "plan_identity": expected["plan_identity"],
+            "changed_files_sha256": metadata["changed_files_sha256"],
+            "plan_identity": metadata["plan_identity"],
             "target_base_ref": default_branch,
             "target_base_commit": base_commit,
         }
+
+    if receipt is not None:
+        return _manual_review_result(
+            repo=repo,
+            branch=branch,
+            commit=None,
+            source=source,
+            base_ref=default_branch,
+            base_commit=base_commit,
+            code="receipt_invalid",
+        )
 
     worktree = (
         home.expanduser().resolve()
@@ -869,6 +1474,7 @@ def publish_target_upgrade(
         undeclared = sorted(changed - declared)
         if undeclared:
             raise RuntimeError("migration changed undeclared files: " + ", ".join(undeclared))
+        changed_files = _normalized_changed_files(changed)
 
         _checked(
             runner,
@@ -901,21 +1507,19 @@ def publish_target_upgrade(
             access=push_access,
         )
         if current_base_commit.casefold() != base_commit.casefold():
-            raise RuntimeError("target default branch changed after the upgrade plan was created")
+            raise HarnessPublishError("github_context_changed")
         remote_branch_oid = _remote_branch_oid(canonical, branch, runner)
-        _checked(
-            runner,
-            [
-                "git",
-                "-C",
-                str(worktree),
-                "push",
-                f"--force-with-lease=refs/heads/{branch}:{remote_branch_oid or ''}",
-                "-u",
-                "origin",
-                branch,
-            ],
-        )
+        if remote_branch_oid is not None:
+            cleanup_safe = True
+            return _manual_review_result(
+                repo=repo,
+                branch=branch,
+                commit=remote_branch_oid,
+                source=source,
+                base_ref=default_branch,
+                base_commit=base_commit,
+                code="existing_remote_untrusted",
+            )
         metadata = _upgrade_plan_metadata(
             repo=repo,
             actor=initial_access["viewer"],
@@ -926,54 +1530,62 @@ def publish_target_upgrade(
             base_commit=base_commit,
             head_ref=branch,
             head_commit=commit,
+            changed_files_sha256=_changed_files_sha256(changed_files),
+        )
+        receipt = _write_upgrade_receipt(
+            home,
+            repo,
+            branch,
+            metadata=metadata,
+            changed_files=changed_files,
+            state="prepared",
+        )
+        _checked(
+            runner,
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "push",
+                "-u",
+                "origin",
+                branch,
+            ],
+        )
+        pushed_oid = _remote_branch_oid(canonical, branch, runner)
+        if pushed_oid is None or pushed_oid.casefold() != commit.casefold():
+            raise HarnessPublishError("command_failed")
+        receipt = _write_upgrade_receipt(
+            home,
+            repo,
+            branch,
+            metadata=metadata,
+            changed_files=changed_files,
+            state="pushed",
+            previous=receipt,
         )
         try:
-            pr_access = _require_live_admin(repo, access_resolver)
-            _require_same_live_context(repo, initial_access, pr_access)
-            current_base_commit = _fetch_base_commit(
-                canonical,
-                default_branch,
-                runner,
-                access=pr_access,
-            )
-            if current_base_commit.casefold() != base_commit.casefold():
-                raise RuntimeError("target default branch changed before PR creation")
-            pushed_oid = _remote_branch_oid(canonical, branch, runner)
-            if pushed_oid is None or pushed_oid.casefold() != commit.casefold():
-                raise RuntimeError("remote upgrade branch no longer matches the planned target head")
-            changed_file_lines = "\n".join(f"- `{path}`" for path in sorted(changed))
-            pr_url = pr_creator(
+            pr_url, _ = _create_and_verify_pr(
                 repo=repo,
+                canonical=canonical,
+                home=home,
                 branch=branch,
-                base=default_branch,
-                title=f"chore(evozeus): upgrade Harness to {latest_version}",
-                body=(
-                    f"## Official Harness upgrade\n\n"
-                    f"- Profile: `official_harness_upgrade`\n"
-                    f"- Source: `{source['source_repository']}@{source['source_tag']}`\n"
-                    f"- Source revision: `{source['source_revision']}`\n"
-                    f"- Contract manifest SHA-256: `{source['contract_manifest_sha256']}`\n"
-                    f"- From: `{current_version}`\n"
-                    f"- To: `{latest_version}`\n"
-                    f"- Branch: `{branch}`\n"
-                    f"- Target base: `{default_branch}@{base_commit}`\n"
-                    f"- Target head: `{branch}@{commit}`\n"
-                    f"- Plan identity: `{metadata['plan_identity']}`\n"
-                    f"- Run: `{run_id}`\n\n"
-                    f"{_upgrade_plan_marker(metadata)}\n\n"
-                    "## Changed files\n\n"
-                    f"{changed_file_lines}\n\n"
-                    "This PR refreshes official EvoZeus-managed Harness outputs while preserving "
-                    "the target Skill changelog and business content."
-                ),
+                commit=commit,
+                default_branch=default_branch,
+                base_commit=base_commit,
+                initial_access=initial_access,
+                source=source,
+                current_version=current_version,
+                latest_version=latest_version,
+                run_id=run_id,
+                metadata=metadata,
+                changed_files=changed_files,
+                receipt=receipt,
+                access_resolver=access_resolver,
+                existing_pr_resolver=existing_pr_resolver,
+                pr_creator=pr_creator,
+                runner=runner,
             )
-            if not isinstance(pr_url, str) or not re.fullmatch(
-                rf"https://github\.com/{re.escape(repo)}/pull/[1-9][0-9]*",
-                pr_url.strip(),
-                re.IGNORECASE,
-            ):
-                raise RuntimeError("PR creation returned an invalid PR URL")
-            pr_url = pr_url.strip()
         except Exception as exc:
             cleanup_safe = True
             return {
@@ -984,8 +1596,8 @@ def publish_target_upgrade(
                 "commit": commit,
                 "pr_url": None,
                 "worktree": None,
-                "changed_files": sorted(changed),
-                "error": _redact_url_credentials(str(exc)),
+                "changed_files": changed_files,
+                **_error_record(exc, "pr_creation_failed"),
                 "remote_side_effect": {
                     "kind": "branch_push",
                     "repo": repo,
@@ -996,6 +1608,7 @@ def publish_target_upgrade(
                     "source_revision": source["source_revision"],
                     "source_tag": source["source_tag"],
                     "contract_manifest_sha256": source["contract_manifest_sha256"],
+                    "changed_files_sha256": metadata["changed_files_sha256"],
                     "plan_identity": metadata["plan_identity"],
                     "recovery": "retry_same_upgrade",
                 },
@@ -1009,10 +1622,11 @@ def publish_target_upgrade(
             "commit": commit,
             "pr_url": pr_url,
             "worktree": str(worktree),
-            "changed_files": sorted(changed),
+            "changed_files": changed_files,
             "source_revision": source["source_revision"],
             "source_tag": source["source_tag"],
             "contract_manifest_sha256": source["contract_manifest_sha256"],
+            "changed_files_sha256": metadata["changed_files_sha256"],
             "plan_identity": metadata["plan_identity"],
             "target_base_ref": default_branch,
             "target_base_commit": base_commit,
@@ -1028,20 +1642,57 @@ def publish_target_upgrade(
 def _safe_remote_side_effect(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    allowed = (
-        "kind",
-        "repo",
-        "branch",
-        "commit",
-        "target_base_ref",
-        "target_base_commit",
-        "source_revision",
-        "source_tag",
-        "contract_manifest_sha256",
-        "plan_identity",
-        "recovery",
-    )
-    return {key: value.get(key) for key in allowed if value.get(key) is not None}
+    if value.get("kind") != "branch_push" or value.get("recovery") != "retry_same_upgrade":
+        return None
+    repo = value.get("repo")
+    if not isinstance(repo, str):
+        return None
+    try:
+        _split_repo(repo)
+    except ValueError:
+        return None
+    safe: dict[str, Any] = {
+        "kind": "branch_push",
+        "repo": repo,
+        "recovery": "retry_same_upgrade",
+    }
+    patterns = {
+        "branch": r"[A-Za-z0-9._/-]{1,255}",
+        "commit": r"[0-9a-fA-F]{40,64}",
+        "target_base_ref": r"[A-Za-z0-9._/-]{1,255}",
+        "target_base_commit": r"[0-9a-fA-F]{40,64}",
+        "source_revision": r"[0-9a-fA-F]{40,64}",
+        "source_tag": r"[A-Za-z0-9._-]{1,128}",
+        "contract_manifest_sha256": r"[0-9a-fA-F]{64}",
+        "changed_files_sha256": r"[0-9a-fA-F]{64}",
+        "plan_identity": r"[0-9a-fA-F]{64}",
+    }
+    for key, pattern in patterns.items():
+        item = value.get(key)
+        if isinstance(item, str) and re.fullmatch(pattern, item):
+            safe[key] = item
+    return safe
+
+
+def _safe_error_fields(value: dict[str, Any]) -> dict[str, str]:
+    code = value.get("error_code")
+    if code not in SAFE_ERROR_SUMMARIES and value.get("error") is not None:
+        code = "publisher_reported_failure"
+    if code not in SAFE_ERROR_SUMMARIES:
+        return {}
+    return {
+        "error_code": code,
+        "error_summary": SAFE_ERROR_SUMMARIES[code],
+    }
+
+
+def _safe_pr_url(value: Any, repo: Any) -> str | None:
+    if not isinstance(repo, str):
+        return None
+    try:
+        return _validated_created_pr_url(value, repo)
+    except HarnessPublishError:
+        return None
 
 
 def _safe_ledger_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -1065,15 +1716,14 @@ def _safe_ledger_report(report: dict[str, Any]) -> dict[str, Any]:
         "writes",
         "branch",
         "commit",
-        "pr_url",
         "from_version",
         "source_revision",
         "source_tag",
         "contract_manifest_sha256",
+        "changed_files_sha256",
         "plan_identity",
         "target_base_ref",
         "target_base_commit",
-        "error",
     )
     safe: dict[str, Any] = {
         key: report.get(key) for key in top_level if report.get(key) is not None
@@ -1083,34 +1733,36 @@ def _safe_ledger_report(report: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(result, dict):
             continue
         item = {key: result.get(key) for key in result_fields if result.get(key) is not None}
-        for key in ("pr_url", "error"):
-            if isinstance(item.get(key), str):
-                item[key] = _redact_url_credentials(item[key])
+        pr_url = _safe_pr_url(result.get("pr_url"), result.get("repo"))
+        if pr_url is not None:
+            item["pr_url"] = pr_url
+        item.update(_safe_error_fields(result))
         effect = _safe_remote_side_effect(result.get("remote_side_effect"))
         if effect is not None:
             item["remote_side_effect"] = effect
         safe_results.append(item)
     safe["results"] = safe_results
-    safe["skipped_targets"] = [
-        {
-            key: _redact_url_credentials(value) if key == "error" and isinstance(value, str) else value
-            for key in ("repo", "status", "reason", "viewer", "permission", "error")
-            if (value := item.get(key)) is not None
+    safe["skipped_targets"] = []
+    for skipped in report.get("skipped_targets", []):
+        if not isinstance(skipped, dict):
+            continue
+        item = {
+            key: skipped.get(key)
+            for key in ("repo", "status", "reason", "viewer", "permission")
+            if skipped.get(key) is not None
         }
-        for item in report.get("skipped_targets", [])
-        if isinstance(item, dict)
-    ]
+        item.update(_safe_error_fields(skipped))
+        safe["skipped_targets"].append(item)
     safe["failures"] = []
     for failure in report.get("failures", []):
         if not isinstance(failure, dict):
             continue
         item = {
             key: failure.get(key)
-            for key in ("repo", "status", "error")
+            for key in ("repo", "status")
             if failure.get(key) is not None
         }
-        if isinstance(item.get("error"), str):
-            item["error"] = _redact_url_credentials(item["error"])
+        item.update(_safe_error_fields(failure))
         effect = _safe_remote_side_effect(failure.get("remote_side_effect"))
         if effect is not None:
             item["remote_side_effect"] = effect
@@ -1122,8 +1774,14 @@ def _write_ledgers(home: Path, report: dict[str, Any]) -> dict[str, str]:
     root = home.expanduser().resolve() / ".evozeus/skills"
     run_path = root / "runs" / f"{report['run_id']}.json"
     events_path = root / "events.jsonl"
-    _atomic_json(run_path, _safe_ledger_report(report))
+    safe_report = _safe_ledger_report(report)
+    _atomic_json(run_path, safe_report)
     events_path.parent.mkdir(parents=True, exist_ok=True)
+    if events_path.is_symlink() or (events_path.exists() and not events_path.is_file()):
+        raise HarnessPublishError("publish_failed")
+    if not events_path.exists():
+        events_path.touch(mode=0o600)
+    os.chmod(events_path, 0o600)
     existing_event_ids: set[str] = set()
     if events_path.is_file():
         for line in events_path.read_text(encoding="utf-8").splitlines():
@@ -1134,7 +1792,7 @@ def _write_ledgers(home: Path, report: dict[str, Any]) -> dict[str, str]:
             if isinstance(event, dict) and isinstance(event.get("event_id"), str):
                 existing_event_ids.add(event["event_id"])
     with events_path.open("a", encoding="utf-8") as handle:
-        for result in report.get("results", []):
+        for result in safe_report.get("results", []):
             status = result.get("status")
             if status in {"published", "existing_pr"}:
                 event_name = "harness_upgrade_published"
@@ -1143,6 +1801,11 @@ def _write_ledgers(home: Path, report: dict[str, Any]) -> dict[str, str]:
                     "to": report.get("latest_version"),
                     "commit": result.get("commit"),
                     "pr_url": result.get("pr_url"),
+                    "source_revision": result.get("source_revision"),
+                    "source_tag": result.get("source_tag"),
+                    "contract_manifest_sha256": result.get("contract_manifest_sha256"),
+                    "changed_files_sha256": result.get("changed_files_sha256"),
+                    "plan_identity": result.get("plan_identity"),
                     "result": status,
                 }
             elif status == "pr_creation_failed" and isinstance(
@@ -1158,6 +1821,9 @@ def _write_ledgers(home: Path, report: dict[str, Any]) -> dict[str, str]:
                     "target_base_ref": effect.get("target_base_ref"),
                     "target_base_commit": effect.get("target_base_commit"),
                     "source_revision": effect.get("source_revision"),
+                    "source_tag": effect.get("source_tag"),
+                    "contract_manifest_sha256": effect.get("contract_manifest_sha256"),
+                    "changed_files_sha256": effect.get("changed_files_sha256"),
                     "plan_identity": effect.get("plan_identity"),
                     "recovery": effect.get("recovery"),
                     "result": status,
@@ -1181,7 +1847,6 @@ def _write_ledgers(home: Path, report: dict[str, Any]) -> dict[str, str]:
                 + "\n"
             )
             existing_event_ids.add(event_id)
-    os.chmod(events_path, 0o600)
     return {"run": str(run_path), "events": str(events_path)}
 
 
@@ -1223,7 +1888,8 @@ def publish_admin_upgrade_all(
                 **plan,
                 "status": "busy",
                 "writes": False,
-                "error": "another Harness upgrade-all publication is already running",
+                "error_code": "publish_failed",
+                "error_summary": "Another Harness upgrade-all publication is already running.",
             }
         try:
             return _publish_admin_upgrade_plan(
@@ -1252,7 +1918,7 @@ def _publish_admin_upgrade_plan(
     run_id: str | None,
 ) -> dict[str, Any]:
 
-    run_id = run_id or _run_id()
+    run_id = _validated_run_id(run_id or _run_id())
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for target in plan["publishable_targets"]:
@@ -1266,16 +1932,19 @@ def _publish_admin_upgrade_plan(
                 access_resolver=access_resolver,
                 source_resolver=source_resolver,
             )
-            if isinstance(result.get("error"), str):
-                result["error"] = _redact_url_credentials(result["error"])
+            if result.get("error_code") in SAFE_ERROR_SUMMARIES:
+                result["error_summary"] = SAFE_ERROR_SUMMARIES[result["error_code"]]
+            elif result.get("error") is not None:
+                result.update(_error_record(result.get("error"), "publisher_reported_failure"))
+            result.pop("error", None)
             result.setdefault("from_version", target.get("wrapper_version"))
             results.append(result)
-            if result.get("status") == "pr_creation_failed":
+            if result.get("status") in {"pr_creation_failed", "manual_review_required"}:
                 failures.append(
                     {
                         "repo": target["repo"],
-                        "status": "pr_creation_failed",
-                        "error": _redact_url_credentials(str(result.get("error") or "PR creation failed")),
+                        "status": result["status"],
+                        **_safe_error_fields(result),
                         "remote_side_effect": result.get("remote_side_effect"),
                     }
                 )
@@ -1284,7 +1953,7 @@ def _publish_admin_upgrade_plan(
                 {
                     "repo": target["repo"],
                     "status": "failed",
-                    "error": _redact_url_credentials(str(exc)),
+                    **_error_record(exc),
                 }
             )
 
