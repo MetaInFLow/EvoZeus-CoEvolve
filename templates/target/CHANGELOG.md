@@ -4,6 +4,8 @@ All notable changes to {{SKILL_NAME}} are recorded here.
 
 Wrapper harness migrations are recorded under `.evozeus-wrapper/docs/migrations/`. Add them here only when the migration also changes this Skill's behavior or release contract.
 
+Issue-to-PR changes must reference the private contributor branch ledger resume key and copy only public-safe `pr_metadata` into the PR. Local Repo/worktree/ledger paths remain outside this changelog.
+
 ## [Unreleased]
 
 ### Skill changes

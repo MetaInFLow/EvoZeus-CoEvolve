@@ -1,0 +1,28 @@
+{
+  "schema_version": "evozeus.coevolve.contributor-branch-snapshot-provenance.v1",
+  "snapshot_kind": "generated_offline_copy",
+  "generated_at": "2026-07-31",
+  "source_repository": "MetaInFLow/EvoZeus",
+  "source_pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/47",
+  "source_revision": "26f7d8109b08f6104184d03f63393933dcc61522",
+  "runtime_network_fetch": false,
+  "contract": {
+    "id": "evozeus.contributor_branch",
+    "version": "1.3.1",
+    "canonical_id_url": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
+    "immutable_source_url": "https://github.com/MetaInFLow/EvoZeus/blob/26f7d8109b08f6104184d03f63393933dcc61522/contracts/v1/contributor-branch-contract.json",
+    "snapshot_path": ".evozeus-wrapper/contracts/v1/contributor-branch-contract.json",
+    "sha256": "208035f76ba3adbb774a5381cfec898b6501cccd91166856acbae2600b796f07"
+  },
+  "planner": {
+    "canonical_url": "https://github.com/MetaInFLow/EvoZeus/blob/main/scripts/evozeus-branch-preflight.mjs",
+    "immutable_source_url": "https://github.com/MetaInFLow/EvoZeus/blob/26f7d8109b08f6104184d03f63393933dcc61522/scripts/evozeus-branch-preflight.mjs",
+    "snapshot_path": ".evozeus-wrapper/scripts/evozeus-branch-preflight.mjs",
+    "sha256": "b6b14ffaae910d5346bd35f2ae1d9e672a10f83e92629286b8c7e35d922dcb1e"
+  },
+  "compatibility": {
+    "supported_contract_major": 1,
+    "unknown_major_or_digest": "fail_closed",
+    "source_head_change": "regenerate_snapshot_and_provenance"
+  }
+}

@@ -11,6 +11,7 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 try:
     from .evozeus_wrapper_global_hook import read_global_hook_status
@@ -18,6 +19,13 @@ try:
 except ImportError:
     from evozeus_wrapper_global_hook import read_global_hook_status
     from evozeus_notice import load_notice_policy, render_notice
+
+try:
+    from .evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from .evozeus_branch_consumer import verify_managed_snapshot
+except ImportError:
+    from evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from evozeus_branch_consumer import verify_managed_snapshot
 
 
 STAGE_LABELS = {
@@ -27,6 +35,8 @@ STAGE_LABELS = {
     "publish": "[4/5] Publish & Reinstall",
     "loop": "[5/5] Continuous Evolution Loop",
 }
+CONTRIBUTOR_GATE_REQUIRED_CHECK = "EvoZeus Contributor Gate"
+GITHUB_ACTIONS_APP_ID = 15368
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
 GLOBAL_EVOZEUS_PROJECTS_DIR = ".projects"
@@ -57,10 +67,28 @@ TARGET_MIGRATIONS_README = f"{TARGET_EVOINFRA_DIR}/docs/migrations/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
 TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
-HARNESS_SKILL_VERSION = "v1.0.0"
+HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+PR_TEMPLATE_PATH = ".github/pull_request_template.md"
+PR_PLAN_BEGIN = "<!-- evozeus-contributor-branch-plan:v1 -->"
+PR_PLAN_END = "<!-- /evozeus-contributor-branch-plan -->"
+PR_PLAN_HEADING = "## Contributor Branch Plan"
+PR_TEMPLATE_MANAGED_BASELINE_SHA256 = frozenset(
+    {
+        "665b9f164a9174aef97a2a664de1a1f5bb8616069833e86f6fe7a4d62fbd8926",
+        "1b236cfb74c7c02d66aefa301f0a6ca264120587dd8f0a5e22efb152e6973de4",
+        "b0764492f1d39035f7cb4ec8f82b3e66f42b032a5607f14390011d9a0fbc6bd0",
+        "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+        "639527014104f356b03d6dc659a692113e33dfd2662728e05f0c9c0030e8c52f",
+        "82abdbe67712bf623c128184f94f0f43eeee7c35e1a9e7051e0ec9b3b13344e5",
+    }
+)
 HARNESS_SKILL_REQUIRED_TERMS = (
     TARGET_WRAPPER_MANIFEST,
     TARGET_NOTICE_POLICY,
@@ -78,6 +106,14 @@ HARNESS_SKILL_REQUIRED_TERMS = (
     "Release",
     "rollback",
     "普通 Skill 调用不授权",
+    "evozeus_branch_consumer.py",
+    "--approve-save-plan",
+    "issue_evidence",
+    "permission_evidence",
+    "pull_request_target",
+    "EvoZeus Contributor Gate",
+    "evozeus/harness-vX-to-vY",
+    "隔离 worktree",
 )
 
 REQUIRED_WRAPPER_FILES = [
@@ -101,6 +137,10 @@ REQUIRED_WRAPPER_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PROVENANCE,
+    TARGET_BRANCH_PLANNER,
     TARGET_HARNESS_SKILL,
 ]
 
@@ -124,6 +164,10 @@ WRAPPER_MANAGED_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PROVENANCE,
+    TARGET_BRANCH_PLANNER,
     TARGET_HARNESS_SKILL,
 ]
 
@@ -627,7 +671,7 @@ def require_repo_admin(
             "view",
             origin_repo,
             "--json",
-            "nameWithOwner,viewerPermission,url,visibility",
+            "nameWithOwner,viewerPermission,url,visibility,defaultBranchRef",
         ]
     )
     if result["returncode"] != 0:
@@ -645,8 +689,62 @@ def require_repo_admin(
         "repository": data.get("nameWithOwner") or origin_repo,
         "url": data.get("url"),
         "visibility": data.get("visibility"),
+        "default_branch": (data.get("defaultBranchRef") or {}).get("name"),
         "viewer_permission": permission,
         "verified": True,
+    }
+
+
+def require_contributor_gate_protection(
+    repository: str,
+    default_branch: str | None,
+    runner=run_command,
+) -> dict[str, Any]:
+    """Fail closed unless the default branch requires the trusted PR gate context."""
+    if not default_branch:
+        raise ValueError("cannot verify Contributor Gate protection without a GitHub default branch")
+    endpoint = (
+        f"repos/{repository}/branches/{quote(default_branch, safe='')}/"
+        "protection/required_status_checks"
+    )
+    result = runner(["gh", "api", endpoint, "--hostname", "github.com"])
+    if result["returncode"] != 0:
+        raise ValueError(
+            "cannot verify default-branch required status checks; configure "
+            f"{CONTRIBUTOR_GATE_REQUIRED_CHECK!r} on {default_branch} before attaching the Harness"
+        )
+    try:
+        data = json.loads(result.get("stdout") or "")
+    except json.JSONDecodeError as exc:
+        raise ValueError("default-branch required status check evidence is invalid") from exc
+    if not isinstance(data, dict):
+        raise ValueError("default-branch required status check evidence is invalid")
+    checks = data.get("checks", [])
+    trusted_check = next(
+        (
+            item
+            for item in checks
+            if isinstance(item, dict)
+            and item.get("context") == CONTRIBUTOR_GATE_REQUIRED_CHECK
+            and item.get("app_id") == GITHUB_ACTIONS_APP_ID
+        ),
+        None,
+    ) if isinstance(checks, list) else None
+    if trusted_check is None:
+        raise ValueError(
+            f"default branch {default_branch} does not require {CONTRIBUTOR_GATE_REQUIRED_CHECK!r} "
+            f"from GitHub Actions app_id={GITHUB_ACTIONS_APP_ID}; configure the exact bound check "
+            "before attaching the Harness"
+        )
+    return {
+        "schema_version": "evozeus.coevolve.required-check-evidence.v1",
+        "repository": repository,
+        "branch": default_branch,
+        "context": CONTRIBUTOR_GATE_REQUIRED_CHECK,
+        "app_id": GITHUB_ACTIONS_APP_ID,
+        "source": "github_branch_protection_api",
+        "verified": True,
+        "writes": False,
     }
 
 
@@ -1642,7 +1740,14 @@ def build_wrapper_manifest(
     onboarding: dict[str, Any] | None = None,
     dashboard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    effective_managed_files = list(dict.fromkeys([*managed_files, TARGET_HARNESS_SKILL]))
+    effective_managed_files = list(dict.fromkeys([
+        *managed_files,
+        TARGET_HARNESS_SKILL,
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    ]))
     default_hook_files = []
     if CODEX_HOOKS_CONFIG in effective_managed_files and CODEX_START_HOOK_SCRIPT in effective_managed_files:
         default_hook_files = [CODEX_HOOKS_CONFIG, CODEX_START_HOOK_SCRIPT]
@@ -1697,6 +1802,16 @@ def build_wrapper_manifest(
             },
         },
         "integration": effective_integration,
+        "contributor_branch": {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        },
     }
     return manifest
 
@@ -2001,6 +2116,107 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
 
 def _same_file_contents(left: Path, right: Path) -> bool:
     return left.is_file() and right.is_file() and file_sha256(left) == file_sha256(right)
+
+
+def _pr_template_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text and text.count("\r\n") == text.count("\n") else "\n"
+
+
+def _canonical_pr_plan_block(official_text: str) -> tuple[str, str]:
+    if official_text.count(PR_PLAN_BEGIN) != 1 or official_text.count(PR_PLAN_END) != 1:
+        raise ValueError("official Pull Request template must contain one managed Contributor Branch Plan block")
+    start = official_text.index(PR_PLAN_BEGIN)
+    end_marker = official_text.index(PR_PLAN_END)
+    if end_marker <= start:
+        raise ValueError("official Pull Request template managed block markers are out of order")
+    end = end_marker + len(PR_PLAN_END)
+    block = official_text[start:end]
+    inner = official_text[start + len(PR_PLAN_BEGIN) : end_marker].strip("\r\n")
+    if len(re.findall(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", inner)) != 1:
+        raise ValueError("official Pull Request template managed block has an invalid heading")
+    return block, inner
+
+
+def merge_pull_request_template(current_text: str, official_text: str) -> tuple[str, str]:
+    """Refresh only proven wrapper-owned PR-template bytes and preserve target-owned bytes."""
+    official_block, official_inner = _canonical_pr_plan_block(official_text)
+    digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+    if current_text == official_text or digest in PR_TEMPLATE_MANAGED_BASELINE_SHA256:
+        return official_text, "refresh_managed_baseline"
+
+    newline = _pr_template_newline(current_text)
+    block = official_block.replace("\r\n", "\n").replace("\n", newline)
+    begin_count = current_text.count(PR_PLAN_BEGIN)
+    end_count = current_text.count(PR_PLAN_END)
+    if begin_count or end_count:
+        if begin_count != 1 or end_count != 1:
+            raise ValueError("target Pull Request template has ambiguous managed block markers")
+        start = current_text.index(PR_PLAN_BEGIN)
+        end_marker = current_text.index(PR_PLAN_END)
+        if end_marker <= start:
+            raise ValueError("target Pull Request template managed block markers are out of order")
+        end = end_marker + len(PR_PLAN_END)
+        return current_text[:start] + block + current_text[end:], "refresh_managed_block"
+
+    headings = list(re.finditer(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", current_text))
+    if len(headings) > 1:
+        raise ValueError("target Pull Request template has multiple Contributor Branch Plan headings")
+    if headings:
+        start = headings[0].start()
+        following = re.search(r"(?m)^#{1,2}[ \t]+", current_text[headings[0].end() :])
+        end = headings[0].end() + following.start() if following else len(current_text)
+        section = current_text[start:end].strip(" \t\r\n").replace("\r\n", "\n")
+        if section != official_inner.replace("\r\n", "\n"):
+            raise ValueError("target Pull Request template has an unowned Contributor Branch Plan section")
+        suffix = current_text[end:].lstrip("\r\n")
+        separator = newline * (2 if suffix else 1)
+        return current_text[:start] + block + separator + suffix, "adopt_legacy_managed_block"
+
+    anchors = list(re.finditer(r"(?m)^## What Changed[ \t]*\r?$", current_text))
+    offset = anchors[0].start() if len(anchors) == 1 else len(current_text)
+    prefix = current_text[:offset]
+    suffix = current_text[offset:]
+    if not prefix:
+        before = ""
+    elif prefix.endswith(newline * 2):
+        before = ""
+    elif prefix.endswith(newline):
+        before = newline
+    else:
+        before = newline * 2
+    after = newline * (2 if suffix else 1)
+    return prefix + before + block + after + suffix, "inject_managed_block"
+
+
+def plan_pull_request_template_update(
+    target: Path,
+    wrapper_root: Path,
+) -> dict[str, Any]:
+    source = wrapper_root / "templates" / "target" / PR_TEMPLATE_PATH
+    destination = target / PR_TEMPLATE_PATH
+    if not source.is_file():
+        raise ValueError(f"wrapper Pull Request template source is missing: {source}")
+    if destination.is_symlink():
+        raise ValueError(f"migration write path contains a symlink: {PR_TEMPLATE_PATH}")
+    official_text = source.read_text(encoding="utf-8")
+    if not destination.exists():
+        _canonical_pr_plan_block(official_text)
+        return {
+            "path": PR_TEMPLATE_PATH,
+            "mode": "create_managed_template",
+            "changed": True,
+            "target_owned_bytes_preserved": True,
+        }
+    if not destination.is_file():
+        raise ValueError(f"target Pull Request template is not a regular file: {PR_TEMPLATE_PATH}")
+    current_text = _read_text_preserving_newlines(destination)
+    merged, mode = merge_pull_request_template(current_text, official_text)
+    return {
+        "path": PR_TEMPLATE_PATH,
+        "mode": mode,
+        "changed": merged != current_text,
+        "target_owned_bytes_preserved": mode not in {"refresh_managed_baseline"},
+    }
 
 
 def _codex_hook_template_data() -> dict[str, Any]:
@@ -2921,8 +3137,41 @@ def _harness_contract_needs_migration(
     instruction_surface: object,
 ) -> bool:
     manifest = manifest or {}
-    if not _manifest_proves_canonical_harness_ownership(manifest):
+    managed_files = manifest.get("managed_files")
+    contributor_branch = manifest.get("contributor_branch")
+    expected_branch_contract = {
+        "profile": "coevolve_target_skillware_consumer",
+        "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+        "contract_path": TARGET_BRANCH_CONTRACT,
+        "provenance_path": TARGET_BRANCH_PROVENANCE,
+        "planner_path": TARGET_BRANCH_PLANNER,
+        "permission_authority": "core_planner_live_github_evidence",
+        "runtime_network_fetch": False,
+        "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+    }
+    if (
+        not _manifest_proves_canonical_harness_ownership(manifest)
+        or any(path not in managed_files for path in (
+            TARGET_HARNESS_SKILL,
+            TARGET_BRANCH_CONSUMER_SCRIPT,
+            TARGET_BRANCH_CONTRACT,
+            TARGET_BRANCH_PROVENANCE,
+            TARGET_BRANCH_PLANNER,
+        ))
+        or contributor_branch != expected_branch_contract
+    ):
         return True
+    source_root = Path(__file__).resolve().parents[1]
+    branch_asset_sources = {
+        TARGET_BRANCH_CONSUMER_SCRIPT: source_root / "scripts" / "evozeus_branch_consumer.py",
+        TARGET_BRANCH_CONTRACT: source_root / "templates" / "target" / "contracts" / "v1" / "contributor-branch-contract.json",
+        TARGET_BRANCH_PROVENANCE: source_root / "templates" / "target" / "contracts" / "v1" / "contributor-branch-provenance.json",
+        TARGET_BRANCH_PLANNER: source_root / "templates" / "target" / "scripts" / "evozeus-branch-preflight.mjs",
+    }
+    for relative_path, source in branch_asset_sources.items():
+        installed = safe_target_relative_file(target, relative_path)
+        if installed is None or not source.is_file() or installed.read_bytes() != source.read_bytes():
+            return True
     harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
     if harness is None:
         return True
@@ -3004,12 +3253,22 @@ def plan_target_layout_migration(
     today: date | None = None,
     *,
     require_clean_git: bool = False,
+    wrapper_root: Path | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
+    wrapper_root = (
+        Path(__file__).resolve().parents[1]
+        if wrapper_root is None
+        else wrapper_root.expanduser().resolve()
+    )
     manifest_status = wrapper_manifest_status(target)
     conflicts: list[str] = []
     if manifest_status["conflict"]:
         conflicts.append("legacy wrapper manifests contain different data")
+    try:
+        verify_managed_snapshot(wrapper_root / "templates" / "target")
+    except BranchConsumerError as exc:
+        conflicts.append(f"wrapper contributor branch snapshot is invalid: {exc}")
     git_status = run_command(
         ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=normal"]
     )
@@ -3093,6 +3352,7 @@ def plan_target_layout_migration(
         or version_refresh_required
         or instruction_surface_migration_required
     )
+    pull_request_template_update = None
     if requires_migration:
         harness_destination = target / TARGET_HARNESS_SKILL
         if (
@@ -3103,6 +3363,10 @@ def plan_target_layout_migration(
                 "existing canonical Harness Skill is not proven wrapper-managed; "
                 "preserve it and use an approved Harness repair"
             )
+        try:
+            pull_request_template_update = plan_pull_request_template_update(target, wrapper_root)
+        except ValueError as exc:
+            conflicts.append(str(exc))
         try:
             _, codex_hooks_update = _merge_codex_hooks_config(target)
         except ValueError as exc:
@@ -3171,6 +3435,7 @@ def plan_target_layout_migration(
             ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
             "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
             f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
+            f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_branch_consumer.*.pyc",
         )
         for path in target.glob(pattern)
         if path.is_file()
@@ -3179,6 +3444,10 @@ def plan_target_layout_migration(
         CODEX_HOOKS_CONFIG,
         TARGET_PREFLIGHT_SCRIPT,
         TARGET_NOTICE_SCRIPT,
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
         CODEX_START_HOOK_SCRIPT,
         TARGET_ONBOARDING_GUIDE,
         TARGET_FEEDBACK_POLICY,
@@ -3186,6 +3455,7 @@ def plan_target_layout_migration(
         TARGET_NOTICE_POLICY,
         TARGET_HARNESS_SKILL,
         ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/pull_request_template.md",
         ".github/workflows/evozeus-wrapper-preflight.yml",
     ]
     if requires_migration:
@@ -3248,6 +3518,7 @@ def plan_target_layout_migration(
         "migration_record": migration_record if requires_migration else None,
         "moves": moves,
         "managed_file_refreshes": managed_file_refreshes,
+        "pull_request_template_update": pull_request_template_update,
         "codex_hooks_update": codex_hooks_update,
         "instruction_surface": instruction_surface,
         "preserved_host_entrypoints": [
@@ -3301,6 +3572,7 @@ def _remove_legacy_wrapper_caches(target: Path) -> list[str]:
         ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
         "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
         f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
+        f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_branch_consumer.*.pyc",
     ]
     removed: list[str] = []
     for pattern in patterns:
@@ -3331,12 +3603,32 @@ def _refresh_migrated_managed_files(
             target / TARGET_NOTICE_SCRIPT,
         ),
         (
+            wrapper_root / "scripts" / "evozeus_branch_consumer.py",
+            target / TARGET_BRANCH_CONSUMER_SCRIPT,
+        ),
+        (
+            wrapper_root / "templates" / "target" / "contracts" / "v1" / "contributor-branch-contract.json",
+            target / TARGET_BRANCH_CONTRACT,
+        ),
+        (
+            wrapper_root / "templates" / "target" / "contracts" / "v1" / "contributor-branch-provenance.json",
+            target / TARGET_BRANCH_PROVENANCE,
+        ),
+        (
+            wrapper_root / "templates" / "target" / "scripts" / "evozeus-branch-preflight.mjs",
+            target / TARGET_BRANCH_PLANNER,
+        ),
+        (
             wrapper_root / "templates" / "target" / ".codex" / "hooks" / "evozeus_wrapper_start_check.py",
             target / CODEX_START_HOOK_SCRIPT,
         ),
         (
             wrapper_root / "templates" / "target" / ".github" / "workflows" / "evozeus-wrapper-preflight.yml",
             target / ".github" / "workflows" / "evozeus-wrapper-preflight.yml",
+        ),
+        (
+            wrapper_root / "templates" / "target" / ".github" / "pull_request_template.md",
+            target / ".github" / "pull_request_template.md",
         ),
         (
             wrapper_root / "templates" / "target" / "docs" / "onboarding.md",
@@ -3366,14 +3658,27 @@ def _refresh_migrated_managed_files(
         ),
     ]
     refreshed: list[str] = []
+    exact_snapshot_destinations = {
+        target / TARGET_BRANCH_CONTRACT,
+        target / TARGET_BRANCH_PROVENANCE,
+        target / TARGET_BRANCH_PLANNER,
+    }
     for source, destination in refresh_map:
         if not source.is_file():
             raise ValueError(f"wrapper migration source is missing: {source}")
-        text = source.read_text(encoding="utf-8")
-        if source.name == "evozeus_wrapper_start_check.py":
-            text = text.replace("{{WRAPPER_VERSION}}", wrapper_version or "")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(text, encoding="utf-8")
+        if destination in exact_snapshot_destinations:
+            shutil.copy2(source, destination)
+        else:
+            text = source.read_text(encoding="utf-8")
+            if source.name == "evozeus_wrapper_start_check.py":
+                text = text.replace("{{WRAPPER_VERSION}}", wrapper_version or "")
+            if destination == target / PR_TEMPLATE_PATH and destination.exists():
+                current = _read_text_preserving_newlines(destination)
+                text, _ = merge_pull_request_template(current, text)
+                _write_text_preserving_newlines(destination, text)
+            else:
+                destination.write_text(text, encoding="utf-8")
         if destination.suffix == ".py":
             destination.chmod(0o755)
         refreshed.append(str(destination.relative_to(target)))
@@ -3394,6 +3699,7 @@ def migrate_target_layout(
         latest_version,
         today,
         require_clean_git=require_clean_git,
+        wrapper_root=wrapper_root,
     )
     if plan["conflicts"]:
         raise ValueError("cannot migrate wrapper layout:\n- " + "\n- ".join(plan["conflicts"]))
@@ -3427,7 +3733,12 @@ def migrate_target_layout(
         wrapper_root,
     )
     changed_files.extend(refreshed_files)
-    actions.extend(f"refresh managed file {path}" for path in refreshed_files)
+    for path in refreshed_files:
+        if path == PR_TEMPLATE_PATH and plan.get("pull_request_template_update"):
+            mode = plan["pull_request_template_update"]["mode"]
+            actions.append(f"{mode} {path}")
+        else:
+            actions.append(f"refresh managed file {path}")
 
     merged_hooks, hooks_action = _merge_codex_hooks_config(target)
     hooks_path = target / CODEX_HOOKS_CONFIG
@@ -3481,6 +3792,7 @@ def migrate_target_layout(
     manifest["integration"] = refreshed_contract["integration"]
     manifest["onboarding"] = refreshed_contract["onboarding"]
     manifest["dashboard"] = refreshed_contract["dashboard"]
+    manifest["contributor_branch"] = refreshed_contract["contributor_branch"]
     manifest["instruction_surface"] = instruction_surface
     manifest["harness_skill_path"] = refreshed_contract["harness_skill_path"]
     manifest["harness_skill_version"] = refreshed_contract["harness_skill_version"]
@@ -3946,8 +4258,8 @@ def plan_harness_upgrade(
         "integration_policy": (
             "repo_maintenance_hook covers only the canonical repository; global_session_dispatcher checks all "
             "registered wrapped Skills at SessionStart; skill_entry_preflight is prompt-compliance fallback; "
-            "none is a native per-Skill invocation hook without a SkillInvoke event; the contributor branch "
-            "contract remains tracked by #36 and is consumed after that contract lands"
+            "none is a native per-Skill invocation hook without a SkillInvoke event; Issue-to-PR must consume "
+            "the pinned EvoZeus Core contributor branch contract and live permission evidence before target writes"
         ),
         "skill_md_policy": (
             "single Skill targets use SKILL.md; AGENTS.md-root targets use AGENTS.md; hook-controlled bundles use the hook-loaded control Skill"
@@ -3967,6 +4279,7 @@ def plan_harness_upgrade(
             "Diff wrapper-managed files; if they contain local edits, stop for merge review.",
             "Copy or merge wrapper-managed files only.",
             f"Write {TARGET_HARNESS_SKILL} from the wrapper-managed canonical template.",
+            "Refresh the contributor branch consumer, pinned Core contract/planner snapshot, provenance, and PR metadata surface.",
             f"Replace proven wrapper-owned legacy sections in {instruction_surface} with one compact activation block.",
             f"Write a migration record under {TARGET_EVOINFRA_DIR}/docs/migrations/ with from/to wrapper versions, validation, and rollback.",
             f"Update {TARGET_WRAPPER_MANIFEST} wrapper_version after validation passes.",
