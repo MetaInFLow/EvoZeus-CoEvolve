@@ -420,7 +420,7 @@ def test_attach_create_cas_preserves_a_racing_unknown_leaf(
     with pytest.raises(ValueError, match="rollback_failed"):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=False,
             _migration_bundle=_trusted_development_bundle(),
         )
@@ -468,7 +468,7 @@ def test_attach_parent_swap_never_writes_through_the_replacement(
     with pytest.raises(ValueError):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=False,
             _migration_bundle=_trusted_development_bundle(),
         )
@@ -515,7 +515,7 @@ def test_attach_rolls_back_a_complete_create_left_by_a_commit_error(
     with pytest.raises(ValueError, match="rolled back"):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=False,
             _migration_bundle=_trusted_development_bundle(),
         )
@@ -567,7 +567,7 @@ def test_attach_reports_rollback_failed_for_an_unknown_commit_error_residue(
     with pytest.raises(ValueError, match="rollback_failed"):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=False,
             _migration_bundle=_trusted_development_bundle(),
         )
@@ -1480,7 +1480,7 @@ def test_bootstrap_rejects_exact_bytes_with_the_wrong_mode_before_writing(
     with pytest.raises(ValueError, match="no exact trusted preimage"):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=force,
             _migration_bundle=_trusted_development_bundle(),
         )
