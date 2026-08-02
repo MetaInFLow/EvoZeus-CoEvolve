@@ -16,6 +16,7 @@ from scripts.evozeus_wrapper_bootstrap import (
     build_wrapper_section,
     copy_templates,
     inject_evolution_method,
+    validate_existing_manifest_for_attach,
 )
 from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_ENTRY_BEGIN,
@@ -31,17 +32,21 @@ from scripts.evozeus_wrapper_lifecycle import (
     TARGET_WRAPPER_MANIFEST,
     build_harness_activation_block,
     build_wrapper_manifest,
+    canonical_harness_skill_text_valid,
     detect_target_architecture,
     migrate_instruction_surface_to_harness_entry,
     migrate_target_layout,
     plan_harness_upgrade,
     plan_target_layout_migration,
+    validate_instruction_surface_for_harness_entry,
     write_wrapper_manifest,
 )
 from scripts.evozeus_wrapper_preflight import (
     HARNESS_SKILL_TERMS,
+    REQUIRED_FILES,
     check_harness_entry_contract,
     check_harness_skill_contract,
+    discover_runtime_bundle,
 )
 
 
@@ -203,6 +208,165 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
 
     copy_templates(target, replacements(), force=True)
     assert "name: using-evozeus-harness" in harness.read_text(encoding="utf-8")
+
+
+def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("OWNER BYTES\n", encoding="utf-8")
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True)
+    harness.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=True)
+
+    assert harness.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "OWNER BYTES\n"
+    assert not (target / ".evozeus-wrapper/wrapper.json").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_rejects_a_symlinked_harness_parent_without_writing_outside_repo(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / ".evozeus-wrapper").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=True)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflights_every_template_destination_before_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    outside = tmp_path / "outside-github"
+    outside.mkdir()
+    (target / ".github").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="template destination contains a symlink component"):
+        copy_templates(target, replacements(), force=False)
+
+    assert list(outside.iterdir()) == []
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".codex").exists()
+
+
+def test_attach_rejects_a_non_directory_template_parent_before_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("# Business Skill\n", encoding="utf-8")
+    wrapper = target / ".evozeus-wrapper"
+    wrapper.mkdir()
+    (wrapper / "skills").write_text("OWNER FILE\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="template destination parent is not a directory"):
+        copy_templates(target, replacements(), force=False)
+
+    assert (wrapper / "skills").read_text(encoding="utf-8") == "OWNER FILE\n"
+    assert not (target / ".github").exists()
+    assert not (target / ".codex").exists()
+
+
+@pytest.mark.parametrize(
+    "damaged_entry",
+    [
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}",
+        f"{HARNESS_ENTRY_BEGIN}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_END}\n{HARNESS_ENTRY_BEGIN}",
+    ],
+)
+def test_attach_preflight_rejects_nested_or_interleaved_harness_markers(
+    tmp_path: Path,
+    damaged_entry: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original = damaged_entry + "\n\n# Business Skill\n"
+    skill.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unbalanced canonical Harness entry"):
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+
+    assert skill.read_text(encoding="utf-8") == original
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_rejects_a_truncated_owned_surface_before_template_writes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original = (
+        "## 自进化方法\n\n"
+        "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环。\n\n"
+        "Owner business text must survive.\n"
+    )
+    skill.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot be migrated safely"):
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+
+    assert skill.read_text(encoding="utf-8") == original
+    assert not (target / ".evozeus-wrapper").exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_routes_an_existing_legacy_manifest_to_migration(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    original_skill = legacy_skill_text()
+    skill.write_text(original_skill, encoding="utf-8")
+    manifest = write_manifest(target, legacy=True)
+    manifest_path = target / TARGET_WRAPPER_MANIFEST
+    original_manifest = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="requires migrate-layout before attach"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+    assert skill.read_text(encoding="utf-8") == original_skill
+    assert manifest_path.read_bytes() == original_manifest
+    assert not (target / TARGET_HARNESS_SKILL).exists()
+    assert not (target / ".github").exists()
+
+
+def test_attach_preflight_allows_an_idempotent_canonical_manifest(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+
+    validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+
+def test_attach_preflight_requires_harness_in_managed_files(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    manifest["managed_files"].remove(TARGET_HARNESS_SKILL)
+    (target / TARGET_WRAPPER_MANIFEST).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="managed_files"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
 
 
 def test_harness_skill_routes_low_frequency_intents_without_expanding_authority() -> None:
@@ -807,6 +971,570 @@ def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
     assert report["writes"] is True
     assert harness.read_text(encoding="utf-8").startswith("---\n")
     assert run_structure(target).returncode == 0
+
+
+def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text(legacy_skill_text(), encoding="utf-8")
+    write_manifest(target, legacy=True)
+    harness = target / TARGET_HARNESS_SKILL
+    harness.parent.mkdir(parents=True, exist_ok=True)
+    template = (
+        ROOT
+        / "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
+    ).read_bytes()
+    owner_bytes = template + b"\n# Owner customization at reserved path\n"
+    harness.write_bytes(owner_bytes)
+    assert canonical_harness_skill_text_valid(harness.read_text(encoding="utf-8"))
+    skill_bytes = (target / "SKILL.md").read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="not proven wrapper-managed"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert plan["can_apply"] is False
+    assert any("not proven wrapper-managed" in item for item in plan["conflicts"])
+    assert harness.read_bytes() == owner_bytes
+    assert (target / "SKILL.md").read_bytes() == skill_bytes
+
+
+def test_migration_rejects_a_non_directory_write_parent_before_any_write(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(legacy_skill_text(), encoding="utf-8")
+    write_manifest(target, legacy=True)
+    blocker = target / ".evozeus-wrapper/skills"
+    blocker.write_text("OWNER FILE\n", encoding="utf-8")
+    skill_bytes = skill.read_bytes()
+    manifest_bytes = (target / TARGET_WRAPPER_MANIFEST).read_bytes()
+
+    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    with pytest.raises(ValueError, match="parent is not a directory"):
+        migrate_target_layout(target, latest_version="v0.14.0")
+
+    assert plan["can_apply"] is False
+    assert any("parent is not a directory" in item for item in plan["conflicts"])
+    assert blocker.read_text(encoding="utf-8") == "OWNER FILE\n"
+    assert skill.read_bytes() == skill_bytes
+    assert (target / TARGET_WRAPPER_MANIFEST).read_bytes() == manifest_bytes
+
+
+def test_preflight_rejects_reversed_harness_entry_markers_without_traceback(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    entry = target / "SKILL.md"
+    text = entry.read_text(encoding="utf-8")
+    block = build_harness_activation_block()
+    reversed_block = block.replace(HARNESS_ENTRY_BEGIN, "__BEGIN__").replace(
+        HARNESS_ENTRY_END,
+        HARNESS_ENTRY_BEGIN,
+    ).replace("__BEGIN__", HARNESS_ENTRY_END)
+    entry.write_text(text.replace(block, reversed_block), encoding="utf-8")
+
+    with contextlib.redirect_stderr(io.StringIO()) as stderr, pytest.raises(SystemExit):
+        check_harness_entry_contract(target, manifest)
+
+    assert "exactly one canonical Harness Skill activation block" in stderr.getvalue()
+    assert "Traceback" not in stderr.getvalue()
+
+
+def test_migration_preserves_harness_entry_examples_inside_fenced_code(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    fenced_example = (
+        "```markdown\n"
+        f"{HARNESS_ENTRY_BEGIN}\n"
+        "Owner example content must survive.\n"
+        f"{HARNESS_ENTRY_END}\n"
+        "```\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + fenced_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert fenced_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert updated.count(HARNESS_ENTRY_END) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_migration_preserves_harness_entry_examples_inside_indented_code(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    indented_example = (
+        f"    {HARNESS_ENTRY_BEGIN}\n"
+        "    EXAMPLE BUSINESS BYTES\n"
+        f"    {HARNESS_ENTRY_END}\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + indented_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert indented_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_migration_preserves_harness_entry_examples_inside_frontmatter(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = (
+        "---\n"
+        'name: "example"\n'
+        "description: |\n"
+        f"  {HARNESS_ENTRY_BEGIN}\n"
+        "  EXAMPLE BUSINESS BYTES\n"
+        f"  {HARNESS_ENTRY_END}\n"
+        "---\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business_prefix = "---\n# Business introduction\n\n"
+    business_suffix = "---\n\n# Business continuation\n"
+    skill = target / "SKILL.md"
+    skill.write_text(
+        business_prefix + build_harness_activation_block() + "\n" + business_suffix,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+    assert business_prefix + business_suffix in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_invalid_flow_markdown_does_not_own_a_harness_entry_example(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    invalid_flow_example = (
+        "---\n"
+        "{key: [broken\n"
+        f"{HARNESS_ENTRY_BEGIN}\n"
+        "EXAMPLE BUSINESS BYTES\n"
+        f"{HARNESS_ENTRY_END}\n"
+        "}\n"
+        "---\n"
+        "\n# Business Skill\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(invalid_flow_example, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert invalid_flow_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_invalid_nested_flow_is_not_treated_as_frontmatter(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = "---\n{key: [broken,,value]}\n---\n\n# Business main flow\n"
+    skill = target / "SKILL.md"
+    skill.write_text(business, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(build_harness_activation_block())
+    assert business in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_invalid_sequence_mapping_pair_is_not_treated_as_frontmatter(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = "---\n{key: [a: b: c]}\n---\n\n# Business main flow\n"
+    skill = target / "SKILL.md"
+    skill.write_text(business, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(build_harness_activation_block())
+    assert business in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_adjacent_plain_and_collection_nodes_are_not_treated_as_frontmatter(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = (
+        "---\n"
+        "{key: {broken [value] ...}}\n"
+        "# Business main flow\n"
+        "---\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(business, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(build_harness_activation_block())
+    assert business in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_flow_frontmatter_preserves_an_exact_harness_entry_example(tmp_path: Path) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = (
+        "---\n"
+        '{"key":[foo#bar],"description":"\n'
+        + build_harness_activation_block()
+        + '\n"}\n'
+        + "---\n"
+    )
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "mapping_body",
+    [
+        "display name: Demo",
+        "123: Demo",
+        "显示名称: Demo",
+        "{}",
+        '{"name":"Demo"}',
+        "{name:'Demo'}",
+        '{\n"name":"Demo"\n}',
+        "{a: b,# comment: ignored\nc: d}",
+        "{key: [http://example.com: 80]}",
+        '{urn:"foo": value}',
+        "tags:\n- alpha",
+        "!!map\n? complex key\n: Demo",
+    ],
+)
+def test_migration_preserves_frontmatter_with_general_yaml_mapping_keys(
+    tmp_path: Path,
+    mapping_body: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = f"---\n{mapping_body}\n---\n"
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "container_example",
+    [
+        (
+            f"> {HARNESS_ENTRY_BEGIN}\n"
+            "> EXAMPLE BUSINESS BYTES\n"
+            f"> {HARNESS_ENTRY_END}\n"
+        ),
+        (
+            "- Example entry:\n"
+            f"  {HARNESS_ENTRY_BEGIN}\n"
+            "  EXAMPLE BUSINESS BYTES\n"
+            f"  {HARNESS_ENTRY_END}\n"
+        ),
+    ],
+)
+def test_migration_preserves_harness_entry_examples_inside_markdown_containers(
+    tmp_path: Path,
+    container_example: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + container_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert container_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "html_example",
+    [
+        (
+            "<pre>\n"
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</pre>\n\n"
+        ),
+        (
+            "<div>\n"
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</div>\n\n"
+        ),
+        (
+            '<widget title="a > b">\n'
+            f"{HARNESS_ENTRY_BEGIN}\n"
+            "EXAMPLE BUSINESS BYTES\n"
+            f"{HARNESS_ENTRY_END}\n"
+            "</widget>\n\n"
+        ),
+    ],
+)
+def test_migration_preserves_harness_entry_examples_inside_raw_html_blocks(
+    tmp_path: Path,
+    html_example: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "example"\n---\n\n# Business Skill\n\n' + html_example,
+        encoding="utf-8",
+    )
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert html_example in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 2
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+def test_runtime_bundle_requires_the_canonical_harness_skill_from_manifest_or_entry(
+    tmp_path: Path,
+) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    bundle = discover_runtime_bundle(wrapped)
+    assert set(REQUIRED_FILES).issubset(bundle["required_files"])
+
+    harness = wrapped / TARGET_HARNESS_SKILL
+    harness.unlink()
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(wrapped / TARGET_PREFLIGHT_SCRIPT),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert runtime.returncode == 1
+    assert TARGET_HARNESS_SKILL in runtime.stderr
+
+    standalone = tmp_path / "standalone-runtime"
+    standalone.mkdir()
+    (standalone / "SKILL.md").write_text(
+        build_harness_activation_block() + "\n\n# Business\n",
+        encoding="utf-8",
+    )
+    assert set(REQUIRED_FILES).issubset(discover_runtime_bundle(standalone)["required_files"])
+
+
+def test_runtime_bundle_rejects_a_damaged_canonical_harness_contract(tmp_path: Path) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    (wrapped / TARGET_HARNESS_SKILL).write_text("BROKEN\n", encoding="utf-8")
+
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(wrapped / TARGET_PREFLIGHT_SCRIPT),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert runtime.returncode == 1
+    assert "frontmatter is missing or malformed" in runtime.stderr
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [
+        TARGET_WRAPPER_MANIFEST,
+        TARGET_PREFLIGHT_SCRIPT,
+        ".evozeus-wrapper/scripts/evozeus_notice.py",
+        ".evozeus-wrapper/policies/notice-policy.json",
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+    ],
+)
+def test_runtime_bundle_rejects_a_missing_harness_transitive_dependency(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    wrapped = tmp_path / "wrapped"
+    wrapped.mkdir()
+    prepare_fresh_target(wrapped)
+    (wrapped / dependency).unlink()
+
+    runtime = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/evozeus_wrapper_preflight.py"),
+            "runtime",
+            "--target",
+            str(wrapped),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert runtime.returncode == 1
+    assert dependency in runtime.stderr
 
 
 def test_compatible_legacy_manifest_remains_advisory_for_doctor_contract(tmp_path: Path) -> None:

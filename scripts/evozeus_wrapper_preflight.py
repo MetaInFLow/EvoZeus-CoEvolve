@@ -596,16 +596,144 @@ def _canonical_harness_entry_block() -> str:
     )
 
 
+def _mask_markdown_fenced_code(text: str) -> str:
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
+    masked: list[str] = []
+    offset = 0
+    frontmatter_end = _frontmatter_end(text)
+    fence: tuple[str, int] | None = None
+    html_block: tuple[str, re.Pattern[str] | None] | None = None
+
+    def mask_line(line: str) -> str:
+        return "".join(character if character in "\r\n" else " " for character in line)
+
+    def is_complete_html_tag(line: str) -> bool:
+        match = re.match(r"^[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*", line)
+        if not match:
+            return False
+        quote: str | None = None
+        for index in range(match.end(), len(line)):
+            character = line[index]
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ">":
+                return not line[index + 1 :].strip()
+        return False
+
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        if fence:
+            fence_char, minimum_length = fence
+            if re.match(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{minimum_length},}}[ \t]*$",
+                content,
+            ):
+                fence = None
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        if html_block:
+            mode, end_pattern = html_block
+            if (mode == "blank" and not content.strip()) or (
+                end_pattern is not None and end_pattern.search(content)
+            ):
+                html_block = None
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
+        if fence_match:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            masked.append(mask_line(line))
+        elif re.fullmatch(
+            rf"(?:{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*",
+            content,
+        ):
+            masked.append(line)
+        elif html_match := re.match(
+            r"^[ ]{0,3}<(script|pre|style|textarea)(?:[ \t>]|$)",
+            content,
+            re.IGNORECASE,
+        ):
+            end_pattern = re.compile(rf"</{html_match.group(1)}[ \t]*>", re.IGNORECASE)
+            if not end_pattern.search(content[html_match.end() :]):
+                html_block = ("pattern", end_pattern)
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!--", content):
+            if "-->" not in content[content.find("<!--") + 4 :]:
+                html_block = ("pattern", re.compile(r"-->"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<\?", content):
+            if "?>" not in content[content.find("<?") + 2 :]:
+                html_block = ("pattern", re.compile(r"\?>"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<![A-Z]", content):
+            if ">" not in content[content.find("<!") + 2 :]:
+                html_block = ("pattern", re.compile(r">"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!\[CDATA\[", content):
+            if "]]>" not in content[content.find("<![CDATA[") + 9 :]:
+                html_block = ("pattern", re.compile(r"\]\]>"))
+            masked.append(mask_line(line))
+        elif re.match(
+            r"^[ ]{0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)",
+            content,
+            re.IGNORECASE,
+        ) or is_complete_html_tag(content):
+            html_block = ("blank", None)
+            masked.append(mask_line(line))
+        elif re.match(r"^(?: {4,}|\t)", content):
+            masked.append(mask_line(line))
+        else:
+            masked.append(line)
+        offset += len(line)
+    return "".join(masked)
+
+
 def check_harness_entry_contract(target: Path, manifest: dict) -> None:
     if manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL:
         fail(f"Harness entry manifest does not match canonical path {TARGET_HARNESS_SKILL}")
     surface_rel = manifest.get("instruction_surface")
     surface = _manifest_relative_file(target, surface_rel, "instruction_surface")
     text = read_text(surface).replace("\r\n", "\n")
-    if text.count(HARNESS_ENTRY_BEGIN) != 1 or text.count(HARNESS_ENTRY_END) != 1:
+    visible = _mask_markdown_fenced_code(text)
+    canonical_block = _canonical_harness_entry_block()
+    entry_pattern = re.compile(
+        "^"
+        + r"\n".join(re.escape(line) for line in canonical_block.splitlines())
+        + r"[ \t]*$",
+        re.MULTILINE,
+    )
+    entries = list(entry_pattern.finditer(visible))
+    if len(entries) != 1:
+        marker_pattern = re.compile(
+            rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+            rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*$",
+            re.MULTILINE,
+        )
+        markers = list(marker_pattern.finditer(visible))
+        begins = [match for match in markers if match.group("begin")]
+        ends = [match for match in markers if match.group("end")]
+        if (
+            not entries
+            and len(begins) == 1
+            and len(ends) == 1
+            and begins[0].start() < ends[0].start()
+        ):
+            fail("instruction surface Harness Skill link does not match the canonical manifest path")
         fail("instruction surface must contain exactly one canonical Harness Skill activation block")
-    start = text.index(HARNESS_ENTRY_BEGIN)
-    end = text.index(HARNESS_ENTRY_END, start) + len(HARNESS_ENTRY_END)
+    start = entries[0].start()
+    end = start + len(canonical_block)
     block = text[start:end]
     if block != _canonical_harness_entry_block():
         fail("instruction surface Harness Skill link does not match the canonical manifest path")
@@ -914,13 +1042,225 @@ def check_terms(text: str, term_groups: list[list[str]], label: str) -> None:
         fail(f"{label} missing required concepts: {', '.join(missing)}")
 
 
+def _frontmatter_end(text: str) -> int:
+    lines = text.splitlines(keepends=True)
+    if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
+        return 0
+    offset = len(lines[0])
+    body_lines: list[str] = []
+    for line in lines[1:]:
+        offset += len(line)
+        if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    flow_lines = list(body_lines)
+    while flow_lines and (not flow_lines[0].strip() or flow_lines[0].lstrip().startswith("#")):
+        flow_lines.pop(0)
+    while flow_lines and (not flow_lines[-1].strip() or flow_lines[-1].lstrip().startswith("#")):
+        flow_lines.pop()
+    flow_candidate = "\n".join(flow_lines).strip()
+    if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        inner = flow_candidate[1:-1]
+        quote: str | None = None
+        quote_closes_key = False
+        escaped = False
+        comment = False
+        frames = [
+            {
+                "kind": "map",
+                "content": False,
+                "separator": False,
+                "items": 0,
+                "key_closed": False,
+                "closes_key": False,
+                "value_started": False,
+            }
+        ]
+        valid_flow = True
+        for index, character in enumerate(inner):
+            if comment:
+                if character in "\r\n":
+                    comment = False
+                continue
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                    if quote_closes_key:
+                        frames[-1]["key_closed"] = True
+                    quote_closes_key = False
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                quote_closes_key = not frames[-1]["content"] and not frames[-1]["separator"]
+                if not quote_closes_key:
+                    frames[-1]["key_closed"] = False
+                frames[-1]["content"] = True
+                if frames[-1]["separator"]:
+                    frames[-1]["value_started"] = True
+            elif character == "#" and (
+                index == 0 or inner[index - 1].isspace() or inner[index - 1] in ",[]{}:"
+            ):
+                comment = True
+            elif character in "[{":
+                parent = frames[-1]
+                if (parent["separator"] and parent["value_started"]) or (
+                    not parent["separator"] and parent["content"]
+                ):
+                    valid_flow = False
+                    break
+                closes_key = not parent["content"] and not parent["separator"]
+                parent["content"] = True
+                if parent["separator"]:
+                    parent["value_started"] = True
+                if not closes_key:
+                    parent["key_closed"] = False
+                frames.append(
+                    {
+                        "kind": "sequence" if character == "[" else "map",
+                        "content": False,
+                        "separator": False,
+                        "items": 0,
+                        "key_closed": False,
+                        "closes_key": closes_key,
+                        "value_started": False,
+                    }
+                )
+            elif character in "]}":
+                expected = "sequence" if character == "]" else "map"
+                if len(frames) == 1 or frames[-1]["kind"] != expected:
+                    valid_flow = False
+                    break
+                frame = frames.pop()
+                if frame["content"]:
+                    frame["items"] += 1
+                if frame["closes_key"]:
+                    frames[-1]["key_closed"] = True
+            elif character == ",":
+                frame = frames[-1]
+                if not frame["content"]:
+                    valid_flow = False
+                    break
+                frame["items"] += 1
+                frame["content"] = False
+                frame["separator"] = False
+                frame["key_closed"] = False
+                frame["value_started"] = False
+            elif character == ":":
+                frame = frames[-1]
+                next_character = inner[index + 1 : index + 2]
+                is_separator = (
+                    not next_character
+                    or next_character.isspace()
+                    or next_character in ",[]{}"
+                    or bool(frame["key_closed"])
+                )
+                if not is_separator:
+                    frame["content"] = True
+                    frame["key_closed"] = False
+                    if frame["separator"]:
+                        frame["value_started"] = True
+                    continue
+                if frame["kind"] == "map":
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        valid_flow = False
+                        break
+                    else:
+                        frame["separator"] = True
+                        frame["key_closed"] = False
+                        frame["value_started"] = False
+                else:
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        valid_flow = False
+                        break
+                    else:
+                        frame["separator"] = True
+                        frame["key_closed"] = False
+                        frame["value_started"] = False
+            elif not character.isspace():
+                frames[-1]["content"] = True
+                frames[-1]["key_closed"] = False
+                if frames[-1]["separator"]:
+                    frames[-1]["value_started"] = True
+        valid_flow = valid_flow and quote is None and len(frames) == 1
+        root = frames[0]
+        if root["content"]:
+            root["items"] += 1
+        if valid_flow and (not inner.strip() or root["items"]):
+            return offset
+        return 0
+
+    def mapping_key_separator(line: str) -> int | None:
+        quote: str | None = None
+        escaped = False
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ":" and (index + 1 == len(line) or line[index + 1] in " \t"):
+                return index if line[:index].strip() else None
+        return None
+
+    saw_mapping_key = False
+    explicit_key = False
+    mapping_tag = False
+    allows_indentless_sequence = False
+    for line in body_lines:
+        stripped = line.strip()
+        if not stripped or line.lstrip().startswith("#"):
+            continue
+        if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
+            saw_mapping_key = True
+            continue
+        if stripped == "!!map" and not saw_mapping_key:
+            mapping_tag = True
+            continue
+        if line.startswith((" ", "\t")) and (saw_mapping_key or mapping_tag):
+            continue
+        if allows_indentless_sequence and (line == "-" or line.startswith("- ")):
+            continue
+        if line.startswith("? "):
+            explicit_key = True
+            continue
+        if explicit_key and (line == ":" or line.startswith(": ")):
+            saw_mapping_key = True
+            explicit_key = False
+            continue
+        separator = mapping_key_separator(line)
+        if separator is not None:
+            saw_mapping_key = True
+            allows_indentless_sequence = not line[separator + 1 :].strip()
+            continue
+        return 0
+    return offset if saw_mapping_key and not explicit_key else 0
+
+
 def content_after_frontmatter(text: str) -> str:
-    if not re.match(r"\A---[ \t]*\r?\n", text):
-        return text
-    match = re.match(r"\A---[ \t]*\r?\n.*?\r?\n(?:---|\.\.\.)[ \t]*\r?\n", text, re.DOTALL)
-    if not match:
-        return text
-    return text[match.end() :]
+    return text[_frontmatter_end(text) :]
 
 
 def check_status_prelude(skill_text: str, label: str = "SKILL.md") -> None:
@@ -1026,8 +1366,27 @@ def add_tree_files(target: Path, dirname: str, files: list[str]) -> None:
                 files.append(rel)
 
 
+def add_harness_runtime_files(files: list[str]) -> None:
+    """Add the complete file closure required by the canonical Harness contract."""
+    for path in REQUIRED_FILES:
+        if path not in files:
+            files.append(path)
+
+
 def discover_runtime_bundle(target: Path) -> dict:
     manifest = load_wrapper_manifest(target)
+    harness_runtime_path = None
+    if manifest and any(
+        field in manifest
+        for field in ("harness_skill_path", "harness_skill_version", "harness_skill_managed")
+    ):
+        if (
+            manifest.get("harness_skill_path") != TARGET_HARNESS_SKILL
+            or manifest.get("harness_skill_version") != HARNESS_SKILL_VERSION
+            or manifest.get("harness_skill_managed") is not True
+        ):
+            fail("runtime bundle has an invalid canonical Harness Skill identity")
+        harness_runtime_path = TARGET_HARNESS_SKILL
     runtime_bundle = manifest.get("runtime_bundle") if manifest else None
     if isinstance(runtime_bundle, dict):
         instruction_surface = str(runtime_bundle.get("instruction_surface") or "SKILL.md")
@@ -1038,6 +1397,8 @@ def discover_runtime_bundle(target: Path) -> dict:
         ]
         if instruction_surface not in required:
             required.insert(0, instruction_surface)
+        if harness_runtime_path:
+            add_harness_runtime_files(required)
         optional = [
             normalize_relative_path(path)
             for path in runtime_bundle.get("optional_files", [])
@@ -1055,6 +1416,10 @@ def discover_runtime_bundle(target: Path) -> dict:
     instruction_surface = str(entry.relative_to(target))
     required_files = [instruction_surface]
     text = entry.read_text(encoding="utf-8", errors="ignore")
+    if TARGET_HARNESS_SKILL in text:
+        harness_runtime_path = TARGET_HARNESS_SKILL
+    if harness_runtime_path:
+        add_harness_runtime_files(required_files)
     business_text = strip_wrapper_runtime_sections(text)
     for rel in referenced_runtime_files(business_text):
         if rel not in required_files:
@@ -1096,6 +1461,12 @@ def check_runtime(args: argparse.Namespace) -> None:
     missing = [path for path in bundle["required_files"] if not (target / path).is_file()]
     if missing:
         fail("missing required runtime files:\n" + "\n".join(f"- {path}" for path in missing))
+    if TARGET_HARNESS_SKILL in bundle["required_files"]:
+        manifest = load_wrapper_manifest(target)
+        if manifest is None:
+            fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
+        check_harness_skill_contract(target, manifest, allow_legacy=False)
+        check_harness_entry_contract(target, manifest)
     entry = target / bundle["instruction_surface"]
     check_runtime_safe_status_prelude(read_text(entry), bundle["instruction_surface"])
     ok("runtime bundle is complete")
