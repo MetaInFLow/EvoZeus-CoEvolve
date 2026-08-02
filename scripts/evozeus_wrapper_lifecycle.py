@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -293,12 +294,38 @@ def file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def run_command(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
+def run_command(
+    args: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     try:
-        result = subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
     except FileNotFoundError:
         return {"returncode": 127, "stdout": "", "stderr": "command not found"}
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+
+
+def _run_harness_structure_check(target: Path) -> dict[str, Any]:
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return run_command(
+        [
+            sys.executable,
+            str(target / TARGET_PREFLIGHT_SCRIPT),
+            "structure",
+            "--target",
+            str(target),
+        ],
+        env=environment,
+    )
 
 
 def latest_changelog_tag_from_text(changelog: str) -> str | None:
@@ -3704,6 +3731,11 @@ def plan_target_layout_migration(
         },
         "rollback": rollback_contract,
     }
+    plan["post_apply_baseline"] = (
+        migration_kernel.capture_post_apply_baseline(target, plan)
+        if target_git_state is not None
+        else None
+    )
     plan["plan_sha256"] = f"sha256:{migration_kernel.migration_plan_digest(plan)}"
     return plan
 
@@ -3875,56 +3907,96 @@ def _apply_canonical_v1_upgrade(
         plan,
         snapshot_root=snapshot_root,
     )
-    protected_before = {
-        item["path"]: (target / item["path"]).read_bytes()
-        for item in plan["protected_business_surfaces"]
-    }
+    protected_before: dict[str, bytes] = {}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        for item in plan["protected_business_surfaces"]:
+            protected_before[item["path"]] = secure_target.read_exact(
+                item["path"],
+                item["preimage_sha256"],
+            )
     changed_files: list[str] = []
+    migration_kernel.mark_migration_transaction(
+        snapshot,
+        state="in_progress",
+        changed_paths=[],
+    )
     try:
         migration_kernel.verify_plan_preimages(target, plan)
-        for relative in sorted(staged):
-            destination = target / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(staged[relative])
-            if destination.suffix == ".py":
-                destination.chmod(0o755)
-            changed_files.append(relative)
-
-        for item in plan["write_set"]:
-            destination = target / item["path"]
-            actual_postimage = f"sha256:{file_sha256(destination)}"
-            if actual_postimage != item["postimage_sha256"]:
-                raise ValueError(
-                    f"migration postimage verification failed: {item['path']}"
+        write_items = {item["path"]: item for item in plan["write_set"]}
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            for relative in sorted(staged):
+                item = write_items[relative]
+                current = secure_target.file_state(relative)
+                mode = (
+                    0o755
+                    if Path(relative).suffix == ".py"
+                    else current["mode"] if current["kind"] == "file" else 0o644
+                )
+                changed_files.append(relative)
+                migration_kernel.mark_migration_transaction(
+                    snapshot,
+                    state="in_progress",
+                    changed_paths=changed_files,
+                )
+                secure_target.write_exact(
+                    relative,
+                    staged[relative],
+                    expected_preimage=item.get("preimage_sha256"),
+                    mode=mode,
                 )
 
-        for relative, expected in protected_before.items():
-            if (target / relative).read_bytes() != expected:
-                raise ValueError(
-                    f"protected business surface changed outside the plan: {relative}"
-                )
-        structure = run_command(
-            [
-                sys.executable,
-                str(target / TARGET_PREFLIGHT_SCRIPT),
-                "structure",
-                "--target",
-                str(target),
-            ]
-        )
+            for item in plan["write_set"]:
+                actual = secure_target.file_state(item["path"])
+                if actual.get("sha256") != item["postimage_sha256"]:
+                    raise ValueError(
+                        f"migration postimage verification failed: {item['path']}"
+                    )
+
+            for relative, expected in protected_before.items():
+                expected_sha256 = f"sha256:{hashlib.sha256(expected).hexdigest()}"
+                if secure_target.file_state(relative).get("sha256") != expected_sha256:
+                    raise ValueError(
+                        f"protected business surface changed outside the plan: {relative}"
+                    )
+        structure = _run_harness_structure_check(target)
         if structure["returncode"] != 0:
             detail = (structure["stderr"] or structure["stdout"]).strip()
             raise ValueError(f"migration post-validation failed: {detail}")
+        migration_kernel.verify_post_apply_target_state(target, plan)
     except Exception as exc:
-        rollback = migration_kernel.rollback_migration_snapshot(
-            target,
-            snapshot,
-            trusted_snapshot_root=snapshot_root,
-        )
+        try:
+            rollback = migration_kernel.rollback_migration_snapshot(
+                target,
+                snapshot,
+                trusted_snapshot_root=snapshot_root,
+            )
+        except Exception as rollback_exc:
+            migration_kernel.mark_migration_transaction(
+                snapshot,
+                state="rollback_failed",
+                changed_paths=changed_files,
+                error=f"apply={exc}; rollback={rollback_exc}",
+            )
+            return {
+                **plan,
+                "status": "rollback_failed",
+                "writes": True,
+                "rollback_verified": False,
+                "snapshot": str(snapshot),
+                "changed_files": changed_files,
+                "error": str(exc),
+                "rollback_error": str(rollback_exc),
+            }
         raise ValueError(
             f"migration failed and snapshot rollback passed: {exc}; "
             f"snapshot={rollback['snapshot']}"
         ) from exc
+
+    migration_kernel.mark_migration_transaction(
+        snapshot,
+        state="applied",
+        changed_paths=changed_files,
+    )
 
     return {
         **plan,

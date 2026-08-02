@@ -1105,6 +1105,7 @@ def apply_upgrade_all(
         "status": "not_installed",
         "writes": False,
     }
+    current_rollback_failed: dict[str, Any] | None = None
     try:
         for item in plan["targets"]:
             result = lifecycle.migrate_target_layout(
@@ -1114,6 +1115,13 @@ def apply_upgrade_all(
                 require_clean_git=True,
                 approved_plan_sha256=item["migration"]["plan_sha256"],
             )
+            if result.get("status") == "rollback_failed" and result.get("writes") is True:
+                current_rollback_failed = result
+                results.append(result)
+                raise RuntimeError(
+                    f"target apply rollback failed: {item['repo']}: "
+                    f"apply={result.get('error')}; rollback={result.get('rollback_error')}"
+                )
             if result.get("status") != "applied" or result.get("writes") is not True:
                 raise RuntimeError(
                     f"target apply did not consume its approved plan: {item['repo']}: "
@@ -1129,7 +1137,10 @@ def apply_upgrade_all(
                 )
     except Exception as exc:
         rollback_errors: list[str] = []
-        for result in reversed(results):
+        rollback_candidates = (
+            results[:-1] if current_rollback_failed is not None else results
+        )
+        for result in reversed(rollback_candidates):
             try:
                 lifecycle.rollback_target_layout_migration(
                     Path(result["target"]),
@@ -1137,7 +1148,7 @@ def apply_upgrade_all(
                 )
             except Exception as rollback_exc:
                 rollback_errors.append(str(rollback_exc))
-        if rollback_errors:
+        if current_rollback_failed is not None or rollback_errors:
             status = "rollback_failed"
             writes = True
         elif results:
@@ -1152,8 +1163,12 @@ def apply_upgrade_all(
             "writes": writes,
             "backup": [result.get("snapshot") for result in results],
             "errors": [str(exc), *rollback_errors],
-            "results": results if rollback_errors else [],
-            "rollback_verified": bool(results) and not rollback_errors,
+            "results": results if status == "rollback_failed" else [],
+            "rollback_verified": (
+                current_rollback_failed is None
+                and bool(results)
+                and not rollback_errors
+            ),
             "global_hook_refresh": global_hook_refresh,
         }
     return {

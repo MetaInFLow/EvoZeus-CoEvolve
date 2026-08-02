@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -10,6 +11,8 @@ import sys
 
 import pytest
 
+from scripts import evozeus_harness_migration as migration_kernel
+from scripts import evozeus_wrapper_bootstrap as bootstrap
 from scripts.evozeus_wrapper_bootstrap import (
     build_evolution_section,
     build_status_section,
@@ -47,6 +50,26 @@ from scripts.evozeus_wrapper_preflight import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def trusted_attachment_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the production trusted-release gate with an injected attestation fixture."""
+    bundle = migration_kernel.load_migration_contract(ROOT)
+    bundle["source_trust"] = {
+        **bundle["source_trust"],
+        "status": "trusted_release",
+        "reasons": [],
+    }
+
+    def validate_trusted_bundle(**_kwargs: object) -> dict[str, object]:
+        return copy.deepcopy(bundle)
+
+    monkeypatch.setattr(
+        bootstrap,
+        "validate_migration_contract_source",
+        validate_trusted_bundle,
+    )
 
 
 def replacements() -> dict[str, str]:

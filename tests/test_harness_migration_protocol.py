@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -226,6 +227,59 @@ def _refresh_snapshot_receipt(snapshot: Path) -> None:
     _write_json(receipt_path, receipt)
 
 
+def _prepare_secure_target(tmp_path: Path, name: str) -> Path:
+    target = tmp_path / name
+    target.mkdir()
+    target.joinpath("owned.txt").write_bytes(b"OWNED-PREIMAGE\n")
+    target.joinpath("business.txt").write_bytes(b"PROTECTED-BUSINESS\n")
+    subprocess.run(["git", "init", str(target)], check=True, capture_output=True)
+    _git(target, "config", "user.email", "target-test@example.invalid")
+    _git(target, "config", "user.name", "Target Test")
+    _git(target, "add", ".")
+    _git(target, "commit", "-m", "Secure migration target fixture")
+    return target
+
+
+def _secure_synthetic_plan(target: Path) -> dict[str, object]:
+    owned_preimage = target.joinpath("owned.txt").read_bytes()
+    protected = target.joinpath("business.txt").read_bytes()
+    owned_postimage = b"OWNED-POSTIMAGE\n"
+    created_postimage = b"CREATED-POSTIMAGE\n"
+    plan: dict[str, object] = {
+        "migration_protocol_version": migration_kernel.MIGRATION_PROTOCOL_VERSION,
+        "decision": "automatic_migration_available",
+        "can_apply": True,
+        "apply_blockers": [],
+        "source_trust": {"status": "trusted_release"},
+        "profile": {"profile_id": "synthetic-secure-io"},
+        "target_git_state": migration_kernel.target_git_state(target),
+        "write_set": [
+            {
+                "path": "owned.txt",
+                "preimage_sha256": "sha256:" + hashlib.sha256(owned_preimage).hexdigest(),
+                "postimage_sha256": "sha256:" + hashlib.sha256(owned_postimage).hexdigest(),
+            },
+            {
+                "path": "generated/nested/new.txt",
+                "preimage_sha256": None,
+                "postimage_sha256": "sha256:" + hashlib.sha256(created_postimage).hexdigest(),
+            },
+        ],
+        "delete_set": [],
+        "move_set": [],
+        "protected_business_surfaces": [
+            {
+                "path": "business.txt",
+                "planned_write": False,
+                "rule": "byte_exact",
+                "preimage_sha256": "sha256:" + hashlib.sha256(protected).hexdigest(),
+            }
+        ],
+    }
+    plan["plan_sha256"] = "sha256:" + migration_kernel.migration_plan_digest(plan)
+    return plan
+
+
 def test_source_trust_uses_structured_official_tag_attestation(tmp_path: Path) -> None:
     source = _make_release_source(tmp_path)
     bundle = migration_kernel.load_migration_contract(
@@ -295,6 +349,606 @@ def test_fresh_attach_rejects_unreleased_development_source(tmp_path: Path) -> N
         bootstrap.copy_templates(target, _replacement_values(), force=False)
 
     assert sorted(path.name for path in target.iterdir()) == ["SKILL.md"]
+
+
+def test_attach_create_cas_preserves_a_racing_unknown_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "attach-leaf-race"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_bytes(b"OWNER SKILL\n")
+    original_write = migration_kernel.SecureTargetFS.write_exact
+    raced_path: Path | None = None
+
+    def race_leaf(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        nonlocal raced_path
+        if raced_path is None:
+            raced_path = secure_target.target / str(raw)
+            raced_path.parent.mkdir(parents=True, exist_ok=True)
+            raced_path.write_bytes(b"OWNER-RACE\n")
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+        )
+
+    monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", race_leaf)
+    with pytest.raises(ValueError, match="rollback_failed"):
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=False,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert raced_path is not None
+    assert raced_path.read_bytes() == b"OWNER-RACE\n"
+    assert {
+        path.relative_to(target).as_posix()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == {"SKILL.md", raced_path.relative_to(target).as_posix()}
+
+
+def test_attach_parent_swap_never_writes_through_the_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "attach-parent-race"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_bytes(b"OWNER SKILL\n")
+    outside = tmp_path / "outside-parent-race"
+    outside.mkdir()
+    detached = tmp_path / "detached-parent-race"
+    original_verify = migration_kernel.SecureTargetFS._verify_parent_binding
+    swapped = False
+
+    def swap_parent(
+        secure_target: migration_kernel.SecureTargetFS,
+        relative: Path,
+        parent_fd: int,
+    ) -> None:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            top = target / relative.parts[0]
+            top.rename(detached)
+            top.symlink_to(outside, target_is_directory=True)
+        original_verify(secure_target, relative, parent_fd)
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "_verify_parent_binding",
+        swap_parent,
+    )
+    with pytest.raises(ValueError):
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=False,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert swapped is True
+    assert list(outside.rglob("*")) == []
+    assert [path for path in detached.rglob("*") if path.is_file()] == []
+    assert target.joinpath("SKILL.md").read_bytes() == b"OWNER SKILL\n"
+
+
+def test_attach_rolls_back_a_complete_create_left_by_a_commit_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "attach-complete-create-error"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_bytes(b"OWNER SKILL\n")
+    original_write = migration_kernel.SecureTargetFS.write_exact
+
+    def fail_after_complete_create(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+        )
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "write_exact",
+        fail_after_complete_create,
+    )
+    with pytest.raises(ValueError, match="rolled back"):
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=False,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert {
+        path.relative_to(target).as_posix()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == {"SKILL.md"}
+
+
+def test_attach_reports_rollback_failed_for_an_unknown_commit_error_residue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "attach-unknown-create-error"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_bytes(b"OWNER SKILL\n")
+    original_write = migration_kernel.SecureTargetFS.write_exact
+    residue: Path | None = None
+
+    def replace_after_complete_create(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        nonlocal residue
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+        )
+        residue = secure_target.target / str(raw)
+        residue.write_bytes(b"UNKNOWN-AFTER-COMMIT\n")
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "write_exact",
+        replace_after_complete_create,
+    )
+    with pytest.raises(ValueError, match="rollback_failed"):
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=False,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert residue is not None
+    assert residue.read_bytes() == b"UNKNOWN-AFTER-COMMIT\n"
+
+
+def test_snapshot_external_anchor_rejects_a_forged_plan_descriptor_and_receipt(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "snapshot-plan-anchor")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "snapshot-plan-anchor-base"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    owner_before = target.joinpath("owned.txt").read_bytes()
+
+    approved_plan_path = snapshot / "approved-plan.json"
+    approved_plan = json.loads(approved_plan_path.read_text(encoding="utf-8"))
+    approved_plan["source_trust"]["forged"] = True
+    forged_plan_bytes = migration_kernel.canonical_plan_bytes(approved_plan)
+    forged_plan_sha256 = "sha256:" + hashlib.sha256(forged_plan_bytes).hexdigest()
+    approved_plan_path.write_bytes(forged_plan_bytes)
+
+    descriptor_path = snapshot / "snapshot.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["plan_sha256"] = forged_plan_sha256
+    _write_json(descriptor_path, descriptor)
+    receipt_path = snapshot / "receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["plan_sha256"] = forged_plan_sha256
+    receipt["approved_plan_sha256"] = forged_plan_sha256
+    receipt["descriptor_sha256"] = "sha256:" + hashlib.sha256(
+        descriptor_path.read_bytes()
+    ).hexdigest()
+    _write_json(receipt_path, receipt)
+
+    with pytest.raises(ValueError, match="external anchor"):
+        migration_kernel.rollback_migration_snapshot(
+            target,
+            snapshot,
+            trusted_snapshot_root=trusted_base,
+        )
+    assert target.joinpath("owned.txt").read_bytes() == owner_before
+
+
+def test_snapshot_artifacts_and_transaction_use_secure_exclusive_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "snapshot-secure-writes")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "snapshot-secure-writes-base"
+    calls: list[tuple[str, str | None]] = []
+    original_write = migration_kernel.SecureTargetFS.write_exact
+
+    def record_write(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        if secure_target.target == trusted_base.resolve():
+            calls.append((str(raw), expected_preimage))
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+        )
+
+    monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", record_write)
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    migration_kernel.mark_migration_transaction(snapshot, state="in_progress")
+    transaction_id = snapshot.name
+    expected_creates = {
+        f"{transaction_id}/approved-plan.json",
+        f"{transaction_id}/files/owned.txt",
+        f"{transaction_id}/snapshot.json",
+        f"{transaction_id}/receipt.json",
+        f".anchors/{transaction_id}.json",
+        f"{transaction_id}/transaction.json",
+    }
+
+    assert expected_creates <= {relative for relative, _preimage in calls}
+    assert all(
+        preimage is None
+        for relative, preimage in calls
+        if relative in expected_creates
+    )
+
+
+@pytest.mark.parametrize("attack_surface", ["approved-plan", "anchor"])
+def test_snapshot_leaf_race_is_fail_closed_and_preserves_unknown_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    attack_surface: str,
+) -> None:
+    target = _prepare_secure_target(tmp_path, f"snapshot-leaf-{attack_surface}")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / f"snapshot-leaf-{attack_surface}-base"
+    original_write = migration_kernel.SecureTargetFS.write_exact
+    residue: Path | None = None
+
+    def race_leaf(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        nonlocal residue
+        relative = str(raw)
+        selected = (
+            attack_surface == "approved-plan" and relative.endswith("/approved-plan.json")
+        ) or (attack_surface == "anchor" and relative.startswith(".anchors/"))
+        if secure_target.target == trusted_base.resolve() and selected and residue is None:
+            residue = trusted_base / relative
+            residue.parent.mkdir(parents=True, exist_ok=True)
+            residue.write_bytes(b"UNKNOWN-SNAPSHOT-RACE\n")
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+        )
+
+    monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", race_leaf)
+    with pytest.raises(ValueError, match="CAS"):
+        migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=trusted_base,
+        )
+
+    assert residue is not None
+    assert residue.read_bytes() == b"UNKNOWN-SNAPSHOT-RACE\n"
+    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+
+
+def test_snapshot_parent_swap_never_writes_through_the_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "snapshot-parent-swap")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "snapshot-parent-swap-base"
+    outside = tmp_path / "snapshot-parent-outside"
+    outside.mkdir()
+    detached = tmp_path / "snapshot-parent-detached"
+    original_verify = migration_kernel.SecureTargetFS._verify_parent_binding
+    swapped = False
+
+    def swap_parent(
+        secure_target: migration_kernel.SecureTargetFS,
+        relative: Path,
+        parent_fd: int,
+    ) -> None:
+        nonlocal swapped
+        if secure_target.target == trusted_base.resolve() and not swapped:
+            swapped = True
+            transaction = trusted_base / relative.parts[0]
+            transaction.rename(detached)
+            transaction.symlink_to(outside, target_is_directory=True)
+        original_verify(secure_target, relative, parent_fd)
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "_verify_parent_binding",
+        swap_parent,
+    )
+    with pytest.raises(ValueError):
+        migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=trusted_base,
+        )
+
+    assert swapped is True
+    assert list(outside.rglob("*")) == []
+    assert [path for path in detached.rglob("*") if path.is_file()] == []
+
+
+def test_secure_nested_directory_creation_fsyncs_each_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "secure-directory-fsync"
+    target.mkdir()
+    created_under: list[tuple[int, int]] = []
+    fsynced_directories: list[tuple[int, int]] = []
+    original_mkdir = os.mkdir
+    original_fsync = os.fsync
+
+    def record_mkdir(
+        path: object,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        if dir_fd is not None:
+            metadata = os.fstat(dir_fd)
+            created_under.append((metadata.st_dev, metadata.st_ino))
+        original_mkdir(path, mode, dir_fd=dir_fd)
+
+    def record_fsync(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            fsynced_directories.append((metadata.st_dev, metadata.st_ino))
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "mkdir", record_mkdir)
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    with migration_kernel.SecureTargetFS(target, directory_mode=0o700) as secure_target:
+        secure_target.write_exact(
+            "one/two/artifact.json",
+            b"{}\n",
+            expected_preimage=None,
+            mode=0o600,
+        )
+
+    assert set(created_under) <= set(fsynced_directories)
+
+
+@pytest.mark.parametrize("swap", ["leaf", "parent"])
+def test_secure_apply_swap_never_writes_outside_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    swap: str,
+) -> None:
+    target = tmp_path / f"secure-apply-{swap}"
+    target.mkdir()
+    managed_parent = target / "managed"
+    managed_parent.mkdir()
+    managed = managed_parent / "artifact.txt"
+    managed.write_bytes(b"PREIMAGE\n")
+    outside = tmp_path / f"secure-apply-{swap}-outside"
+    outside.mkdir()
+    outside_file = outside / "artifact.txt"
+    outside_file.write_bytes(b"OUTSIDE\n")
+    detached = tmp_path / f"secure-apply-{swap}-detached"
+    expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+    original_verify = migration_kernel.SecureTargetFS._verify_parent_binding
+    swapped = False
+
+    def inject_swap(
+        secure_target: migration_kernel.SecureTargetFS,
+        relative: Path,
+        parent_fd: int,
+    ) -> None:
+        nonlocal swapped
+        original_verify(secure_target, relative, parent_fd)
+        if swapped:
+            return
+        swapped = True
+        if swap == "leaf":
+            managed.unlink()
+            managed.symlink_to(outside_file)
+        else:
+            managed_parent.rename(detached)
+            managed_parent.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "_verify_parent_binding",
+        inject_swap,
+    )
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        with pytest.raises(ValueError):
+            secure_target.write_exact(
+                "managed/artifact.txt",
+                b"POSTIMAGE\n",
+                expected_preimage=expected,
+                mode=0o644,
+            )
+
+    assert swapped is True
+    assert outside_file.read_bytes() == b"OUTSIDE\n"
+
+
+def test_rollback_removes_transaction_created_directories_that_were_absent(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "rollback-directory-cleanup")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "rollback-directory-cleanup-base"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    write_items = {item["path"]: item for item in plan["write_set"]}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "owned.txt",
+            b"OWNED-POSTIMAGE\n",
+            expected_preimage=write_items["owned.txt"]["preimage_sha256"],
+            mode=0o644,
+        )
+        secure_target.write_exact(
+            "generated/nested/new.txt",
+            b"CREATED-POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+
+    result = migration_kernel.rollback_migration_snapshot(
+        target,
+        snapshot,
+        trusted_snapshot_root=trusted_base,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+    assert not target.joinpath("generated").exists()
+
+
+def test_post_apply_state_accepts_only_the_approved_git_and_inventory_delta(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "post-apply-state")
+    plan = _secure_synthetic_plan(target)
+    plan["post_apply_baseline"] = migration_kernel.capture_post_apply_baseline(
+        target,
+        plan,
+    )
+    plan["plan_sha256"] = "sha256:" + migration_kernel.migration_plan_digest(plan)
+    write_items = {item["path"]: item for item in plan["write_set"]}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "owned.txt",
+            b"OWNED-POSTIMAGE\n",
+            expected_preimage=write_items["owned.txt"]["preimage_sha256"],
+            mode=0o644,
+        )
+        secure_target.write_exact(
+            "generated/nested/new.txt",
+            b"CREATED-POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+
+    migration_kernel.verify_post_apply_target_state(target, plan)
+    target.joinpath("OWNER-RACE.md").write_bytes(b"UNPLANNED\n")
+    with pytest.raises(ValueError, match="unplanned|changed set"):
+        migration_kernel.verify_post_apply_target_state(target, plan)
+
+
+def test_post_apply_state_rejects_head_index_and_protected_changes(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "post-apply-git-state")
+    plan = _secure_synthetic_plan(target)
+    plan["post_apply_baseline"] = migration_kernel.capture_post_apply_baseline(
+        target,
+        plan,
+    )
+    plan["plan_sha256"] = "sha256:" + migration_kernel.migration_plan_digest(plan)
+    target.joinpath("business.txt").write_bytes(b"PROTECTED-CHANGED\n")
+
+    with pytest.raises(ValueError, match="protected|unplanned"):
+        migration_kernel.verify_post_apply_target_state(target, plan)
+
+    target.joinpath("business.txt").write_bytes(b"PROTECTED-BUSINESS\n")
+    target.joinpath("owned.txt").write_bytes(b"OWNED-POSTIMAGE\n")
+    target.joinpath("generated/nested").mkdir(parents=True)
+    target.joinpath("generated/nested/new.txt").write_bytes(b"CREATED-POSTIMAGE\n")
+    _git(target, "add", "owned.txt")
+    with pytest.raises(ValueError, match="index"):
+        migration_kernel.verify_post_apply_target_state(target, plan)
+
+
+def test_snapshot_then_unplanned_race_blocks_before_the_first_target_write(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "snapshot-prewrite-state")
+    plan = _secure_synthetic_plan(target)
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=tmp_path / "snapshot-prewrite-state-base",
+    )
+    target.joinpath("OWNER-RACE.md").write_bytes(b"UNPLANNED\n")
+
+    with pytest.raises(ValueError, match="target Git tree/status/inventory changed"):
+        migration_kernel.verify_plan_preimages(target, plan)
+
+    assert snapshot.joinpath("receipt.json").is_file()
+    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+    assert not target.joinpath("generated/nested/new.txt").exists()
+
+
+def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) -> None:
+    target = tmp_path / "structure-no-pyc"
+    script = target / lifecycle.TARGET_PREFLIGHT_SCRIPT
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "import helper_probe\nraise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    script.parent.joinpath("helper_probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = lifecycle._run_harness_structure_check(target)
+
+    assert result["returncode"] == 0
+    assert not script.parent.joinpath("__pycache__").exists()
 
 
 def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> None:
@@ -794,3 +1448,67 @@ def test_batch_reports_rollback_failure_without_claiming_zero_writes(
     assert report["rollback_verified"] is False
     assert len(report["results"]) == 1
     assert any("snapshot validation failed" in error for error in report["errors"])
+
+
+def test_batch_propagates_the_current_targets_structured_rollback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "current-rollback-failed"
+    plan = {
+        "stage": "harness_upgrade_all",
+        "status": "planned",
+        "writes": False,
+        "errors": [],
+        "latest_version": "v0.14.0",
+        "targets": [
+            {
+                "repo": "MetaInFLow/current-rollback-failed",
+                "target": str(target),
+                "migration": {"plan_sha256": "sha256:" + "1" * 64},
+            }
+        ],
+    }
+    plan["batch_plan_sha256"] = "sha256:" + global_hook._batch_plan_digest(plan)
+    failed_result = {
+        "status": "rollback_failed",
+        "writes": True,
+        "rollback_verified": False,
+        "target": str(target),
+        "snapshot": str(tmp_path / "snapshot-current"),
+        "error": "apply failed",
+        "rollback_error": "snapshot validation failed",
+    }
+
+    monkeypatch.setattr(
+        global_hook,
+        "plan_upgrade_all",
+        lambda *_args, **_kwargs: copy.deepcopy(plan),
+    )
+    monkeypatch.setattr(
+        global_hook,
+        "read_global_hook_status",
+        lambda _home: {
+            "status": "not_installed",
+            "any_registration_installed": False,
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "migrate_target_layout",
+        lambda *_args, **_kwargs: copy.deepcopy(failed_result),
+    )
+
+    report = global_hook.apply_upgrade_all(
+        tmp_path,
+        ROOT,
+        "v0.14.0",
+        approve=True,
+        approved_plan_sha256=plan["batch_plan_sha256"],
+        admin_resolver=lambda *_args: {"verified": True},
+    )
+
+    assert report["status"] == "rollback_failed"
+    assert report["writes"] is True
+    assert report["rollback_verified"] is False
+    assert report["results"] == [failed_result]

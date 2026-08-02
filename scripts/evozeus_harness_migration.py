@@ -30,6 +30,12 @@ SNAPSHOT_SCHEMA_VERSION = "evozeus.coevolve.harness-migration-snapshot.v1"
 SNAPSHOT_RECEIPT_SCHEMA_VERSION = (
     "evozeus.coevolve.harness-migration-snapshot-receipt.v1"
 )
+SNAPSHOT_ANCHOR_SCHEMA_VERSION = (
+    "evozeus.coevolve.harness-migration-snapshot-anchor.v1"
+)
+SNAPSHOT_TRANSACTION_SCHEMA_VERSION = (
+    "evozeus.coevolve.harness-migration-transaction.v1"
+)
 OFFICIAL_SOURCE_REPOSITORY = "MetaInFLow/EvoZeus-CoEvolve"
 OFFICIAL_SOURCE_URLS = {
     "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git",
@@ -164,6 +170,143 @@ def verify_target_git_state(target: Path, plan: dict[str, Any]) -> None:
         )
 
 
+def _unplanned_target_inventory(target: Path, plan: dict[str, Any]) -> list[dict[str, Any]]:
+    planned = set(planned_target_paths(plan))
+    planned_ancestors: set[str] = set()
+    for relative_text in planned:
+        parent = _safe_relative_path(relative_text).parent
+        while parent.parts:
+            planned_ancestors.add(parent.as_posix())
+            parent = parent.parent
+    excluded = planned | planned_ancestors
+    return [
+        item
+        for item in _target_inventory(target)
+        if item.get("path") not in excluded
+    ]
+
+
+def capture_post_apply_baseline(target: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    """Bind Git identity and every byte outside the approved mutation footprint."""
+    target = target.expanduser().resolve()
+    git_state = target_git_state(target)
+    inventory = _unplanned_target_inventory(target, plan)
+    return {
+        "schema_version": "evozeus.target-post-apply-baseline.v1",
+        "head_commit": git_state["head_commit"],
+        "head_tree_oid": git_state["head_tree_oid"],
+        "index_sha256": git_state["index_sha256"],
+        "unplanned_inventory_sha256": (
+            f"sha256:{canonical_json_sha256(inventory)}"
+        ),
+        "unplanned_inventory_entries": len(inventory),
+    }
+
+
+def _git_changed_paths(target: Path) -> list[str]:
+    result = _git_bytes(
+        target,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    )
+    if result.returncode != 0:
+        raise ValueError("post-apply Git changed set cannot be collected")
+    chunks = result.stdout.split(b"\0")
+    paths: set[str] = set()
+    index = 0
+    while index < len(chunks):
+        record = chunks[index]
+        index += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2:3] != b" ":
+            raise ValueError("post-apply Git changed set has invalid porcelain output")
+        status_code = record[:2].decode("ascii", errors="strict")
+        paths.add(record[3:].decode("utf-8", errors="surrogateescape"))
+        if "R" in status_code or "C" in status_code:
+            if index >= len(chunks) or not chunks[index]:
+                raise ValueError("post-apply Git rename record is incomplete")
+            paths.add(chunks[index].decode("utf-8", errors="surrogateescape"))
+            index += 1
+    return sorted(paths)
+
+
+def _approved_changed_paths(plan: dict[str, Any]) -> list[str]:
+    paths: set[str] = set()
+    for item in plan.get("write_set", []):
+        if item.get("preimage_sha256") != item.get("postimage_sha256"):
+            paths.add(_safe_relative_path(item.get("path")).as_posix())
+    for item in plan.get("delete_set", []):
+        paths.add(_safe_relative_path(item.get("path")).as_posix())
+    for item in plan.get("move_set", []):
+        paths.add(_safe_relative_path(item.get("source")).as_posix())
+        paths.add(_safe_relative_path(item.get("destination")).as_posix())
+    return sorted(paths)
+
+
+def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
+    """Require the final target delta to equal the approved mutation set exactly."""
+    target = target.expanduser().resolve()
+    baseline = plan.get("post_apply_baseline")
+    if not isinstance(baseline, dict) or baseline.get("schema_version") != (
+        "evozeus.target-post-apply-baseline.v1"
+    ):
+        raise ValueError("migration plan is missing the post-apply target baseline")
+    current_git = target_git_state(target)
+    for field in ("head_commit", "head_tree_oid", "index_sha256"):
+        if current_git.get(field) != baseline.get(field):
+            raise ValueError(f"post-apply target {field} changed outside the plan")
+
+    with SecureTargetFS(target) as secure_target:
+        for item in plan.get("protected_business_surfaces", []):
+            current = secure_target.file_state(item.get("path"))
+            if current.get("sha256") != item.get("preimage_sha256"):
+                raise ValueError(
+                    f"post-apply protected business surface changed: {item.get('path')}"
+                )
+        for item in plan.get("write_set", []):
+            current = secure_target.file_state(item.get("path"))
+            if current.get("sha256") != item.get("postimage_sha256"):
+                raise ValueError(
+                    f"post-apply approved write is missing: {item.get('path')}"
+                )
+        for item in plan.get("delete_set", []):
+            if secure_target.file_state(item.get("path"))["kind"] != "absent":
+                raise ValueError(
+                    f"post-apply approved delete is incomplete: {item.get('path')}"
+                )
+        for item in plan.get("move_set", []):
+            if secure_target.file_state(item.get("source"))["kind"] != "absent":
+                raise ValueError(
+                    f"post-apply approved move source remains: {item.get('source')}"
+                )
+            destination = secure_target.file_state(item.get("destination"))
+            expected = item.get("destination_postimage_sha256") or item.get(
+                "source_preimage_sha256"
+            )
+            if destination.get("sha256") != expected:
+                raise ValueError(
+                    f"post-apply approved move destination differs: {item.get('destination')}"
+                )
+
+    inventory = _unplanned_target_inventory(target, plan)
+    actual_inventory = f"sha256:{canonical_json_sha256(inventory)}"
+    if (
+        actual_inventory != baseline.get("unplanned_inventory_sha256")
+        or len(inventory) != baseline.get("unplanned_inventory_entries")
+    ):
+        raise ValueError("post-apply unplanned target inventory changed")
+    actual_changed = _git_changed_paths(target)
+    expected_changed = _approved_changed_paths(plan)
+    if actual_changed != expected_changed:
+        raise ValueError(
+            "post-apply Git changed set differs from approved mutations: "
+            f"expected={expected_changed}; actual={actual_changed}"
+        )
+
+
 def _json_object(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -172,6 +315,34 @@ def _json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"invalid {label}: expected a JSON object: {path}")
     return value
+
+
+def _json_bytes_object(data: bytes, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid {label}: expected a JSON object")
+    return value
+
+
+def _read_owned_snapshot_file(
+    secure_snapshot: "SecureSnapshotFS",
+    relative: str,
+    *,
+    mode: int,
+    label: str,
+) -> bytes:
+    state = secure_snapshot.file_state(relative)
+    if (
+        state.get("kind") != "file"
+        or state.get("uid") != os.getuid()
+        or state.get("mode") != mode
+        or not isinstance(state.get("sha256"), str)
+    ):
+        raise ValueError(f"{label} owner, type, or mode is invalid")
+    return secure_snapshot.read_exact(relative, state["sha256"])
 
 
 def _git(wrapper_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -959,13 +1130,473 @@ def _target_path(target: Path, raw: object) -> Path:
     return candidate
 
 
+class SecureTargetFS:
+    """Root-dirfd anchored target I/O with no-follow traversal and exact CAS."""
+
+    def __init__(self, target: Path, *, directory_mode: int = 0o755):
+        if os.name != "posix" or not all(
+            hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
+        ):
+            raise ValueError("secure target mutation requires POSIX dirfd/O_NOFOLLOW support")
+        self.target = target.expanduser().resolve()
+        metadata = os.lstat(self.target)
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("secure target root must be a non-symlink directory")
+        self._root_identity = (metadata.st_dev, metadata.st_ino)
+        self._directory_mode = directory_mode
+        self._root_fd = os.open(
+            self.target,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(self._root_fd)
+        if (opened.st_dev, opened.st_ino) != self._root_identity:
+            os.close(self._root_fd)
+            raise ValueError("secure target root changed while opening")
+        self.created_directories: list[str] = []
+
+    def close(self) -> None:
+        if self._root_fd >= 0:
+            os.close(self._root_fd)
+            self._root_fd = -1
+
+    def __enter__(self) -> "SecureTargetFS":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def _verify_root(self) -> None:
+        metadata = os.lstat(self.target)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != self._root_identity
+        ):
+            raise ValueError("secure target root identity changed")
+
+    def _open_parent(
+        self,
+        raw: object,
+        *,
+        create_parents: bool,
+        missing_is_absent: bool = False,
+    ) -> tuple[list[int], str, Path]:
+        relative = _safe_relative_path(raw)
+        self._verify_root()
+        descriptors = [os.dup(self._root_fd)]
+        current_rel = Path()
+        try:
+            for part in relative.parts[:-1]:
+                current_rel /= part
+                try:
+                    descriptor = os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                except FileNotFoundError:
+                    if not create_parents:
+                        if missing_is_absent:
+                            self._close_descriptors(descriptors)
+                            return [], relative.name, relative
+                        raise ValueError(
+                            f"secure target parent is missing: {current_rel.as_posix()}"
+                        )
+                    os.mkdir(part, mode=self._directory_mode, dir_fd=descriptors[-1])
+                    os.fsync(descriptors[-1])
+                    self.created_directories.append(current_rel.as_posix())
+                    descriptor = os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                    os.fchmod(descriptor, self._directory_mode)
+                    os.fsync(descriptor)
+                except OSError as exc:
+                    raise ValueError(
+                        f"secure target parent is unsafe: {current_rel.as_posix()}: {exc}"
+                    ) from exc
+                descriptors.append(descriptor)
+            return descriptors, relative.name, relative
+        except Exception:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise
+
+    @staticmethod
+    def _close_descriptors(descriptors: list[int]) -> None:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+    def _verify_parent_binding(self, relative: Path, parent_fd: int) -> None:
+        self._verify_root()
+        descriptors = [os.dup(self._root_fd)]
+        try:
+            for part in relative.parts[:-1]:
+                descriptors.append(
+                    os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                )
+            expected = os.fstat(parent_fd)
+            actual = os.fstat(descriptors[-1])
+            if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+                raise ValueError(
+                    f"secure target parent identity changed: {relative.parent.as_posix()}"
+                )
+        except OSError as exc:
+            raise ValueError(
+                f"secure target parent changed: {relative.parent.as_posix()}: {exc}"
+            ) from exc
+        finally:
+            self._close_descriptors(descriptors)
+
+    @staticmethod
+    def _read_descriptor(descriptor: int) -> bytes:
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def file_state(self, raw: object) -> dict[str, Any]:
+        descriptors, name, relative = self._open_parent(
+            raw,
+            create_parents=False,
+            missing_is_absent=True,
+        )
+        if not descriptors:
+            return {"kind": "absent", "sha256": None, "mode": None, "uid": None}
+        try:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=descriptors[-1],
+                )
+            except FileNotFoundError:
+                return {"kind": "absent", "sha256": None, "mode": None, "uid": None}
+            except OSError as exc:
+                raise ValueError(
+                    f"secure target file is unsafe: {relative.as_posix()}: {exc}"
+                ) from exc
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError(
+                        f"secure target path is not a regular file: {relative.as_posix()}"
+                    )
+                data = self._read_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+            return {
+                "kind": "file",
+                "sha256": f"sha256:{sha256_bytes(data)}",
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "uid": metadata.st_uid,
+            }
+        finally:
+            self._close_descriptors(descriptors)
+
+    def read_exact(self, raw: object, expected_sha256: str) -> bytes:
+        descriptors, name, relative = self._open_parent(raw, create_parents=False)
+        try:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=descriptors[-1],
+                )
+            except OSError as exc:
+                raise ValueError(
+                    f"secure target file cannot be opened: {relative.as_posix()}: {exc}"
+                ) from exc
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError(
+                        f"secure target path is not a regular file: {relative.as_posix()}"
+                    )
+                data = self._read_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+            actual = f"sha256:{sha256_bytes(data)}"
+            if actual != expected_sha256:
+                raise ValueError(
+                    f"secure target CAS preimage changed: {relative.as_posix()}"
+                )
+            return data
+        finally:
+            self._close_descriptors(descriptors)
+
+    def write_exact(
+        self,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+    ) -> None:
+        descriptors, name, relative = self._open_parent(raw, create_parents=True)
+        parent_fd = descriptors[-1]
+        descriptor = -1
+        created = False
+        opened_identity: tuple[int, int] | None = None
+        try:
+            self._verify_parent_binding(relative, parent_fd)
+            if expected_preimage is None:
+                try:
+                    descriptor = os.open(
+                        name,
+                        os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        mode,
+                        dir_fd=parent_fd,
+                    )
+                    created = True
+                except FileExistsError as exc:
+                    raise ValueError(
+                        f"secure target create CAS changed: {relative.as_posix()}"
+                    ) from exc
+            else:
+                try:
+                    descriptor = os.open(
+                        name,
+                        os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=parent_fd,
+                    )
+                except OSError as exc:
+                    raise ValueError(
+                        f"secure target replace CAS cannot open: {relative.as_posix()}: {exc}"
+                    ) from exc
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError(
+                        f"secure target replace path is not regular: {relative.as_posix()}"
+                    )
+                current = self._read_descriptor(descriptor)
+                if f"sha256:{sha256_bytes(current)}" != expected_preimage:
+                    raise ValueError(
+                        f"secure target replace CAS changed: {relative.as_posix()}"
+                    )
+                os.lseek(descriptor, 0, os.SEEK_SET)
+            metadata = os.fstat(descriptor)
+            opened_identity = (metadata.st_dev, metadata.st_ino)
+            os.ftruncate(descriptor, 0)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                view = view[written:]
+            os.fchmod(descriptor, mode)
+            os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            actual = self._read_descriptor(descriptor)
+            if actual != data:
+                raise ValueError(
+                    f"secure target postimage verification failed: {relative.as_posix()}"
+                )
+            self._verify_parent_binding(relative, parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if created and opened_identity is not None:
+                try:
+                    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) == opened_identity and (
+                        f"sha256:{sha256_bytes(data)}"
+                        != self.file_state(relative.as_posix()).get("sha256")
+                    ):
+                        os.unlink(name, dir_fd=parent_fd)
+                except (FileNotFoundError, ValueError):
+                    pass
+            self._close_descriptors(descriptors)
+
+    def remove_exact(self, raw: object, expected_sha256: str) -> None:
+        descriptors, name, relative = self._open_parent(raw, create_parents=False)
+        try:
+            self.read_exact(relative.as_posix(), expected_sha256)
+            self._verify_parent_binding(relative, descriptors[-1])
+            os.unlink(name, dir_fd=descriptors[-1])
+            os.fsync(descriptors[-1])
+        finally:
+            self._close_descriptors(descriptors)
+
+    def cleanup_created_directories(self) -> None:
+        for relative_text in sorted(
+            set(self.created_directories),
+            key=lambda value: len(Path(value).parts),
+            reverse=True,
+        ):
+            relative = _safe_relative_path(relative_text, "created target directory")
+            descriptors, name, _ = self._open_parent(
+                relative.as_posix(),
+                create_parents=False,
+            )
+            try:
+                try:
+                    os.rmdir(name, dir_fd=descriptors[-1])
+                except OSError:
+                    pass
+            finally:
+                self._close_descriptors(descriptors)
+
+    def directory_state(self, raw: object) -> dict[str, Any]:
+        relative = _safe_relative_path(raw, "secure directory")
+        self._verify_root()
+        descriptors = [os.dup(self._root_fd)]
+        try:
+            for part in relative.parts:
+                try:
+                    descriptor = os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                except FileNotFoundError:
+                    return {"kind": "absent", "mode": None, "uid": None}
+                except OSError as exc:
+                    raise ValueError(
+                        f"secure directory is unsafe: {relative.as_posix()}: {exc}"
+                    ) from exc
+                descriptors.append(descriptor)
+            metadata = os.fstat(descriptors[-1])
+            return {
+                "kind": "directory",
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "uid": metadata.st_uid,
+                "identity": (metadata.st_dev, metadata.st_ino),
+            }
+        finally:
+            self._close_descriptors(descriptors)
+
+    def ensure_directory_exact(
+        self,
+        raw: object,
+        *,
+        mode: int,
+        require_absent: bool,
+    ) -> None:
+        relative = _safe_relative_path(raw, "secure directory")
+        self._verify_root()
+        descriptors = [os.dup(self._root_fd)]
+        created_final = False
+        try:
+            for index, part in enumerate(relative.parts):
+                is_final = index == len(relative.parts) - 1
+                try:
+                    descriptor = os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                    if is_final and require_absent:
+                        os.close(descriptor)
+                        raise ValueError(
+                            f"secure directory create CAS changed: {relative.as_posix()}"
+                        )
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, mode=mode, dir_fd=descriptors[-1])
+                    except FileExistsError as exc:
+                        raise ValueError(
+                            f"secure directory create CAS changed: {relative.as_posix()}"
+                        ) from exc
+                    os.fsync(descriptors[-1])
+                    descriptor = os.open(
+                        part,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
+                    os.fchmod(descriptor, mode)
+                    os.fsync(descriptor)
+                    current = Path(*relative.parts[: index + 1]).as_posix()
+                    self.created_directories.append(current)
+                    if is_final:
+                        created_final = True
+                except OSError as exc:
+                    raise ValueError(
+                        f"secure directory is unsafe: {relative.as_posix()}: {exc}"
+                    ) from exc
+                descriptors.append(descriptor)
+            metadata = os.fstat(descriptors[-1])
+            if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != mode:
+                raise ValueError(
+                    f"secure directory owner or mode is invalid: {relative.as_posix()}"
+                )
+            expected_identity = (metadata.st_dev, metadata.st_ino)
+            rebound = self.directory_state(relative.as_posix())
+            if rebound.get("identity") != expected_identity:
+                raise ValueError(
+                    f"secure directory identity changed: {relative.as_posix()}"
+                )
+            if require_absent and not created_final:
+                raise ValueError(
+                    f"secure directory create CAS changed: {relative.as_posix()}"
+                )
+        finally:
+            self._close_descriptors(descriptors)
+
+
+class SecureSnapshotFS(SecureTargetFS):
+    """Private snapshot-root backend with the same dirfd/CAS guarantees."""
+
+    def __init__(self, root: Path):
+        super().__init__(root, directory_mode=0o700)
+        metadata = os.fstat(self._root_fd)
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            self.close()
+            raise ValueError("trusted snapshot root owner or mode is invalid")
+
+
 def migration_plan_digest(plan: dict[str, Any]) -> str:
-    digest_input = {
+    return canonical_json_sha256(migration_plan_payload(plan))
+
+
+def migration_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
         key: value
         for key, value in plan.items()
         if key not in {"plan_sha256", "approval", "snapshot"}
     }
-    return canonical_json_sha256(digest_input)
+
+
+def canonical_plan_bytes(plan: dict[str, Any]) -> bytes:
+    return json.dumps(
+        migration_plan_payload(plan),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def planned_target_paths(plan: dict[str, Any]) -> list[str]:
@@ -1183,6 +1814,86 @@ def _snapshot_path(base: Path, snapshot: Path) -> Path:
     return resolved
 
 
+def _require_owned_mode(
+    path: Path,
+    *,
+    mode: int,
+    kind: str,
+    label: str,
+) -> os.stat_result:
+    if os.name != "posix" or not hasattr(os, "getuid"):
+        raise ValueError(f"{label} requires POSIX ownership verification")
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"{label} must not be a symlink")
+    if kind == "file" and not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+    if kind == "directory" and not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a directory")
+    if metadata.st_uid != os.getuid():
+        raise ValueError(f"{label} owner does not match the current user")
+    actual_mode = stat.S_IMODE(metadata.st_mode)
+    if actual_mode != mode:
+        raise ValueError(
+            f"{label} mode is invalid: expected={oct(mode)}; actual={oct(actual_mode)}"
+        )
+    return metadata
+
+
+def _snapshot_anchor_path(base: Path, transaction_id: str) -> Path:
+    return base / ".anchors" / f"{transaction_id}.json"
+
+
+def mark_migration_transaction(
+    snapshot_root: Path,
+    *,
+    state: str,
+    changed_paths: list[str] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    if state not in {"in_progress", "applied", "rolled_back", "rollback_failed"}:
+        raise ValueError(f"unsupported migration transaction state: {state}")
+    base = snapshot_root.parent
+    _require_owned_mode(
+        base,
+        mode=0o700,
+        kind="directory",
+        label="trusted snapshot root",
+    )
+    relative = f"{snapshot_root.name}/transaction.json"
+    current: dict[str, Any] = {}
+    with SecureSnapshotFS(base) as secure_base:
+        existing = secure_base.file_state(relative)
+        if existing["kind"] == "file":
+            try:
+                current_value = json.loads(
+                    secure_base.read_exact(relative, existing["sha256"]).decode("utf-8")
+                )
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"invalid migration transaction state: {exc}") from exc
+            if not isinstance(current_value, dict):
+                raise ValueError("migration transaction state must be a JSON object")
+            current = current_value
+        transaction = {
+            "schema_version": SNAPSHOT_TRANSACTION_SCHEMA_VERSION,
+            "transaction_id": snapshot_root.name,
+            "state": state,
+            "changed_paths": list(changed_paths or current.get("changed_paths") or []),
+            "error": error,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        transaction_bytes = (
+            json.dumps(transaction, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        secure_base.write_exact(
+            relative,
+            transaction_bytes,
+            expected_preimage=existing.get("sha256"),
+            mode=0o600,
+        )
+    return transaction
+
+
 def _rollback_allowed_states(plan: dict[str, Any], relative_text: str, preimage: str) -> list[str]:
     states = [preimage]
     for item in plan.get("write_set", []):
@@ -1220,90 +1931,132 @@ def create_migration_snapshot(
     target = target.expanduser().resolve()
     verify_plan_preimages(target, plan)
     base = _trusted_snapshot_base(target, snapshot_root)
-    base.mkdir(parents=True, exist_ok=True)
-    base.chmod(0o700)
+    base.mkdir(parents=True, mode=0o700, exist_ok=True)
     _reject_symlink_chain(base, "trusted snapshot root")
+    _require_owned_mode(
+        base,
+        mode=0o700,
+        kind="directory",
+        label="trusted snapshot root",
+    )
     transaction_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         + "-"
         + uuid.uuid4().hex[:12]
     )
     destination = base / transaction_id
-    if destination.exists() or destination.is_symlink():
-        raise ValueError("migration snapshot transaction already exists")
-    destination.mkdir(mode=0o700)
-    files_root = destination / "files"
-    files_root.mkdir(mode=0o700)
+    plan_bytes = canonical_plan_bytes(plan)
+    plan_sha256 = f"sha256:{sha256_bytes(plan_bytes)}"
+    if plan_sha256 != plan.get("plan_sha256"):
+        raise ValueError("approved migration plan bytes do not match plan_sha256")
     files: list[dict[str, Any]] = []
     existing_directories: set[str] = set()
-    for relative_text in planned_target_paths(plan):
-        path = _target_path(target, relative_text)
-        parent = path.parent
-        while parent != target:
-            if parent.is_dir() and not parent.is_symlink():
-                existing_directories.add(parent.relative_to(target).as_posix())
-            parent = parent.parent
-        item: dict[str, Any] = {
-            "path": relative_text,
-            "kind": "absent",
-            "mode": None,
-            "sha256": None,
-        }
-        if path.is_file() and not path.is_symlink():
-            data = path.read_bytes()
-            item.update(
-                {
-                    "kind": "file",
-                    "mode": stat.S_IMODE(path.stat().st_mode),
-                    "sha256": f"sha256:{sha256_bytes(data)}",
-                }
-            )
-            backup = destination / "files" / relative_text
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            backup.write_bytes(data)
-            backup.chmod(0o600)
-        elif path.exists() or path.is_symlink():
-            raise ValueError(f"migration snapshot path is not a regular file: {relative_text}")
-        preimage_state = item["sha256"] if item["kind"] == "file" else "absent"
-        item["allowed_rollback_states"] = _rollback_allowed_states(
-            plan,
-            relative_text,
-            preimage_state,
+    with SecureSnapshotFS(base) as secure_snapshot:
+        secure_snapshot.ensure_directory_exact(
+            ".anchors",
+            mode=0o700,
+            require_absent=False,
         )
-        files.append(item)
+        secure_snapshot.ensure_directory_exact(
+            transaction_id,
+            mode=0o700,
+            require_absent=True,
+        )
+        secure_snapshot.ensure_directory_exact(
+            f"{transaction_id}/files",
+            mode=0o700,
+            require_absent=True,
+        )
+        secure_snapshot.write_exact(
+            f"{transaction_id}/approved-plan.json",
+            plan_bytes,
+            expected_preimage=None,
+            mode=0o600,
+        )
+        with SecureTargetFS(target) as secure_target:
+            for relative_text in planned_target_paths(plan):
+                state = secure_target.file_state(relative_text)
+                relative = _safe_relative_path(relative_text)
+                parent = relative.parent
+                while parent.parts:
+                    if (target / parent).is_dir() and not (target / parent).is_symlink():
+                        existing_directories.add(parent.as_posix())
+                    parent = parent.parent
+                item: dict[str, Any] = {
+                    "path": relative_text,
+                    "kind": state["kind"],
+                    "mode": state["mode"],
+                    "sha256": state["sha256"],
+                }
+                if state["kind"] == "file":
+                    data = secure_target.read_exact(relative_text, state["sha256"])
+                    secure_snapshot.write_exact(
+                        f"{transaction_id}/files/{relative_text}",
+                        data,
+                        expected_preimage=None,
+                        mode=0o600,
+                    )
+                preimage_state = (
+                    state["sha256"] if state["kind"] == "file" else "absent"
+                )
+                item["allowed_rollback_states"] = _rollback_allowed_states(
+                    plan,
+                    relative_text,
+                    preimage_state,
+                )
+                files.append(item)
 
-    snapshot = {
-        "schema_version": SNAPSHOT_SCHEMA_VERSION,
-        "transaction_id": transaction_id,
-        "target": str(target),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "migration_protocol_version": plan.get("migration_protocol_version"),
-        "profile": plan.get("profile"),
-        "plan_sha256": f"sha256:{migration_plan_digest(plan)}",
-        "planned_paths": planned_target_paths(plan),
-        "files": files,
-        "existing_directories": sorted(existing_directories),
-    }
-    descriptor_bytes = (
-        json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"
-    ).encode("utf-8")
-    receipt = {
-        "schema_version": SNAPSHOT_RECEIPT_SCHEMA_VERSION,
-        "transaction_id": transaction_id,
-        "target": str(target),
-        "plan_sha256": snapshot["plan_sha256"],
-        "descriptor_sha256": f"sha256:{sha256_bytes(descriptor_bytes)}",
-        "backup_set_sha256": f"sha256:{canonical_json_sha256(files)}",
-    }
-    descriptor_path = destination / "snapshot.json"
-    receipt_path = destination / "receipt.json"
-    descriptor_path.write_bytes(descriptor_bytes)
-    descriptor_path.chmod(0o600)
-    receipt_path.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    receipt_path.chmod(0o600)
+        snapshot = {
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "target": str(target),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "migration_protocol_version": plan.get("migration_protocol_version"),
+            "profile": plan.get("profile"),
+            "plan_sha256": plan_sha256,
+            "approved_plan_file": "approved-plan.json",
+            "target_git_state": plan.get("target_git_state"),
+            "planned_paths": planned_target_paths(plan),
+            "files": files,
+            "existing_directories": sorted(existing_directories),
+        }
+        descriptor_bytes = (
+            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        receipt = {
+            "schema_version": SNAPSHOT_RECEIPT_SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "target": str(target),
+            "plan_sha256": snapshot["plan_sha256"],
+            "approved_plan_sha256": plan_sha256,
+            "descriptor_sha256": f"sha256:{sha256_bytes(descriptor_bytes)}",
+            "backup_set_sha256": f"sha256:{canonical_json_sha256(files)}",
+        }
+        receipt_bytes = (
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        anchor = {
+            "schema_version": SNAPSHOT_ANCHOR_SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "target": str(target),
+            "plan_sha256": plan_sha256,
+            "descriptor_sha256": receipt["descriptor_sha256"],
+            "receipt_sha256": f"sha256:{sha256_bytes(receipt_bytes)}",
+        }
+        anchor_bytes = (
+            json.dumps(anchor, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        for relative, data, mode in (
+            (f"{transaction_id}/snapshot.json", descriptor_bytes, 0o600),
+            (f"{transaction_id}/receipt.json", receipt_bytes, 0o600),
+            (f".anchors/{transaction_id}.json", anchor_bytes, 0o400),
+        ):
+            secure_snapshot.write_exact(
+                relative,
+                data,
+                expected_preimage=None,
+                mode=mode,
+            )
     return destination
 
 
@@ -1315,23 +2068,59 @@ def rollback_migration_snapshot(
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
     trusted_base = _trusted_snapshot_base(target, trusted_snapshot_root)
+    _require_owned_mode(
+        trusted_base,
+        mode=0o700,
+        kind="directory",
+        label="trusted snapshot root",
+    )
     snapshot_root = _snapshot_path(trusted_base, snapshot_root)
-    descriptor_path = snapshot_root / "snapshot.json"
-    receipt_path = snapshot_root / "receipt.json"
-    files_root = snapshot_root / "files"
-    for path, label in (
-        (descriptor_path, "migration snapshot descriptor"),
-        (receipt_path, "migration snapshot receipt"),
-        (files_root, "migration snapshot files root"),
-    ):
-        _reject_symlink_chain(path, label)
-        if path.is_symlink():
-            raise ValueError(f"{label} must not be a symlink")
-    if not descriptor_path.is_file() or not receipt_path.is_file() or not files_root.is_dir():
-        raise ValueError("migration snapshot descriptor, receipt, or files root is missing")
-    descriptor_bytes = descriptor_path.read_bytes()
-    snapshot = _json_object(descriptor_path, "migration snapshot")
-    receipt = _json_object(receipt_path, "migration snapshot receipt")
+    transaction_id = snapshot_root.name
+    with SecureSnapshotFS(trusted_base) as secure_snapshot:
+        for relative, label in (
+            (transaction_id, "migration snapshot transaction"),
+            (f"{transaction_id}/files", "migration snapshot files root"),
+        ):
+            state = secure_snapshot.directory_state(relative)
+            if (
+                state.get("kind") != "directory"
+                or state.get("uid") != os.getuid()
+                or state.get("mode") != 0o700
+            ):
+                raise ValueError(f"{label} owner, type, or mode is invalid")
+        plan_bytes = _read_owned_snapshot_file(
+            secure_snapshot,
+            f"{transaction_id}/approved-plan.json",
+            mode=0o600,
+            label="approved migration plan",
+        )
+        descriptor_bytes = _read_owned_snapshot_file(
+            secure_snapshot,
+            f"{transaction_id}/snapshot.json",
+            mode=0o600,
+            label="migration snapshot descriptor",
+        )
+        receipt_bytes = _read_owned_snapshot_file(
+            secure_snapshot,
+            f"{transaction_id}/receipt.json",
+            mode=0o600,
+            label="migration snapshot receipt",
+        )
+        anchor_bytes = _read_owned_snapshot_file(
+            secure_snapshot,
+            f".anchors/{transaction_id}.json",
+            mode=0o400,
+            label="migration snapshot external anchor",
+        )
+    approved_plan = _json_bytes_object(plan_bytes, "approved migration plan")
+    approved_plan_sha256 = f"sha256:{sha256_bytes(plan_bytes)}"
+    snapshot = _json_bytes_object(descriptor_bytes, "migration snapshot")
+    receipt = _json_bytes_object(receipt_bytes, "migration snapshot receipt")
+    anchor = _json_bytes_object(anchor_bytes, "migration snapshot external anchor")
+    if anchor.get("schema_version") != SNAPSHOT_ANCHOR_SCHEMA_VERSION:
+        raise ValueError("unsupported migration snapshot external anchor schema")
+    if anchor.get("receipt_sha256") != f"sha256:{sha256_bytes(receipt_bytes)}":
+        raise ValueError("migration snapshot external anchor receipt mismatch")
     if receipt.get("schema_version") != SNAPSHOT_RECEIPT_SCHEMA_VERSION:
         raise ValueError("unsupported migration snapshot receipt schema")
     if receipt.get("descriptor_sha256") != f"sha256:{sha256_bytes(descriptor_bytes)}":
@@ -1349,6 +2138,20 @@ def rollback_migration_snapshot(
         raise ValueError("migration snapshot receipt identity mismatch")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(snapshot.get("plan_sha256"))):
         raise ValueError("migration snapshot plan digest is invalid")
+    if (
+        approved_plan_sha256 != snapshot.get("plan_sha256")
+        or approved_plan_sha256 != receipt.get("approved_plan_sha256")
+        or approved_plan_sha256 != anchor.get("plan_sha256")
+        or migration_plan_digest(approved_plan) != sha256_bytes(plan_bytes)
+    ):
+        raise ValueError("approved migration plan digest binding mismatch")
+    if any(
+        anchor.get(field) != snapshot.get(field)
+        for field in ("transaction_id", "target", "plan_sha256")
+    ):
+        raise ValueError("migration snapshot external anchor identity mismatch")
+    if anchor.get("descriptor_sha256") != receipt.get("descriptor_sha256"):
+        raise ValueError("migration snapshot external anchor descriptor mismatch")
 
     files = snapshot.get("files")
     if not isinstance(files, list):
@@ -1356,66 +2159,79 @@ def rollback_migration_snapshot(
     if receipt.get("backup_set_sha256") != f"sha256:{canonical_json_sha256(files)}":
         raise ValueError("migration snapshot backup-set digest mismatch")
     planned_paths = snapshot.get("planned_paths")
+    approved_paths = planned_target_paths(approved_plan)
     if (
         not isinstance(planned_paths, list)
+        or planned_paths != approved_paths
         or planned_paths != [item.get("path") for item in files if isinstance(item, dict)]
         or len(planned_paths) != len(set(planned_paths))
     ):
         raise ValueError("migration snapshot planned path set is invalid")
-    validated: list[tuple[dict[str, Any], Path, bytes | None]] = []
+    validated: list[tuple[dict[str, Any], str, bytes | None]] = []
     seen_paths: set[str] = set()
-    for item in files:
-        if not isinstance(item, dict):
-            raise ValueError("migration snapshot file entry must be an object")
-        relative_text = item.get("path")
-        if relative_text in seen_paths:
-            raise ValueError(f"migration snapshot contains duplicate path: {relative_text}")
-        seen_paths.add(relative_text)
-        path = _target_path(target, item.get("path"))
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValueError(
-                f"rollback path is no longer a regular file: {item.get('path')}"
+    with SecureSnapshotFS(trusted_base) as secure_snapshot, SecureTargetFS(
+        target
+    ) as secure_target:
+        for item in files:
+            if not isinstance(item, dict):
+                raise ValueError("migration snapshot file entry must be an object")
+            relative_text = item.get("path")
+            if relative_text in seen_paths:
+                raise ValueError(f"migration snapshot contains duplicate path: {relative_text}")
+            seen_paths.add(str(relative_text))
+            current = secure_target.file_state(relative_text)
+            current_state = current["sha256"] if current["kind"] == "file" else "absent"
+            allowed_states = item.get("allowed_rollback_states")
+            snapshot_preimage = (
+                item.get("sha256") if item.get("kind") == "file" else "absent"
             )
-        current_state = (
-            f"sha256:{sha256_file(path)}" if path.is_file() else "absent"
-        )
-        allowed_states = item.get("allowed_rollback_states")
-        if (
-            not isinstance(allowed_states, list)
-            or not allowed_states
-            or any(
-                not isinstance(value, str)
-                or value != "absent" and not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
-                for value in allowed_states
+            expected_allowed_states = _rollback_allowed_states(
+                approved_plan,
+                str(relative_text),
+                str(snapshot_preimage),
             )
-            or current_state not in allowed_states
-        ):
-            raise ValueError(
-                f"rollback target changed outside the migration transaction: {item.get('path')}"
-            )
-        if item.get("kind") == "absent":
-            if item.get("mode") is not None or item.get("sha256") is not None:
-                raise ValueError(
-                    f"absent snapshot metadata is invalid: {item.get('path')}"
+            if (
+                not isinstance(allowed_states, list)
+                or not allowed_states
+                or any(
+                    not isinstance(value, str)
+                    or value != "absent" and not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+                    for value in allowed_states
                 )
-            validated.append((item, path, None))
-            continue
-        if item.get("kind") != "file":
-            raise ValueError(f"unsupported snapshot file kind: {item.get('kind')}")
-        if (
-            not isinstance(item.get("mode"), int)
-            or isinstance(item.get("mode"), bool)
-            or not 0 <= item["mode"] <= 0o7777
-        ):
-            raise ValueError(f"migration snapshot mode is invalid: {item.get('path')}")
-        backup = files_root / _safe_relative_path(item.get("path"))
-        _reject_symlink_chain(backup, "migration snapshot backup")
-        if not backup.is_file() or backup.is_symlink():
-            raise ValueError(f"migration snapshot backup is missing: {item.get('path')}")
-        data = backup.read_bytes()
-        if f"sha256:{sha256_bytes(data)}" != item.get("sha256"):
-            raise ValueError(f"migration snapshot backup hash mismatch: {item.get('path')}")
-        validated.append((item, path, data))
+                or allowed_states != expected_allowed_states
+                or current_state not in allowed_states
+            ):
+                raise ValueError(
+                    f"rollback target changed outside the migration transaction: {item.get('path')}"
+                )
+            if item.get("kind") == "absent":
+                if item.get("mode") is not None or item.get("sha256") is not None:
+                    raise ValueError(
+                        f"absent snapshot metadata is invalid: {item.get('path')}"
+                    )
+                validated.append((item, current_state, None))
+                continue
+            if item.get("kind") != "file":
+                raise ValueError(f"unsupported snapshot file kind: {item.get('kind')}")
+            if (
+                not isinstance(item.get("mode"), int)
+                or isinstance(item.get("mode"), bool)
+                or not 0 <= item["mode"] <= 0o7777
+            ):
+                raise ValueError(f"migration snapshot mode is invalid: {item.get('path')}")
+            backup_relative = (
+                f"{transaction_id}/files/"
+                + _safe_relative_path(item.get("path")).as_posix()
+            )
+            data = _read_owned_snapshot_file(
+                secure_snapshot,
+                backup_relative,
+                mode=0o600,
+                label=f"migration snapshot backup {item.get('path')}",
+            )
+            if f"sha256:{sha256_bytes(data)}" != item.get("sha256"):
+                raise ValueError(f"migration snapshot backup hash mismatch: {item.get('path')}")
+            validated.append((item, current_state, data))
 
     existing_directories_raw = snapshot.get("existing_directories")
     if not isinstance(existing_directories_raw, list):
@@ -1428,38 +2244,47 @@ def rollback_migration_snapshot(
             raise ValueError(f"migration snapshot contains duplicate directory: {normalized}")
         existing_directories.add(normalized)
 
-    for item, path, data in validated:
-        if path.is_file() or path.is_symlink():
-            path.unlink()
-        if item.get("kind") == "absent":
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data or b"")
-        path.chmod(int(item["mode"]))
+    with SecureTargetFS(target) as secure_target:
+        for item, current_state, data in validated:
+            if item.get("kind") == "absent":
+                if current_state != "absent":
+                    secure_target.remove_exact(item["path"], current_state)
+                continue
+            secure_target.write_exact(
+                item["path"],
+                data or b"",
+                expected_preimage=(
+                    None if current_state == "absent" else current_state
+                ),
+                mode=int(item["mode"]),
+            )
 
-    candidate_directories: set[Path] = set()
-    for item in files:
-        path = target / _safe_relative_path(item.get("path"))
-        parent = path.parent
-        while parent != target:
-            candidate_directories.add(parent)
+    removable_directories: set[str] = set()
+    for relative_text in approved_paths:
+        parent = _safe_relative_path(relative_text).parent
+        while parent.parts:
+            normalized = parent.as_posix()
+            if normalized not in existing_directories:
+                removable_directories.add(normalized)
             parent = parent.parent
-    for directory in sorted(candidate_directories, key=lambda value: len(value.parts), reverse=True):
-        if directory.relative_to(target).as_posix() in existing_directories:
-            continue
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
+    with SecureTargetFS(target) as secure_target:
+        secure_target.created_directories.extend(removable_directories)
+        secure_target.cleanup_created_directories()
 
-    for item in files:
-        path = _target_path(target, item.get("path"))
-        if item.get("kind") == "absent":
-            if path.exists() or path.is_symlink():
-                raise ValueError(f"rollback failed to remove created path: {item.get('path')}")
-            continue
-        if not path.is_file() or f"sha256:{sha256_file(path)}" != item.get("sha256"):
-            raise ValueError(f"rollback verification failed: {item.get('path')}")
+    with SecureTargetFS(target) as secure_target:
+        for item in files:
+            current = secure_target.file_state(item.get("path"))
+            if item.get("kind") == "absent":
+                if current["kind"] != "absent":
+                    raise ValueError(f"rollback failed to remove created path: {item.get('path')}")
+                continue
+            if current.get("sha256") != item.get("sha256"):
+                raise ValueError(f"rollback verification failed: {item.get('path')}")
+    mark_migration_transaction(
+        snapshot_root,
+        state="rolled_back",
+        changed_paths=[item["path"] for item in files],
+    )
     return {
         "stage": "harness_migration_rollback",
         "status": "rolled_back",

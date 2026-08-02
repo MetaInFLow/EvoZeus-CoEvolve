@@ -424,30 +424,78 @@ def copy_templates(
     for entry in governed["contract_files"]:
         source = _safe_source_file(bundle_root, entry["source"], "contract source")
         expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
-    for destination, expected, _ in expected_artifacts:
+    relative_artifacts: list[tuple[str, bytes, int]] = []
+    seen_destinations: set[str] = set()
+    for destination, expected, executable in expected_artifacts:
         validate_template_destination(target, destination)
-        if destination.exists() or destination.is_symlink():
-            if (
-                destination.is_symlink()
-                or not destination.is_file()
-                or destination.read_bytes() != expected
-            ):
-                relative = destination.relative_to(target)
+        relative = destination.relative_to(target).as_posix()
+        if relative in seen_destinations:
+            raise ValueError(f"duplicate target artifact destination: {relative}")
+        seen_destinations.add(relative)
+        relative_artifacts.append((relative, expected, 0o755 if executable else 0o644))
+
+    actions: list[str] = []
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        planned_states: dict[str, dict[str, object]] = {}
+        for relative, expected, _mode in relative_artifacts:
+            state = secure_target.file_state(relative)
+            expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
+            if state["kind"] == "file" and state["sha256"] == expected_sha256:
+                planned_states[relative] = state
+                continue
+            if state["kind"] != "absent":
                 raise ValueError(
                     "existing managed destination has no exact trusted preimage: "
                     f"{relative}; --force cannot authorize replacement; target was not modified"
                 )
+            planned_states[relative] = state
 
-    actions: list[str] = []
-    for destination, expected, executable in expected_artifacts:
-        if destination.is_file():
-            actions.append(f"skip exact existing {destination}")
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(expected)
-        if executable:
-            destination.chmod(0o755)
-        actions.append(f"write {destination}")
+        try:
+            for relative, expected, mode in relative_artifacts:
+                if planned_states[relative]["kind"] == "file":
+                    actions.append(f"skip exact existing {target / relative}")
+                    continue
+                secure_target.write_exact(
+                    relative,
+                    expected,
+                    expected_preimage=None,
+                    mode=mode,
+                )
+                actions.append(f"write {target / relative}")
+            for relative, expected, _mode in relative_artifacts:
+                expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
+                if secure_target.file_state(relative).get("sha256") != expected_sha256:
+                    raise ValueError(f"target artifact postimage changed: {relative}")
+        except Exception as exc:
+            rollback_errors: list[str] = []
+            for relative, expected, _mode in reversed(relative_artifacts):
+                if planned_states[relative]["kind"] != "absent":
+                    continue
+                expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
+                try:
+                    current = secure_target.file_state(relative)
+                    if current["kind"] == "absent":
+                        continue
+                    if current.get("sha256") != expected_sha256:
+                        rollback_errors.append(
+                            f"{relative}: unexpected rollback state {current}"
+                        )
+                        continue
+                    secure_target.remove_exact(relative, expected_sha256)
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"{relative}: {rollback_exc}")
+            try:
+                secure_target.cleanup_created_directories()
+            except Exception as rollback_exc:
+                rollback_errors.append(f"created directories: {rollback_exc}")
+            if rollback_errors:
+                raise ValueError(
+                    "Harness attachment failed and rollback_failed; writes may remain: "
+                    + "; ".join(rollback_errors)
+                ) from exc
+            raise ValueError(
+                f"Harness attachment CAS failed; all created artifacts rolled back: {exc}"
+            ) from exc
     return actions
 
 
