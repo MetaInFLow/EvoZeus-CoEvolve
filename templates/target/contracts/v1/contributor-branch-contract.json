@@ -130,7 +130,7 @@
       "ledger_refresh_requires": "--approve-save-plan"
     }
   },
-  "worktree": { "required": true, "one_participant_per_branch": true, "branch_owner": "verified_actor_in_target_branch", "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "requested_registered_worktree_status_evidence": "required", "registered_worktree_live_identity": ["top_level", "common_dir", "branch"], "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked", "non_directory_ancestor": "occupied_and_blocked", "prunable_registration_with_existing_path": "occupied_and_blocked" },
+  "worktree": { "required": true, "one_participant_per_branch": true, "branch_owner": "verified_actor_in_target_branch", "canonical_checkout_must_remain_clean": true, "canonical_checkout_status_evidence": "required", "requested_registered_worktree_status_evidence": "required", "registered_worktree_live_identity": ["top_level", "common_dir", "branch"], "duplicate_target_branch_registrations": "block", "locked_registration_with_missing_path": "block_until_explicit_unlock_and_remove_or_prune", "existing_path_or_branch_mismatch": "block", "registered_worktree_descendant": "block", "dangling_symlink_path": "occupied_and_blocked", "non_directory_ancestor": "occupied_and_blocked", "prunable_registration_with_existing_path": "occupied_and_blocked" },
   "blocking_handling": {
     "dirty_tree": "block",
     "wrong_base": "block",
@@ -142,6 +142,7 @@
     "canonical_checkout_dirty_or_unavailable": "block",
     "current_checkout_status_unavailable": "block",
     "requested_worktree_dirty_or_unavailable": "block",
+    "duplicate_or_locked_worktree_registration": "block",
     "base_or_target_remote_status_unavailable_or_diverged": "block",
     "fork_remote_missing_or_mismatched": "block",
     "branch_leaf_over_max_bytes": "block",

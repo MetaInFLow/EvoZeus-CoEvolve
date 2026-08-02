@@ -815,6 +815,67 @@ def test_core_snapshot_binds_actor_live_remote_and_requested_worktree(tmp_path: 
     assert "requested_worktree_status_unavailable" in blocker_codes(redirected)
     assert redirected["worktree"]["requested_checkout"]["status_reason"] == "worktree_branch_mismatch"
 
+    duplicate_root = tmp_path / "duplicate-registration-resume"
+    duplicate_root.mkdir()
+    duplicate_repo = create_repo(duplicate_root)
+    duplicate_worktree = duplicate_root / "worktree"
+    duplicate_ledger = duplicate_root / "ledger"
+    duplicate_initial, duplicate_initial_code = execute_plan(
+        duplicate_repo,
+        duplicate_worktree,
+        duplicate_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert duplicate_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", duplicate_initial["branch"]["target"],
+        str(duplicate_worktree), "origin/main",
+    ], duplicate_repo)
+    run([
+        "git", "worktree", "add", "--force", str(duplicate_root / "other-worktree"),
+        duplicate_initial["branch"]["target"],
+    ], duplicate_repo)
+    duplicate, duplicate_code = execute_plan(
+        duplicate_repo,
+        duplicate_worktree,
+        duplicate_ledger,
+        planner_env(binary_dir),
+        resume_plan=duplicate_initial["ledger"]["path"],
+    )
+    assert duplicate_code == 2
+    assert "duplicate_branch_worktree_registrations" in blocker_codes(duplicate)
+
+    locked_root = tmp_path / "locked-missing-resume"
+    locked_root.mkdir()
+    locked_repo = create_repo(locked_root)
+    locked_worktree = locked_root / "worktree"
+    locked_ledger = locked_root / "ledger"
+    locked_initial, locked_initial_code = execute_plan(
+        locked_repo,
+        locked_worktree,
+        locked_ledger,
+        planner_env(binary_dir),
+        approve_save_plan=True,
+    )
+    assert locked_initial_code == 0
+    run([
+        "git", "worktree", "add", "-b", locked_initial["branch"]["target"],
+        str(locked_worktree), "origin/main",
+    ], locked_repo)
+    run(["git", "worktree", "lock", "--reason", "owner hold", str(locked_worktree)], locked_repo)
+    shutil.rmtree(locked_worktree)
+    locked, locked_code = execute_plan(
+        locked_repo,
+        locked_worktree,
+        locked_ledger,
+        planner_env(binary_dir),
+        resume_plan=locked_initial["ledger"]["path"],
+    )
+    assert locked_code == 2
+    assert "locked_worktree_registration" in blocker_codes(locked)
+    assert locked["worktree"]["registration_prunable"] is False
+
 
 def test_missing_or_partial_github_evidence_cannot_grant_remote_write(tmp_path: Path) -> None:
     missing_root = tmp_path / "missing-gh"

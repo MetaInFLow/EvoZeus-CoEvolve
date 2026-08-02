@@ -76,7 +76,14 @@ function parseWorktrees(text) {
   let current = null;
   for (const line of text.split("\n")) {
     if (line.startsWith("worktree ")) {
-      current = { path: canonicalPath(line.slice(9)), branch: null, bare: false, prunable: false };
+      current = {
+        path: canonicalPath(line.slice(9)),
+        branch: null,
+        bare: false,
+        prunable: false,
+        locked: false,
+        lock_reason: null
+      };
       worktrees.push(current);
     } else if (current && line.startsWith("branch ")) {
       current.branch = line.slice(7);
@@ -84,6 +91,9 @@ function parseWorktrees(text) {
       current.bare = true;
     } else if (current && (line === "prunable" || line.startsWith("prunable "))) {
       current.prunable = true;
+    } else if (current && (line === "locked" || line.startsWith("locked "))) {
+      current.locked = true;
+      current.lock_reason = line === "locked" ? null : line.slice(7);
     }
   }
   return worktrees;
@@ -725,11 +735,14 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   }
 
   const registeredAtPath = facts.worktrees.find((item) => item.path === requestedWorktree);
-  const registeredForBranch = facts.worktrees.find((item) => item.branch === `refs/heads/${branchName}`);
+  const registrationsForBranch = facts.worktrees.filter((item) => item.branch === `refs/heads/${branchName}`);
   const registeredPathExists = pathEntryExists(requestedWorktree);
   const presentRegisteredAtPath = registeredAtPath && registeredPathExists && !registeredAtPath.prunable;
   if (registeredAtPath?.prunable && registeredPathExists) {
     addBlocker(blockers, "prunable_worktree_path_occupied", "prunable worktree registration still has an occupied on-disk path");
+  }
+  if (registeredAtPath?.locked && !registeredPathExists) {
+    addBlocker(blockers, "locked_worktree_registration", "missing requested worktree has a locked registration; unlock and remove or prune it explicitly");
   }
   if (presentRegisteredAtPath && !facts.requested_status?.available) {
     addBlocker(blockers, "requested_worktree_status_unavailable", "requested registered worktree status cannot be verified");
@@ -747,7 +760,9 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
   if (registeredAtPath && registeredAtPath.branch !== `refs/heads/${branchName}`) {
     addBlocker(blockers, "worktree_collision", "requested worktree belongs to another branch");
   }
-  if (registeredForBranch && registeredForBranch.path !== requestedWorktree) {
+  if (registrationsForBranch.length > 1) {
+    addBlocker(blockers, "duplicate_branch_worktree_registrations", "target branch is registered at multiple worktree paths");
+  } else if (registrationsForBranch[0] && registrationsForBranch[0].path !== requestedWorktree) {
     addBlocker(blockers, "branch_worktree_collision", "target branch is registered at another worktree path");
   }
 
@@ -807,7 +822,13 @@ export function buildBranchPlan(options, contract, facts, permissionEvidence, is
       isolated: !insideCanonicalCheckout && !nestedRegisteredWorktree,
       registered: Boolean(usableRegisteredAtPath),
       registration_present: Boolean(registeredAtPath),
-      registration_prunable: Boolean(registeredAtPath?.prunable || (registeredAtPath && !registeredPathExists)),
+      registration_prunable: Boolean(
+        registeredAtPath?.prunable
+        || (registeredAtPath && !registeredPathExists && !registeredAtPath.locked)
+      ),
+      registration_locked: Boolean(registeredAtPath?.locked),
+      registration_lock_reason: registeredAtPath?.lock_reason ?? null,
+      branch_registration_count: registrationsForBranch.length,
       current_checkout: {
         status_available: facts.current_status.available,
         status_reason: facts.current_status.reason,
