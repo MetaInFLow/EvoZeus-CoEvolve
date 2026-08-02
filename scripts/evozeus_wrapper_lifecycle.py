@@ -2079,7 +2079,12 @@ def _frontmatter_end(text: str) -> int:
     else:
         return 0
 
-    flow_candidate = "\n".join(body_lines).strip()
+    flow_lines = list(body_lines)
+    while flow_lines and (not flow_lines[0].strip() or flow_lines[0].lstrip().startswith("#")):
+        flow_lines.pop(0)
+    while flow_lines and (not flow_lines[-1].strip() or flow_lines[-1].lstrip().startswith("#")):
+        flow_lines.pop()
+    flow_candidate = "\n".join(flow_lines).strip()
     if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
         inner = flow_candidate[1:-1]
         quote: str | None = None
@@ -2094,6 +2099,7 @@ def _frontmatter_end(text: str) -> int:
                 "items": 0,
                 "key_closed": False,
                 "closes_key": False,
+                "value_started": False,
             }
         ]
         valid_flow = True
@@ -2121,15 +2127,25 @@ def _frontmatter_end(text: str) -> int:
                 if not quote_closes_key:
                     frames[-1]["key_closed"] = False
                 frames[-1]["content"] = True
+                if frames[-1]["separator"]:
+                    frames[-1]["value_started"] = True
             elif character == "#" and (
                 index == 0 or inner[index - 1].isspace() or inner[index - 1] in ",[]{}:"
             ):
                 comment = True
             elif character in "[{":
-                closes_key = not frames[-1]["content"] and not frames[-1]["separator"]
-                frames[-1]["content"] = True
+                parent = frames[-1]
+                if (parent["separator"] and parent["value_started"]) or (
+                    not parent["separator"] and parent["content"]
+                ):
+                    valid_flow = False
+                    break
+                closes_key = not parent["content"] and not parent["separator"]
+                parent["content"] = True
+                if parent["separator"]:
+                    parent["value_started"] = True
                 if not closes_key:
-                    frames[-1]["key_closed"] = False
+                    parent["key_closed"] = False
                 frames.append(
                     {
                         "kind": "sequence" if character == "[" else "map",
@@ -2138,6 +2154,7 @@ def _frontmatter_end(text: str) -> int:
                         "items": 0,
                         "key_closed": False,
                         "closes_key": closes_key,
+                        "value_started": False,
                     }
                 )
             elif character in "]}":
@@ -2159,6 +2176,7 @@ def _frontmatter_end(text: str) -> int:
                 frame["content"] = False
                 frame["separator"] = False
                 frame["key_closed"] = False
+                frame["value_started"] = False
             elif character == ":":
                 frame = frames[-1]
                 next_character = inner[index + 1 : index + 2]
@@ -2171,6 +2189,8 @@ def _frontmatter_end(text: str) -> int:
                 if not is_separator:
                     frame["content"] = True
                     frame["key_closed"] = False
+                    if frame["separator"]:
+                        frame["value_started"] = True
                     continue
                 if frame["kind"] == "map":
                     if not frame["content"]:
@@ -2182,6 +2202,7 @@ def _frontmatter_end(text: str) -> int:
                     else:
                         frame["separator"] = True
                         frame["key_closed"] = False
+                        frame["value_started"] = False
                 else:
                     if not frame["content"]:
                         valid_flow = False
@@ -2192,9 +2213,12 @@ def _frontmatter_end(text: str) -> int:
                     else:
                         frame["separator"] = True
                         frame["key_closed"] = False
+                        frame["value_started"] = False
             elif not character.isspace():
                 frames[-1]["content"] = True
                 frames[-1]["key_closed"] = False
+                if frames[-1]["separator"]:
+                    frames[-1]["value_started"] = True
         valid_flow = valid_flow and quote is None and len(frames) == 1
         root = frames[0]
         if root["content"]:
