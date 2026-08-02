@@ -1,0 +1,31 @@
+name: EvoZeus Official Upgrade Profile
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-upgrade-profile-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify-data-only-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact trusted base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Verify candidate blobs as data
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/evozeus_official_upgrade_verify.py
+          verify-pull-request
+          --repo-root "$GITHUB_WORKSPACE"
+          --event "$GITHUB_EVENT_PATH"
