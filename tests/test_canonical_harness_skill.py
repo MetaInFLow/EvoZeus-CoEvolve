@@ -1243,6 +1243,64 @@ def test_adjacent_plain_and_collection_nodes_are_not_treated_as_frontmatter(
     check_harness_entry_contract(target, manifest)
 
 
+def test_nested_mapping_rejects_plain_text_after_collection_without_separator(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    business = "---\n{key: {broken: [value] ...}}\n---\n\n# Business main flow\n"
+    skill = target / "SKILL.md"
+    skill.write_text(business, encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(build_harness_activation_block())
+    assert business in updated
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
+@pytest.mark.parametrize(
+    "node_property",
+    [
+        "&items",
+        "!foo",
+        "!<tag:yaml.org,2002:seq>",
+    ],
+)
+def test_flow_node_properties_may_modify_collection_values(
+    tmp_path: Path,
+    node_property: str,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    frontmatter = f"---\n{{key: {node_property} [a, b]}}\n---\n"
+    skill = target / "SKILL.md"
+    skill.write_text(frontmatter + "\n# Business Skill\n", encoding="utf-8")
+
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    updated = skill.read_text(encoding="utf-8")
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/example-skill",
+        "v0.14.0",
+        [],
+        [],
+        instruction_surface="SKILL.md",
+    )
+
+    assert updated.startswith(frontmatter)
+    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
+    check_harness_entry_contract(target, manifest)
+
+
 def test_flow_frontmatter_preserves_an_exact_harness_entry_example(tmp_path: Path) -> None:
     target = tmp_path / "skill"
     target.mkdir()

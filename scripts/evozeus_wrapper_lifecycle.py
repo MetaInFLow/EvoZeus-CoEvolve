@@ -2100,6 +2100,9 @@ def _frontmatter_end(text: str) -> int:
                 "key_closed": False,
                 "closes_key": False,
                 "value_started": False,
+                "value_complete": False,
+                "node_properties": False,
+                "property_pending": False,
             }
         ]
         valid_flow = True
@@ -2122,28 +2125,47 @@ def _frontmatter_end(text: str) -> int:
                     quote_closes_key = False
                 continue
             if character in {"'", '"'}:
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                frame["property_pending"] = False
                 quote = character
-                quote_closes_key = not frames[-1]["content"] and not frames[-1]["separator"]
+                quote_closes_key = not frame["content"] and not frame["separator"]
                 if not quote_closes_key:
-                    frames[-1]["key_closed"] = False
-                frames[-1]["content"] = True
-                if frames[-1]["separator"]:
-                    frames[-1]["value_started"] = True
+                    frame["key_closed"] = False
+                frame["content"] = True
+                if frame["separator"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
             elif character == "#" and (
-                index == 0 or inner[index - 1].isspace() or inner[index - 1] in ",[]{}:"
+                not frames[-1]["property_pending"]
+                and (index == 0 or inner[index - 1].isspace() or inner[index - 1] in ",[]{}:")
             ):
                 comment = True
             elif character in "[{":
                 parent = frames[-1]
-                if (parent["separator"] and parent["value_started"]) or (
-                    not parent["separator"] and parent["content"]
+                parent["property_pending"] = False
+                if parent["value_complete"] or (
+                    parent["separator"]
+                    and parent["value_started"]
+                    and not parent["node_properties"]
+                ) or (
+                    not parent["separator"]
+                    and parent["content"]
+                    and not (parent["node_properties"] and not parent["value_started"])
                 ):
                     valid_flow = False
                     break
-                closes_key = not parent["content"] and not parent["separator"]
+                closes_key = (
+                    not parent["separator"]
+                    and not parent["value_started"]
+                    and (not parent["content"] or parent["node_properties"])
+                )
                 parent["content"] = True
                 if parent["separator"]:
                     parent["value_started"] = True
+                parent["node_properties"] = False
                 if not closes_key:
                     parent["key_closed"] = False
                 frames.append(
@@ -2155,6 +2177,9 @@ def _frontmatter_end(text: str) -> int:
                         "key_closed": False,
                         "closes_key": closes_key,
                         "value_started": False,
+                        "value_complete": False,
+                        "node_properties": False,
+                        "property_pending": False,
                     }
                 )
             elif character in "]}":
@@ -2163,13 +2188,27 @@ def _frontmatter_end(text: str) -> int:
                     valid_flow = False
                     break
                 frame = frames.pop()
+                if frame["property_pending"] or (
+                    frame["node_properties"] and not frame["value_started"]
+                ):
+                    valid_flow = False
+                    break
                 if frame["content"]:
                     frame["items"] += 1
                 if frame["closes_key"]:
                     frames[-1]["key_closed"] = True
+                else:
+                    frames[-1]["value_complete"] = True
+                    frames[-1]["value_started"] = True
             elif character == ",":
                 frame = frames[-1]
-                if not frame["content"]:
+                if frame["property_pending"]:
+                    continue
+                if (
+                    not frame["content"]
+                    or frame["property_pending"]
+                    or (frame["node_properties"] and not frame["value_started"])
+                ):
                     valid_flow = False
                     break
                 frame["items"] += 1
@@ -2177,8 +2216,16 @@ def _frontmatter_end(text: str) -> int:
                 frame["separator"] = False
                 frame["key_closed"] = False
                 frame["value_started"] = False
+                frame["value_complete"] = False
+                frame["node_properties"] = False
+                frame["property_pending"] = False
             elif character == ":":
                 frame = frames[-1]
+                if frame["property_pending"]:
+                    continue
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
                 next_character = inner[index + 1 : index + 2]
                 is_separator = (
                     not next_character
@@ -2203,6 +2250,8 @@ def _frontmatter_end(text: str) -> int:
                         frame["separator"] = True
                         frame["key_closed"] = False
                         frame["value_started"] = False
+                        frame["value_complete"] = False
+                        frame["node_properties"] = False
                 else:
                     if not frame["content"]:
                         valid_flow = False
@@ -2214,11 +2263,41 @@ def _frontmatter_end(text: str) -> int:
                         frame["separator"] = True
                         frame["key_closed"] = False
                         frame["value_started"] = False
+                        frame["value_complete"] = False
+                        frame["node_properties"] = False
+            elif character in "&!":
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                if frame["property_pending"]:
+                    continue
+                if (
+                    not frame["content"]
+                    or (frame["separator"] and not frame["value_started"])
+                    or (frame["node_properties"] and not frame["value_started"])
+                ):
+                    frame["content"] = True
+                    frame["node_properties"] = True
+                    frame["property_pending"] = True
+                    frame["key_closed"] = False
+                else:
+                    frame["key_closed"] = False
             elif not character.isspace():
-                frames[-1]["content"] = True
-                frames[-1]["key_closed"] = False
-                if frames[-1]["separator"]:
-                    frames[-1]["value_started"] = True
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                if frame["property_pending"]:
+                    continue
+                frame["content"] = True
+                frame["key_closed"] = False
+                if frame["separator"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
+                elif frame["node_properties"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
         valid_flow = valid_flow and quote is None and len(frames) == 1
         root = frames[0]
         if root["content"]:
