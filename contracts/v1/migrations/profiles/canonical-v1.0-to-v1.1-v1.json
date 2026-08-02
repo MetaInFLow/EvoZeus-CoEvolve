@@ -1,0 +1,184 @@
+{
+  "schema_version": "evozeus.coevolve.official-upgrade-profile.v1",
+  "profile_id": "canonical-v1.0-to-v1.1",
+  "profile_version": "v1.0.0",
+  "protocol": {
+    "path": "migrations/protocols/official-upgrade-protocol-v1.json",
+    "sha256": "83f1957eb416ec8bc8f14c9a6d5cf8a476ce2fd03cea49a26f18d262ce8b3519"
+  },
+  "from_closure": {
+    "path": "migrations/history/harness-skill/v1.0.0/closure.json",
+    "sha256": "4e411771c9ac9225cc69c87eb0fa5067c321a262e5679a6e47726523065d5f18"
+  },
+  "to_closure": {
+    "path": "migrations/history/harness-skill/v1.1.0/closure.json",
+    "sha256": "e8e13ad3566044aa2db9d487b890c7bb9f8295b165a6251259460f6d66ec8cb7"
+  },
+  "automatic": true,
+  "operations": [
+    {
+      "change_id": "create:.evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+      "type": "create_exact",
+      "target_path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+      "preimage": {
+        "state": "absent"
+      },
+      "postimage": {
+        "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
+        "sha256": "a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec",
+        "mode": "100644"
+      }
+    },
+    {
+      "change_id": "create:.evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+      "type": "create_exact",
+      "target_path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+      "preimage": {
+        "state": "absent"
+      },
+      "postimage": {
+        "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/generated/harness-skill-v1.0.0-to-v1.1.0.md",
+        "sha256": "c609568fc97c601acb30362ef3566ae047740102223db4bbcc580709b44f81ee",
+        "mode": "100644"
+      }
+    },
+    {
+      "change_id": "replace:.evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+      "type": "replace_exact",
+      "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+      "preimage": {
+        "sha256": "7b5a6ca032d79e878c4712d9f45e49b0489e4698ea38e97a4e8ad4f9d1af76f8",
+        "mode": "100755"
+      },
+      "postimage": {
+        "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+        "sha256": "ab05e1b82d443a9070e5d3006006b67df79294657973c823820487dfde3ff932",
+        "mode": "100755"
+      }
+    },
+    {
+      "change_id": "replace:.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+      "type": "replace_exact",
+      "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+      "preimage": {
+        "sha256": "af3f1a58380f5763f5b1bdc25b86c65384efaa40adaca89436ea9dba2accbebe",
+        "mode": "100644"
+      },
+      "postimage": {
+        "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+        "sha256": "21e32790d0baabdd4cba93574f37f85cdd1c111a0055ad1c0a3337f9e0fae084",
+        "mode": "100644"
+      }
+    },
+    {
+      "change_id": "manifest:.evozeus-wrapper/wrapper.json",
+      "type": "manifest_patch",
+      "target_path": ".evozeus-wrapper/wrapper.json",
+      "encoding": "utf-8-json-indent-2-lf",
+      "preserve_unlisted_fields": true,
+      "preconditions": {
+        "wrapper_repo": "MetaInFLow/EvoZeus-CoEvolve",
+        "wrapper_version": "v0.14.0",
+        "layout_version": 2,
+        "target_wrapper_dir": ".evozeus-wrapper",
+        "target_infra_dir": ".evozeus-wrapper",
+        "harness_skill_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+        "harness_skill_version": "v1.0.0",
+        "harness_skill_managed": true,
+        "migration_contract": {
+          "state": "absent"
+        },
+        "managed_blocks": {
+          "state": "absent"
+        }
+      },
+      "patch": [
+        {
+          "action": "replace",
+          "field": "wrapper_version",
+          "value": "v0.15.0"
+        },
+        {
+          "action": "replace",
+          "field": "harness_skill_version",
+          "value": "v1.1.0"
+        },
+        {
+          "action": "add",
+          "field": "migration_contract",
+          "value": {
+            "migration_protocol_version": "v1.0.0",
+            "contract_id": "evozeus-harness-migration",
+            "contract_version": "v1.0.0",
+            "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+            "sha256": "sha256:a7a4d65d7843db9548dd1649b62ec74aff7e0517a7c14bc495cc3370c5bed8ec"
+          }
+        },
+        {
+          "action": "add_managed_block",
+          "field": "managed_blocks",
+          "path_from": "instruction_surface",
+          "value": {
+            "block_id": "evozeus-harness-entry",
+            "marker_version": "v1",
+            "begin_marker": "<!-- evozeus-harness-entry:v1 -->",
+            "end_marker": "<!-- /evozeus-harness-entry -->",
+            "sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea"
+          }
+        },
+        {
+          "action": "append_unique",
+          "field": "managed_files",
+          "values": [
+            ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+            ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+            ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+          ]
+        }
+      ]
+    }
+  ],
+  "deferred_rendered_surfaces": [
+    {
+      "target_path": ".evozeus-wrapper/CHANGELOG.md",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    },
+    {
+      "target_path": ".evozeus-wrapper/WRAPPER.md",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/_config.yml",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/index.md",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    },
+    {
+      "target_path": ".github/ISSUE_TEMPLATE/config.yml",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    },
+    {
+      "target_path": ".github/workflows/evozeus-wrapper-preflight.yml",
+      "policy": "receipt_gated_preserve_exact",
+      "version_fact_source": ".evozeus-wrapper/wrapper.json"
+    }
+  ],
+  "protected_business_surfaces": [
+    {
+      "selector": "manifest.instruction_surface",
+      "rule": "byte_exact"
+    }
+  ],
+  "fallback": {
+    "unknown_layout": "manual_migration_required_zero_write",
+    "scattered_layout": "manual_migration_required_zero_write",
+    "missing_evidence": "manual_migration_required_zero_write"
+  }
+}

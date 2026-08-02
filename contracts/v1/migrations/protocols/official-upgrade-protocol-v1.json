@@ -1,0 +1,36 @@
+{
+  "schema_version": "evozeus.coevolve.official-upgrade-protocol.v1",
+  "protocol_id": "evozeus-official-upgrade",
+  "protocol_version": "v1.0.0",
+  "allowed_operation_types": [
+    "create_exact",
+    "replace_exact",
+    "managed_block_merge",
+    "manifest_patch"
+  ],
+  "authority": {
+    "discovery_is_authority": false,
+    "profile_is_data": true,
+    "exact_closure_required": true,
+    "closure_diff_operation_bijection": true
+  },
+  "candidate_policy": {
+    "execution_model": "trusted_base_verifier_candidate_blobs_as_data",
+    "protected_base_paths": [
+      ".github/workflows/evozeus-official-upgrade-profile.yml",
+      "contracts/v1/migrations/protocols/",
+      "contracts/v1/migrations/schemas/",
+      "contracts/v1/migrations/history/*/v*/",
+      "scripts/evozeus_official_upgrade_verify.py"
+    ],
+    "reject_symlinks": true,
+    "reject_submodules": true,
+    "reject_unknown_operations": true
+  },
+  "target_policy": {
+    "protected_business_surfaces": "byte_exact",
+    "rendered_without_receipt": "preserve_byte_exact",
+    "ledger": "deterministic_no_date_no_self_reference",
+    "unknown_or_scattered": "manual_migration_required_zero_write"
+  }
+}

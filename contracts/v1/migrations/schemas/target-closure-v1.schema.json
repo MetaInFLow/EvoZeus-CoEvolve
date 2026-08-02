@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/target-closure-v1.schema.json",
+  "title": "EvoZeus immutable target materialization closure v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "closure_id",
+    "closure_version",
+    "source",
+    "state",
+    "files",
+    "protected_business_surfaces"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.target-closure.v1"
+    },
+    "closure_id": {
+      "const": "using-evozeus-harness"
+    },
+    "closure_version": {
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "construction_revision",
+        "release_status",
+        "required_release"
+      ],
+      "properties": {
+        "repository": { "const": "MetaInFLow/EvoZeus-CoEvolve" },
+        "construction_revision": { "pattern": "^[0-9a-f]{40}$" },
+        "release_status": {
+          "enum": [
+            "unreleased_exact_snapshot",
+            "release_required_for_apply"
+          ]
+        },
+        "required_release": {
+          "type": ["string", "null"],
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layout",
+        "target_wrapper_version",
+        "contract_bundle_version",
+        "harness_skill_version"
+      ],
+      "properties": {
+        "layout": { "const": "consolidated-v2" },
+        "target_wrapper_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "contract_bundle_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "harness_skill_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target_path", "kind", "mode", "ownership", "materialization"],
+        "properties": {
+          "target_path": { "$ref": "#/$defs/relativePath" },
+          "kind": { "enum": ["absent", "exact", "rendered_template", "manifest_state"] },
+          "mode": { "enum": ["absent", "100644", "100755", "virtual"] },
+          "ownership": { "const": "wrapper_managed" },
+          "artifact_path": { "$ref": "#/$defs/relativePath" },
+          "source_path": { "$ref": "#/$defs/relativePath" },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "materialization": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["policy"],
+            "properties": {
+              "policy": {
+                "enum": [
+                  "copy_exact",
+                  "must_be_absent",
+                  "render_with_install_receipt",
+                  "preserve_byte_exact_without_receipt",
+                  "manifest_owned_state"
+                ]
+              }
+            }
+          },
+          "owned_state": { "type": "object" }
+        }
+      }
+    },
+    "protected_business_surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["selector", "rule"],
+        "properties": {
+          "selector": { "const": "manifest.instruction_surface" },
+          "rule": { "const": "byte_exact" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/official-upgrade-profile-v1.schema.json",
+  "title": "EvoZeus official upgrade profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "protocol",
+    "from_closure",
+    "to_closure",
+    "automatic",
+    "operations",
+    "deferred_rendered_surfaces",
+    "protected_business_surfaces",
+    "fallback"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.official-upgrade-profile.v1"
+    },
+    "profile_id": { "type": "string", "minLength": 1 },
+    "profile_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "protocol": { "$ref": "#/$defs/binding" },
+    "from_closure": { "$ref": "#/$defs/binding" },
+    "to_closure": { "$ref": "#/$defs/binding" },
+    "automatic": { "type": "boolean" },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["change_id", "type", "target_path"],
+        "properties": {
+          "change_id": { "type": "string", "minLength": 1 },
+          "type": {
+            "enum": [
+              "create_exact",
+              "replace_exact",
+              "managed_block_merge",
+              "manifest_patch"
+            ]
+          },
+          "target_path": { "$ref": "#/$defs/relativePath" }
+        }
+      }
+    },
+    "deferred_rendered_surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target_path", "policy", "version_fact_source"],
+        "properties": {
+          "target_path": { "$ref": "#/$defs/relativePath" },
+          "policy": { "const": "receipt_gated_preserve_exact" },
+          "version_fact_source": { "const": ".evozeus-wrapper/wrapper.json" }
+        }
+      }
+    },
+    "protected_business_surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["selector", "rule"],
+        "properties": {
+          "selector": { "const": "manifest.instruction_surface" },
+          "rule": { "const": "byte_exact" }
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown_layout", "scattered_layout", "missing_evidence"],
+      "properties": {
+        "unknown_layout": { "const": "manual_migration_required_zero_write" },
+        "scattered_layout": { "const": "manual_migration_required_zero_write" },
+        "missing_evidence": { "const": "manual_migration_required_zero_write" }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
