@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1074,6 +1075,18 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     assert plan["profile"]["to_state"]["harness_skill_version"] == "v1.1.0"
     assert all(item.get("postimage_sha256") for item in plan["write_set"])
     assert all(isinstance(item.get("postimage_mode"), int) for item in plan["write_set"])
+    manifest_item = next(
+        item
+        for item in plan["write_set"]
+        if item["path"] == lifecycle.TARGET_WRAPPER_MANIFEST
+    )
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", manifest_item["operation_sha256"])
+    assert manifest_item["manifest_preconditions"]["wrapper_version"] == "v0.14.0"
+    assert {
+        item["value"]
+        for item in manifest_item["manifest_patch"]
+        if item["field"] == "wrapper_version"
+    } == {"v0.15.0"}
 
     approval_required = lifecycle.migrate_target_layout(
         target,
@@ -1252,6 +1265,28 @@ def test_profile_postimage_mismatch_is_detected_before_snapshot_or_target_write(
         lifecycle._apply_canonical_v1_upgrade(
             target,
             bad_plan,
+            date(2026, 8, 2),
+            bundle,
+            snapshot_base,
+        )
+
+    assert replaced_path.read_bytes() == before
+    assert not snapshot_base.exists()
+
+    bad_manifest_plan = copy.deepcopy(plan)
+    manifest_item = next(
+        item
+        for item in bad_manifest_plan["write_set"]
+        if item["path"] == lifecycle.TARGET_WRAPPER_MANIFEST
+    )
+    manifest_item["manifest_patch"][0]["value"] = "v9.9.9"
+    bad_manifest_plan["plan_sha256"] = (
+        "sha256:" + migration_kernel.migration_plan_digest(bad_manifest_plan)
+    )
+    with pytest.raises(ValueError, match="migration operation differs from verified profile"):
+        lifecycle._apply_canonical_v1_upgrade(
+            target,
+            bad_manifest_plan,
             date(2026, 8, 2),
             bundle,
             snapshot_base,

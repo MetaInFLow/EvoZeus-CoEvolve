@@ -3323,11 +3323,14 @@ def _official_upgrade_write_plan(
                         Path("contracts/v1") / artifact_relative
                     ).as_posix(),
                     "authority": operation.get("change_id"),
+                    "operation_sha256": "sha256:"
+                    + migration_kernel.canonical_json_sha256(operation),
                 }
             )
         elif operation_type == "manifest_patch":
             if relative != TARGET_WRAPPER_MANIFEST:
                 raise ValueError("official manifest patch targets an unknown manifest")
+            preconditions = operation.get("preconditions")
             patched = _apply_official_manifest_patch(manifest, operation)
             data = (json.dumps(patched, ensure_ascii=False, indent=2) + "\n").encode(
                 "utf-8"
@@ -3346,6 +3349,10 @@ def _official_upgrade_write_plan(
                     "postimage_mode": manifest_mode,
                     "source_sha256": None,
                     "authority": operation.get("change_id"),
+                    "operation_sha256": "sha256:"
+                    + migration_kernel.canonical_json_sha256(operation),
+                    "manifest_preconditions": copy.deepcopy(preconditions),
+                    "manifest_patch": copy.deepcopy(operation.get("patch")),
                 }
             )
         else:
@@ -4028,6 +4035,9 @@ def _apply_canonical_v1_upgrade(
                 "source_sha256",
                 "source_path",
                 "authority",
+                "operation_sha256",
+                "manifest_preconditions",
+                "manifest_patch",
             )
         ):
             raise ValueError(
