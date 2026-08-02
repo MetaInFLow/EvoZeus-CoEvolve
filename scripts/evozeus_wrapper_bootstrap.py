@@ -14,6 +14,7 @@ try:
     from . import evozeus_harness_migration as migration_kernel
     from .evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
+        CURRENT_WRAPPER_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
         OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
@@ -36,6 +37,7 @@ except ImportError:
     import evozeus_harness_migration as migration_kernel
     from evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
+        CURRENT_WRAPPER_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
         OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
@@ -67,7 +69,7 @@ TARGET_TEMPLATE_INVENTORY_SOURCE = ROOT / "contracts" / "v1" / "target-template-
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
-WRAPPER_VERSION = "v0.14.0"
+WRAPPER_VERSION = CURRENT_WRAPPER_VERSION
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
@@ -238,6 +240,7 @@ def validate_existing_manifest_for_attach(
     migration_identity = migration_bundle["identity"]
     activation_contract = migration_bundle["contract"]["canonical_activation_block"]
     expected = {
+        "wrapper_version": WRAPPER_VERSION,
         "layout_version": 2,
         "canonical_repo": repo,
         "instruction_surface": instruction_surface,

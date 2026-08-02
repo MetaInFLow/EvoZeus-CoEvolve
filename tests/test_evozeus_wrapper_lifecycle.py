@@ -144,7 +144,7 @@ def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
                 "required_paths": [CORE_DISPATCHER_SOURCE.as_posix()],
             },
             "coevolve": {
-                "version": "v0.14.0",
+                "version": "v0.15.0",
                 "commit": "97cbf7aa00000000000000000000000000000000",
                 "source": {"kind": "git", "ref": "test"},
                 "required_paths": ["scripts/evozeus_wrapper.py"],
@@ -191,7 +191,7 @@ def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
                 "schema_version": 2,
                 "wrapper_source": "channel-managed",
                 "source_repository": "MetaInFLow/EvoZeus",
-                "installed_version": "v0.14.0",
+                "installed_version": "v0.15.0",
                 "core_version": "v0.5.0",
                 "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                 "trust_status": "verified_by_product_manifest",

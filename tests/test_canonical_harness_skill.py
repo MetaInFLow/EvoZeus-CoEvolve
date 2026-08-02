@@ -14,6 +14,7 @@ import pytest
 from scripts import evozeus_harness_migration as migration_kernel
 from scripts import evozeus_wrapper_bootstrap as bootstrap
 from scripts.evozeus_wrapper_bootstrap import (
+    WRAPPER_VERSION,
     build_evolution_section,
     build_status_section,
     build_wrapper_section,
@@ -50,6 +51,7 @@ from scripts.evozeus_wrapper_preflight import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LEGACY_WRAPPER_VERSION = "v0.14.0"
 
 
 @pytest.fixture(autouse=True)
@@ -81,14 +83,42 @@ def replacements() -> dict[str, str]:
         "REPO_URL": "https://github.com/MetaInFLow/example-skill",
         "SKILL_NAME": "example-skill",
         "VISIBILITY": "public",
-        "WRAPPER_VERSION": "v0.14.0",
+        "WRAPPER_VERSION": WRAPPER_VERSION,
     }
+
+
+def legacy_replacements() -> dict[str, str]:
+    return {**replacements(), "WRAPPER_VERSION": LEGACY_WRAPPER_VERSION}
+
+
+def trusted_development_bundle() -> dict[str, object]:
+    bundle = migration_kernel.load_migration_contract(ROOT)
+    bundle["source_trust"] = {
+        **bundle["source_trust"],
+        "status": "trusted_release",
+        "reasons": [],
+    }
+    return bundle
+
+
+def copy_test_templates(
+    target: Path,
+    values: dict[str, str],
+    *,
+    force: bool,
+) -> list[str]:
+    return copy_templates(
+        target,
+        values,
+        force,
+        _migration_bundle=trusted_development_bundle(),
+    )
 
 
 def write_manifest(target: Path, *, surface: str = "SKILL.md", legacy: bool = False) -> dict:
     manifest = build_wrapper_manifest(
         "MetaInFLow/example-skill",
-        "v0.14.0",
+        LEGACY_WRAPPER_VERSION if legacy else WRAPPER_VERSION,
         [],
         [],
         instruction_surface=surface,
@@ -109,13 +139,13 @@ def prepare_fresh_target(target: Path, *, surface: str = "SKILL.md", text: str |
         or '---\nname: "example-skill"\ndescription: Business Skill.\n---\n\n# Business Skill\n\nRun business flow.\n',
         encoding="utf-8",
     )
-    copy_templates(target, replacements(), force=False)
+    copy_test_templates(target, replacements(), force=False)
     inject_evolution_method(target, replacements(), instruction_surface=surface)
     return write_manifest(target, surface=surface)
 
 
 def legacy_skill_text(newline: str = "\n") -> str:
-    values = replacements()
+    values = legacy_replacements()
     business = (
         "# 企业 AI 场景诊断\n\n"
         "TRIGGER-BYTES: 诊断三个优先场景。  \n\n"
@@ -171,10 +201,15 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     assert manifest["harness_skill_path"] == TARGET_HARNESS_SKILL
     assert manifest["harness_skill_version"] == HARNESS_SKILL_VERSION
     assert manifest["harness_skill_managed"] is True
+    assert manifest["wrapper_version"] == "v0.15.0"
+    assert json.loads((ROOT / "contracts/v1/manifest.json").read_text())["bundle_version"] == "v1.2.0"
     assert "MetaInFLow/example-skill" not in harness
     assert "prompt_runtime_check" in harness
     assert "SkillInvoke" in harness
     assert run_structure(target).returncode == 0
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
+    assert plan["decision"] == "no_migration_required"
+    assert plan["migration_required"] is False
 
 
 def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
@@ -191,7 +226,7 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
     harness.write_text(original_harness, encoding="utf-8")
 
     with pytest.raises(ValueError, match="no exact trusted preimage"):
-        copy_templates(target, replacements(), force=False)
+        copy_test_templates(target, replacements(), force=False)
 
     assert skill.read_text(encoding="utf-8") == original_skill
     assert harness.read_text(encoding="utf-8") == original_harness
@@ -199,7 +234,7 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
     assert not (target / ".github").exists()
 
     with pytest.raises(ValueError, match="--force cannot authorize replacement"):
-        copy_templates(target, replacements(), force=True)
+        copy_test_templates(target, replacements(), force=True)
     assert harness.read_text(encoding="utf-8") == original_harness
 
 
@@ -216,7 +251,7 @@ def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
     harness.symlink_to(outside)
 
     with pytest.raises(ValueError, match="template destination contains a symlink component"):
-        copy_templates(target, replacements(), force=True)
+        copy_test_templates(target, replacements(), force=True)
 
     assert harness.is_symlink()
     assert outside.read_text(encoding="utf-8") == "OWNER BYTES\n"
@@ -235,7 +270,7 @@ def test_attach_rejects_a_symlinked_harness_parent_without_writing_outside_repo(
     (target / ".evozeus-wrapper").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="template destination contains a symlink component"):
-        copy_templates(target, replacements(), force=True)
+        copy_test_templates(target, replacements(), force=True)
 
     assert list(outside.iterdir()) == []
     assert not (target / ".github").exists()
@@ -250,7 +285,7 @@ def test_attach_preflights_every_template_destination_before_any_write(tmp_path:
     (target / ".github").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="template destination contains a symlink component"):
-        copy_templates(target, replacements(), force=False)
+        copy_test_templates(target, replacements(), force=False)
 
     assert list(outside.iterdir()) == []
     assert not (target / ".evozeus-wrapper").exists()
@@ -266,7 +301,7 @@ def test_attach_rejects_a_non_directory_template_parent_before_any_write(tmp_pat
     (wrapper / "skills").write_text("OWNER FILE\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="template destination parent is not a directory"):
-        copy_templates(target, replacements(), force=False)
+        copy_test_templates(target, replacements(), force=False)
 
     assert (wrapper / "skills").read_text(encoding="utf-8") == "OWNER FILE\n"
     assert not (target / ".github").exists()
@@ -345,7 +380,29 @@ def test_attach_preflight_allows_an_idempotent_canonical_manifest(tmp_path: Path
     target.mkdir()
     manifest = prepare_fresh_target(target)
 
+    assert manifest["wrapper_version"] == WRAPPER_VERSION
     validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+
+def test_v014_manifest_is_not_current_attach_and_routes_to_manual_migration(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    manifest = prepare_fresh_target(target)
+    manifest["wrapper_version"] = LEGACY_WRAPPER_VERSION
+    (target / TARGET_WRAPPER_MANIFEST).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="wrapper_version"):
+        validate_existing_manifest_for_attach(target, manifest["canonical_repo"])
+
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
+    assert plan["compatibility_state"] == "prerelease_ambiguous"
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["can_apply"] is False
 
 
 def test_attach_preflight_requires_harness_in_managed_files(tmp_path: Path) -> None:
@@ -434,12 +491,12 @@ def test_prompt_and_plugin_bootstrap_targets_keep_integration_facts_in_manifest(
         '{"hooks":{"session-start":"skills/session-bootstrap/SKILL.md"}}\n',
         encoding="utf-8",
     )
-    copy_templates(plugin_target, replacements(), force=False)
+    copy_test_templates(plugin_target, replacements(), force=False)
     inject_evolution_method(plugin_target, replacements(), instruction_surface=surface)
     architecture = detect_target_architecture(plugin_target)
     plugin_manifest = build_wrapper_manifest(
         "MetaInFLow/example-plugin",
-        "v0.14.0",
+        WRAPPER_VERSION,
         [],
         [],
         instruction_surface=surface,
@@ -589,7 +646,7 @@ def test_legacy_three_block_migration_preserves_business_bytes_and_stops_note_gr
 ) -> None:
     target = tmp_path / "diagnose-enterprise-ai-scenarios"
     target.mkdir()
-    copy_templates(target, replacements(), force=False)
+    copy_test_templates(target, legacy_replacements(), force=False)
     original = legacy_skill_text(newline).encode("utf-8")
     business = (
         "# 企业 AI 场景诊断\n\n"
@@ -646,12 +703,12 @@ def test_public_232_line_golden_fixture_preserves_business_contract_byte_for_byt
     target.mkdir()
     (target / "SKILL.md").write_bytes(original)
     values = {
-        **replacements(),
+        **legacy_replacements(),
         "REPO_NAME": "MetaInFLow/diagnose-enterprise-ai-scenarios",
         "REPO_URL": "https://github.com/MetaInFLow/diagnose-enterprise-ai-scenarios",
         "SKILL_NAME": "diagnose-enterprise-ai-scenarios",
     }
-    copy_templates(target, values, force=False)
+    copy_test_templates(target, values, force=False)
     manifest = build_wrapper_manifest(
         values["REPO_NAME"],
         "v0.14.0",
@@ -819,12 +876,12 @@ def test_owned_section_without_terminal_blocks_before_writing(
         + "\nOwner paragraph must not be guessed into the managed span.\n"
     )
     (target / "SKILL.md").write_text(source, encoding="utf-8")
-    copy_templates(target, replacements(), force=False)
+    copy_test_templates(target, legacy_replacements(), force=False)
     write_manifest(target, legacy=True)
     before = (target / "SKILL.md").read_bytes()
 
-    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    report = migrate_target_layout(target, latest_version="v0.14.0")
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
+    report = migrate_target_layout(target, latest_version=WRAPPER_VERSION)
 
     assert any(
         "terminal signature" in item.get("diagnostic", "")
@@ -878,7 +935,7 @@ def test_business_terminal_text_cannot_complete_a_truncated_managed_section(
         '---\nname: "example"\n---\n\n' + ambiguous_section,
         encoding="utf-8",
     )
-    copy_templates(target, replacements(), force=False)
+    copy_test_templates(target, legacy_replacements(), force=False)
     write_manifest(target, legacy=True)
     before = (target / "SKILL.md").read_bytes()
 
@@ -936,7 +993,7 @@ def test_missing_damaged_mismatch_and_symlink_escape_are_deterministic(tmp_path:
 
     harness.parent.mkdir(parents=True, exist_ok=True)
     harness.write_text("# damaged\n", encoding="utf-8")
-    damaged_plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    damaged_plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
     with contextlib.redirect_stderr(io.StringIO()) as stderr, pytest.raises(SystemExit):
         check_harness_skill_contract(target, manifest, allow_legacy=False)
     assert "frontmatter" in stderr.getvalue()
@@ -951,7 +1008,7 @@ def test_missing_damaged_mismatch_and_symlink_escape_are_deterministic(tmp_path:
     assert "symlink" in stderr.getvalue()
 
     harness.unlink()
-    copy_templates(target, replacements(), force=True)
+    copy_test_templates(target, replacements(), force=True)
     entry = target / "SKILL.md"
     entry.write_text(
         entry.read_text(encoding="utf-8").replace(TARGET_HARNESS_SKILL, ".evozeus-wrapper/skills/other/SKILL.md"),
@@ -973,12 +1030,12 @@ def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
     assert valid.startswith("---\n")
     harness.write_text(valid.removeprefix("---\n"), encoding="utf-8")
 
-    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
     assert plan["instruction_surface_migration_required"] is True
     assert plan["migration_required"] is True
 
     before = harness.read_bytes()
-    report = migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version=WRAPPER_VERSION)
     assert report["status"] == "manual_migration_required"
     assert report["writes"] is False
     assert harness.read_bytes() == before
@@ -1000,8 +1057,8 @@ def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -
     assert canonical_harness_skill_text_valid(harness.read_text(encoding="utf-8"))
     skill_bytes = (target / "SKILL.md").read_bytes()
 
-    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    report = migrate_target_layout(target, latest_version="v0.14.0")
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
+    report = migrate_target_layout(target, latest_version=WRAPPER_VERSION)
 
     assert plan["can_apply"] is False
     assert report["status"] == "manual_migration_required"
@@ -1625,8 +1682,8 @@ def test_unbalanced_managed_entry_blocks_migration_before_any_write(tmp_path: Pa
     )
     before = entry.read_bytes()
 
-    plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    report = migrate_target_layout(target, latest_version="v0.14.0")
+    plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
+    report = migrate_target_layout(target, latest_version=WRAPPER_VERSION)
 
     assert any("unbalanced canonical Harness entry" in item for item in plan["conflicts"])
     assert report["status"] == "manual_migration_required"

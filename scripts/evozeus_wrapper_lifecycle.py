@@ -63,6 +63,7 @@ TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_prefli
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
 TARGET_MIGRATION_CONTRACT = migration_kernel.TARGET_MIGRATION_CONTRACT
+CURRENT_WRAPPER_VERSION = "v0.15.0"
 HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
@@ -3005,7 +3006,8 @@ def _manifest_proves_canonical_harness_ownership(
         }
     ]
     return (
-        manifest.get("layout_version") == 2
+        manifest.get("wrapper_version") == CURRENT_WRAPPER_VERSION
+        and manifest.get("layout_version") == 2
         and isinstance(manifest.get("instruction_surface"), str)
         and manifest.get("harness_skill_path") == TARGET_HARNESS_SKILL
         and manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION

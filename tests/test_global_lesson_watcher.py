@@ -76,7 +76,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                     "required_paths": [CORE_DISPATCHER_SOURCE.as_posix()],
                 },
                 "coevolve": {
-                    "version": "v0.14.0",
+                    "version": "v0.15.0",
                     "commit": "97cbf7aa00000000000000000000000000000000",
                     "source": {"kind": "git", "ref": "test"},
                     "required_paths": ["scripts/evozeus_wrapper.py"],
@@ -124,7 +124,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                     "schema_version": 2,
                     "wrapper_source": "channel-managed",
                     "source_repository": "MetaInFLow/EvoZeus",
-                    "installed_version": "v0.14.0",
+                    "installed_version": "v0.15.0",
                     "core_version": "v0.5.0",
                     "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                     "trust_status": "verified_by_product_manifest",
@@ -139,7 +139,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
         return dispatcher, core_state
 
     def test_patch_version_identifies_the_new_harness(self):
-        self.assertEqual(WRAPPER_VERSION, "v0.14.0")
+        self.assertEqual(WRAPPER_VERSION, "v0.15.0")
 
     def test_coevolve_dispatcher_template_remains_session_start_only(self):
         source = (ROOT / "templates/global/evozeus_wrapper_dispatcher.py").read_text(
@@ -181,7 +181,7 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
                         "schema_version": 2,
                         "wrapper_source": "channel-managed",
                         "source_repository": "MetaInFLow/EvoZeus",
-                        "installed_version": "v0.14.0",
+                        "installed_version": "v0.15.0",
                         "core_version": "v0.5.0",
                         "runtime_api": CORE_USER_PROMPT_RUNTIME_API,
                         "trust_status": "verified_by_product_manifest",

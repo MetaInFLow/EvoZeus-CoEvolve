@@ -234,18 +234,18 @@ python3 scripts/evozeus_wrapper.py harness upgrade-check \
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.14.0 \
+  --latest-version v0.15.0 \
   --dry-run \
   --json
 
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
-  --latest-version v0.14.0 \
+  --latest-version v0.15.0 \
   --approve-plan 'sha256:<exact-plan-digest>' \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
-  --latest-version v0.14.0 \
+  --latest-version v0.15.0 \
   --dry-run \
   --json
 ```

@@ -37,7 +37,7 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _replacement_values() -> dict[str, str]:
+def _current_replacement_values() -> dict[str, str]:
     return {
         "DATE": "2026-08-02",
         "INITIAL_VERSION": "v0.1.0",
@@ -46,8 +46,12 @@ def _replacement_values() -> dict[str, str]:
         "REPO_URL": "https://github.com/MetaInFLow/migration-target",
         "SKILL_NAME": "migration-target",
         "VISIBILITY": "public",
-        "WRAPPER_VERSION": "v0.14.0",
+        "WRAPPER_VERSION": bootstrap.WRAPPER_VERSION,
     }
+
+
+def _legacy_replacement_values() -> dict[str, str]:
+    return {**_current_replacement_values(), "WRAPPER_VERSION": "v0.14.0"}
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -189,7 +193,7 @@ def _prepare_exact_v1_target(tmp_path: Path, name: str = "target") -> Path:
     )
     bootstrap.copy_templates(
         target,
-        _replacement_values(),
+        _legacy_replacement_values(),
         force=False,
         _migration_bundle=_trusted_development_bundle(),
     )
@@ -374,7 +378,7 @@ def test_fresh_attach_rejects_unreleased_development_source(tmp_path: Path) -> N
     target.joinpath("SKILL.md").write_text("# Owner Skill\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="immutable trusted source release"):
-        bootstrap.copy_templates(target, _replacement_values(), force=False)
+        bootstrap.copy_templates(target, _current_replacement_values(), force=False)
 
     assert sorted(path.name for path in target.iterdir()) == ["SKILL.md"]
 
@@ -1447,7 +1451,7 @@ def test_bootstrap_force_preserves_unknown_managed_destination(
     with pytest.raises(ValueError, match="--force cannot authorize replacement"):
         bootstrap.copy_templates(
             target,
-            _replacement_values(),
+            _current_replacement_values(),
             force=True,
             _migration_bundle=_trusted_development_bundle(),
         )
@@ -1503,7 +1507,7 @@ def test_prerelease_v11_without_exact_contract_identity_is_manual_zero_write(
     )
     bootstrap.copy_templates(
         target,
-        _replacement_values(),
+        _legacy_replacement_values(),
         force=False,
         _migration_bundle=_trusted_development_bundle(),
     )
