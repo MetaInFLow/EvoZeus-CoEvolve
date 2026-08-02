@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from scripts import evozeus_harness_migration as migration_kernel
 from scripts.evozeus_wrapper_bootstrap import (
     build_evolution_section,
     build_status_section,
@@ -90,6 +91,20 @@ from scripts.evozeus_wrapper_preflight import (
     root_entry_path as preflight_root_entry_path,
     runtime_pointer_scope as preflight_runtime_pointer_scope,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def trusted_attachment_bundle() -> dict[str, object]:
+    """Supply an explicit trusted-release fixture to attachment unit tests."""
+    bundle = migration_kernel.load_migration_contract(ROOT)
+    bundle["source_trust"] = {
+        **bundle["source_trust"],
+        "status": "trusted_release",
+        "reasons": [],
+    }
+    return bundle
 
 
 def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
@@ -685,7 +700,12 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "WRAPPER_VERSION": "v0.8.0",
             }
 
-            copy_templates(target, replacements, force=False)
+            copy_templates(
+                target,
+                replacements,
+                force=False,
+                _migration_bundle=trusted_attachment_bundle(),
+            )
 
             self.assertTrue((target / ".evozeus-wrapper/CHANGELOG.md").is_file())
             self.assertTrue((target / ".evozeus-wrapper/WRAPPER.md").is_file())
@@ -718,7 +738,12 @@ class LifecycleBasicsTest(unittest.TestCase):
                 "VISIBILITY": "private",
                 "WRAPPER_VERSION": "v0.8.0",
             }
-            copy_templates(target, replacements, force=False)
+            copy_templates(
+                target,
+                replacements,
+                force=False,
+                _migration_bundle=trusted_attachment_bundle(),
+            )
             inject_evolution_method(target, replacements)
             write_wrapper_manifest(
                 target,
@@ -831,7 +856,12 @@ class LifecycleBasicsTest(unittest.TestCase):
             target = Path(tmp) / "skill"
             target.mkdir()
 
-            copy_templates(target, replacements, force=False)
+            copy_templates(
+                target,
+                replacements,
+                force=False,
+                _migration_bundle=trusted_attachment_bundle(),
+            )
 
             policy = target / ".evozeus-wrapper/policies/notice-policy.json"
             cli = target / ".evozeus-wrapper/scripts/evozeus_notice.py"
