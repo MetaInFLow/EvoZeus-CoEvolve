@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -43,7 +44,9 @@ TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
 TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
-HARNESS_SKILL_VERSION = "v1.0.0"
+TARGET_MIGRATION_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/harness-migration-contract-v1.json"
+HARNESS_SKILL_VERSION = "v1.1.0"
+MIGRATION_PROTOCOL_VERSION = "v1.0.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
 
@@ -69,6 +72,7 @@ REQUIRED_FILES = [
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
     TARGET_HARNESS_SKILL,
+    TARGET_MIGRATION_CONTRACT,
 ]
 MAINTAINER_REQUIRED_FILES = REQUIRED_FILES
 
@@ -425,6 +429,87 @@ def check_harness_skill_contract(
         )
     ok(f"canonical Harness Skill contract is valid: {TARGET_HARNESS_SKILL}@{HARNESS_SKILL_VERSION}")
     return "canonical"
+
+
+def _canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def check_migration_contract(target: Path, manifest: dict) -> None:
+    identity = manifest.get("migration_contract")
+    if not isinstance(identity, dict):
+        fail(f"{TARGET_WRAPPER_MANIFEST} missing migration_contract identity")
+    expected_identity = {
+        "migration_protocol_version": MIGRATION_PROTOCOL_VERSION,
+        "contract_id": "evozeus-harness-migration",
+        "contract_version": "v1.0.0",
+        "path": TARGET_MIGRATION_CONTRACT,
+    }
+    mismatches = [
+        field
+        for field, expected in expected_identity.items()
+        if identity.get(field) != expected
+    ]
+    if mismatches:
+        fail(
+            f"{TARGET_WRAPPER_MANIFEST} migration_contract identity mismatch: "
+            + ", ".join(mismatches)
+        )
+    managed_files = manifest.get("managed_files")
+    if not isinstance(managed_files, list) or TARGET_MIGRATION_CONTRACT not in managed_files:
+        fail("migration contract must be listed in managed_files")
+    path = _manifest_relative_file(target, identity.get("path"), "migration contract")
+    actual_sha256 = f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    if identity.get("sha256") != actual_sha256:
+        fail(
+            "migration contract hash does not match wrapper manifest: "
+            f"expected={identity.get('sha256')}; actual={actual_sha256}"
+        )
+    try:
+        contract = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"invalid migration contract: {exc}")
+    if not isinstance(contract, dict):
+        fail("migration contract must be a JSON object")
+    if contract.get("schema_version") != "evozeus.coevolve.harness-migration-contract.v1":
+        fail("migration contract schema_version is incompatible")
+    if contract.get("migration_protocol_version") != MIGRATION_PROTOCOL_VERSION:
+        fail("migration contract protocol version is incompatible")
+    if contract.get("current_harness_skill_version") != HARNESS_SKILL_VERSION:
+        fail("migration contract current Harness Skill version is incompatible")
+    if contract.get("path_roots") != {
+        "artifact_path": "contracts/v1",
+        "target_path": "target_repository_root",
+    }:
+        fail("migration contract path roots are ambiguous")
+    profiles = contract.get("profiles")
+    if not isinstance(profiles, list) or not profiles:
+        fail("migration contract must declare versioned profiles")
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            fail("migration profile must be an object")
+        fields = (
+            "profile_id",
+            "profile_version",
+            "adapter_id",
+            "adapter_version",
+            "adapter_sha256",
+            "adapter_payload",
+        )
+        if any(not profile.get(field) for field in fields):
+            fail("migration profile identity is incomplete")
+        if profile["adapter_sha256"] != _canonical_json_sha256(profile["adapter_payload"]):
+            fail(f"migration adapter digest mismatch: {profile['profile_id']}")
+    ok(
+        "versioned migration contract is manifest-bound: "
+        f"{TARGET_MIGRATION_CONTRACT}@{MIGRATION_PROTOCOL_VERSION}"
+    )
 
 
 def _canonical_harness_entry_block() -> str:
@@ -1351,6 +1436,7 @@ def check_runtime(args: argparse.Namespace) -> None:
         if manifest is None:
             fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
         check_harness_skill_contract(target, manifest, allow_legacy=False)
+        check_migration_contract(target, manifest)
         check_harness_entry_contract(target, manifest)
     entry = target / bundle["instruction_surface"]
     check_runtime_safe_status_prelude(read_text(entry), bundle["instruction_surface"])
@@ -1403,6 +1489,7 @@ def check_maintainer(args: argparse.Namespace) -> None:
     if manifest is None:
         fail(f"missing wrapper manifest: {TARGET_WRAPPER_MANIFEST}")
     check_harness_skill_contract(target, manifest, allow_legacy=False)
+    check_migration_contract(target, manifest)
     check_harness_entry_contract(target, manifest)
     check_notice_policy(target)
     check_onboarding_contract(manifest)
@@ -1435,7 +1522,9 @@ def check_doctor(args: argparse.Namespace) -> None:
 
     manifest = load_wrapper_manifest(target)
     if manifest:
-        check_harness_skill_contract(target, manifest, allow_legacy=True)
+        harness_state = check_harness_skill_contract(target, manifest, allow_legacy=True)
+        if harness_state == "canonical":
+            check_migration_contract(target, manifest)
         if manifest.get("harness_skill_path") is not None:
             check_harness_entry_contract(target, manifest)
         check_wrapper_managed_doctor(target, repo, manifest, args.allow_missing_repo)

@@ -2,7 +2,7 @@
 name: using-evozeus-harness
 description: Use when a wrapped Skill entry activates the canonical EvoZeus-CoEvolve Harness contract before its business flow.
 metadata:
-  version: "v1.1.0"
+  version: "v1.0.0"
 ---
 
 # Using EvoZeus Harness
@@ -38,13 +38,13 @@ metadata:
 - 业务调用：完成上述只读检查，继续目标 Skill 的业务流程。
 - Feedback Issue：按需读取 `.evozeus-wrapper/policies/feedback-policy.json` 与 `.evozeus-wrapper/policies/audit-rule.md`；先纠正当前结果并形成脱敏 Lesson，仅在用户确认记录后创建 Skill Feedback Issue。
 - Issue-to-PR：按需读取 EvoZeus-CoEvolve 的相关流程 Skill；创建或修复分支、提交、推送与 PR 均需要对应授权。贡献分支契约消费 #36 的最终规范，本 Skill 不重复定义该契约。
-- Harness 维护：回到 EvoZeus-CoEvolve canonical Repo，按需读取 `skills/harness-upgrade/SKILL.md`、`.evozeus-wrapper/WRAPPER.md` 与 `.evozeus-wrapper/docs/migrations/README.md`。维护流程固定为 inspect → plan → approve → apply → verify → rollback；普通 Skill 调用不授权 Harness 写入、升级或发布。
+- Harness 维护：按需读取 `.evozeus-wrapper/WRAPPER.md` 与 `.evozeus-wrapper/docs/migrations/README.md`，先给出 upgrade-check 或迁移计划；普通 Skill 调用不授权 Harness 写入、升级或发布。
 - UAT：按需读取 `.evozeus-wrapper/WRAPPER.md` 的验收门禁，仅在用户要求验收时进入并记录证据与结论。
 - Release：按需读取 `.evozeus-wrapper/CHANGELOG.md` 与 preflight release 合同，仅在用户授权发布后执行，要求版本、tag 与 release notes 一致。
-- rollback：出现验证失败或不兼容时停止写入；按迁移计划记录的 repo 外 snapshot 恢复完整 write set，再验证 preimage hash。Git commit revert 只作为 snapshot 回滚后的版本控制动作。
+- rollback：出现验证失败或不兼容时停止写入，按 `.evozeus-wrapper/docs/migrations/` 的迁移记录回滚当前维护提交。
 
 私有会话、客户资料、secret 与未脱敏商业上下文不得进入公开 Issue、设计文档、PR 或 Release 记录。
 
 ## 维护闭环
 
-Harness 维护采用 Issue → design doc → focused implementation → tests → UAT → Release → rollback record。目标业务规则始终由业务入口拥有。历史标题、frontmatter、regex 命中或 terminal signature 只形成只读 discovery candidate；缺少受信 migration profile、stable block、exact preimage hash 或 adapter identity 时必须进入 manual review 且保持零写入。
+Harness 维护采用 Issue → design doc → focused implementation → tests → UAT → Release → rollback record。目标业务规则始终由业务入口拥有；迁移只删除具备明确 wrapper 所有权签名的历史段落，并保持其余字节内容。

@@ -167,7 +167,7 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
     original_harness = "# Owner file at the reserved Harness path\n"
     harness.write_text(original_harness, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="existing canonical Harness Skill is incompatible"):
+    with pytest.raises(ValueError, match="no exact trusted preimage"):
         copy_templates(target, replacements(), force=False)
 
     assert skill.read_text(encoding="utf-8") == original_skill
@@ -175,8 +175,9 @@ def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
     assert not (target / ".evozeus-wrapper/wrapper.json").exists()
     assert not (target / ".github").exists()
 
-    copy_templates(target, replacements(), force=True)
-    assert "name: using-evozeus-harness" in harness.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="--force cannot authorize replacement"):
+        copy_templates(target, replacements(), force=True)
+    assert harness.read_text(encoding="utf-8") == original_harness
 
 
 def test_force_repair_rejects_a_harness_symlink_without_touching_its_target(
@@ -287,7 +288,7 @@ def test_attach_preflight_rejects_a_truncated_owned_surface_before_template_writ
     )
     skill.write_text(original, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="cannot be migrated safely"):
+    with pytest.raises(ValueError, match="manual_migration_required"):
         validate_instruction_surface_for_harness_entry(target, "SKILL.md")
 
     assert skill.read_text(encoding="utf-8") == original
@@ -577,18 +578,22 @@ def test_legacy_three_block_migration_preserves_business_bytes_and_stops_note_gr
     write_manifest(target, legacy=True)
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0", today=date(2026, 7, 31))
+    before = (target / "SKILL.md").read_bytes()
     report = migrate_target_layout(target, latest_version="v0.14.0", today=date(2026, 7, 31))
     updated = (target / "SKILL.md").read_bytes()
 
     assert plan["instruction_surface_migration_required"] is True
-    assert report["writes"] is True
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["discovery_candidates_have_destructive_authority"] is False
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
+    assert updated == before
     assert business in updated
-    assert updated.count(HARNESS_ENTRY_BEGIN.encode()) == 1
-    assert "## EvoZeus-CoEvolve 状态检查".encode() not in updated
-    assert "## 自进化方法".encode() not in updated
-    assert b"Version Refresh Note" not in updated
+    assert "## EvoZeus-CoEvolve 状态检查".encode() in updated
+    assert "## 自进化方法".encode() in updated
+    assert b"Version Refresh Note" in updated
     second = plan_target_layout_migration(target, latest_version="v0.14.0", today=date(2026, 8, 1))
-    assert second["migration_required"] is False
+    assert second["decision"] == "manual_migration_required"
 
 
 def test_public_232_line_golden_fixture_preserves_business_contract_byte_for_byte(
@@ -642,16 +647,16 @@ def test_public_232_line_golden_fixture_preserves_business_contract_byte_for_byt
     )
     updated = (target / "SKILL.md").read_bytes()
 
-    assert report["validation"]["structure"] == "passed"
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
+    assert updated == original
     assert updated.count(business_contract) == 1
     for contract_heading in ["## 输入", "## 工作流", "## 输出合同", "## 质量门禁", "## 示例调用"]:
         assert contract_heading.encode() in business_contract
         assert contract_heading.encode() in updated
-    assert updated.count(HARNESS_ENTRY_BEGIN.encode()) == 1
-    assert "## EvoZeus-CoEvolve 状态检查".encode() not in updated
-    assert "## 自进化方法".encode() not in updated
-    assert "## EvoZeus-CoEvolve\n".encode() not in updated
-    assert run_structure(target).returncode == 0
+    assert "## EvoZeus-CoEvolve 状态检查".encode() in updated
+    assert "## 自进化方法".encode() in updated
+    assert "## EvoZeus-CoEvolve\n".encode() in updated
 
 
 def test_target_owned_self_evolution_heading_is_not_deleted(tmp_path: Path) -> None:
@@ -686,12 +691,14 @@ def test_target_owned_heading_survives_when_a_later_wrapper_section_uses_same_he
     )
     (target / "SKILL.md").write_text(source, encoding="utf-8")
 
-    migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
+    with pytest.raises(ValueError, match="manual_migration_required"):
+        migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
     updated = (target / "SKILL.md").read_text(encoding="utf-8")
 
-    assert updated.count("## 自进化方法") == 1
+    assert updated == source
+    assert updated.count("## 自进化方法") == 2
     assert "TARGET-OWNED" in updated
-    assert "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环" not in updated
+    assert "本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环" in updated
 
 
 def test_legacy_status_migration_preserves_business_without_h1_or_h2_boundary(
@@ -712,12 +719,14 @@ def test_legacy_status_migration_preserves_business_without_h1_or_h2_boundary(
     )
     (target / "SKILL.md").write_text(source, encoding="utf-8")
 
-    migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
+    with pytest.raises(ValueError, match="manual_migration_required"):
+        migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
     updated = (target / "SKILL.md").read_text(encoding="utf-8")
 
+    assert updated == source
     assert business in updated
-    assert "## EvoZeus-CoEvolve 状态检查" not in updated
-    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+    assert "## EvoZeus-CoEvolve 状态检查" in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 0
 
 
 @pytest.mark.parametrize(
@@ -749,17 +758,17 @@ def test_wrapper_sections_stop_at_terminal_before_plain_or_h3_business(
     target = tmp_path / "skill"
     target.mkdir()
     business = "Owner paragraph after managed section.  \n\n### Owner Details\n\nKeep owner bytes.\n"
-    (target / "SKILL.md").write_text(
-        '---\nname: "example"\n---\n\n' + owned_section.rstrip() + "\n\n" + business,
-        encoding="utf-8",
-    )
+    source = '---\nname: "example"\n---\n\n' + owned_section.rstrip() + "\n\n" + business
+    (target / "SKILL.md").write_text(source, encoding="utf-8")
 
-    migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
+    with pytest.raises(ValueError, match="manual_migration_required"):
+        migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
     updated = (target / "SKILL.md").read_text(encoding="utf-8")
 
+    assert updated == source
     assert business in updated
-    assert owned_marker not in updated
-    assert updated.count(HARNESS_ENTRY_BEGIN) == 1
+    assert owned_marker in updated
+    assert updated.count(HARNESS_ENTRY_BEGIN) == 0
 
 
 @pytest.mark.parametrize(
@@ -792,10 +801,14 @@ def test_owned_section_without_terminal_blocks_before_writing(
     before = (target / "SKILL.md").read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    with pytest.raises(ValueError, match="terminal signature"):
-        migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version="v0.14.0")
 
-    assert any("terminal signature" in conflict for conflict in plan["conflicts"])
+    assert any(
+        "terminal signature" in item.get("diagnostic", "")
+        for item in plan["discovery_candidates"]
+    )
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
     assert plan["can_apply"] is False
     assert (target / "SKILL.md").read_bytes() == before
 
@@ -847,10 +860,15 @@ def test_business_terminal_text_cannot_complete_a_truncated_managed_section(
     before = (target / "SKILL.md").read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    with pytest.raises(ValueError, match="terminal signature"):
-        migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version="v0.14.0")
 
-    assert any("terminal signature" in conflict for conflict in plan["conflicts"])
+    assert plan["discovery_candidates"]
+    assert all(
+        candidate["destructive_authority"] is False
+        for candidate in plan["discovery_candidates"]
+    )
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
     assert plan["can_apply"] is False
     assert (target / "SKILL.md").read_bytes() == before
 
@@ -936,10 +954,11 @@ def test_missing_harness_frontmatter_boundary_routes_to_migration_and_repair(
     assert plan["instruction_surface_migration_required"] is True
     assert plan["migration_required"] is True
 
+    before = harness.read_bytes()
     report = migrate_target_layout(target, latest_version="v0.14.0")
-    assert report["writes"] is True
-    assert harness.read_text(encoding="utf-8").startswith("---\n")
-    assert run_structure(target).returncode == 0
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
+    assert harness.read_bytes() == before
 
 
 def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -> None:
@@ -959,11 +978,11 @@ def test_migration_preserves_an_unowned_canonical_harness_path(tmp_path: Path) -
     skill_bytes = (target / "SKILL.md").read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    with pytest.raises(ValueError, match="not proven wrapper-managed"):
-        migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version="v0.14.0")
 
     assert plan["can_apply"] is False
-    assert any("not proven wrapper-managed" in item for item in plan["conflicts"])
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
     assert harness.read_bytes() == owner_bytes
     assert (target / "SKILL.md").read_bytes() == skill_bytes
 
@@ -982,11 +1001,11 @@ def test_migration_rejects_a_non_directory_write_parent_before_any_write(
     manifest_bytes = (target / TARGET_WRAPPER_MANIFEST).read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    with pytest.raises(ValueError, match="parent is not a directory"):
-        migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version="v0.14.0")
 
     assert plan["can_apply"] is False
-    assert any("parent is not a directory" in item for item in plan["conflicts"])
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
     assert blocker.read_text(encoding="utf-8") == "OWNER FILE\n"
     assert skill.read_bytes() == skill_bytes
     assert (target / TARGET_WRAPPER_MANIFEST).read_bytes() == manifest_bytes
@@ -1119,20 +1138,15 @@ def test_thematic_breaks_do_not_hide_or_duplicate_a_real_harness_entry(tmp_path:
         encoding="utf-8",
     )
 
-    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is True
+    before = skill.read_bytes()
+    with pytest.raises(ValueError, match="manual_migration_required"):
+        migrate_instruction_surface_to_harness_entry(target, "SKILL.md")
     updated = skill.read_text(encoding="utf-8")
-    manifest = build_wrapper_manifest(
-        "MetaInFLow/example-skill",
-        "v0.14.0",
-        [],
-        [],
-        instruction_surface="SKILL.md",
-    )
 
+    assert skill.read_bytes() == before
     assert updated.count(HARNESS_ENTRY_BEGIN) == 1
-    assert business_prefix + business_suffix in updated
-    assert migrate_instruction_surface_to_harness_entry(target, "SKILL.md") is False
-    check_harness_entry_contract(target, manifest)
+    assert business_prefix in updated
+    assert business_suffix in updated
 
 
 def test_invalid_flow_markdown_does_not_own_a_harness_entry_example(tmp_path: Path) -> None:
@@ -1589,10 +1603,11 @@ def test_unbalanced_managed_entry_blocks_migration_before_any_write(tmp_path: Pa
     before = entry.read_bytes()
 
     plan = plan_target_layout_migration(target, latest_version="v0.14.0")
-    with pytest.raises(ValueError, match="unbalanced canonical Harness entry"):
-        migrate_target_layout(target, latest_version="v0.14.0")
+    report = migrate_target_layout(target, latest_version="v0.14.0")
 
     assert any("unbalanced canonical Harness entry" in item for item in plan["conflicts"])
+    assert report["status"] == "manual_migration_required"
+    assert report["writes"] is False
     assert entry.read_bytes() == before
 
 

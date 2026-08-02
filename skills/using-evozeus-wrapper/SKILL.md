@@ -238,13 +238,19 @@ python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --dry-run \
   --json
 
+python3 scripts/evozeus_wrapper.py harness migrate-layout \
+  --target /absolute/path/to/target-skill-or-kit \
+  --latest-version v0.14.0 \
+  --approve-plan 'sha256:<exact-plan-digest>' \
+  --json
+
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
   --latest-version v0.14.0 \
   --dry-run \
   --json
 ```
 
-Apply the same `migrate-layout` command without `--dry-run` only after the plan has no conflicts and the user approves it. Migration moves old wrapper files into `.evozeus-wrapper/`, rewrites references, updates the layout v2 manifest, records the migration, and removes only empty legacy wrapper directories. It must not rewrite target Skill business logic.
+Apply only after the plan has an automatic versioned profile, no blockers, and the user approves its exact `plan_sha256`. Historical headings, signatures, paths, and regex matches remain read-only discovery candidates with `writes=false`. The currently supported automatic profile upgrades exact canonical Harness Skill v1.0 artifacts to v1.1 while preserving the instruction surface byte-for-byte.
 
 For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capabilities:
 
@@ -254,7 +260,7 @@ For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capa
 - `~/.codex/hooks.json` may separately register the global dispatcher, which aggregates every registered wrapped Skill at task start.
 - Non-managed hooks require Codex review/trust through `/hooks` before they run.
 - Project and global hooks share a successful latest-release cache. Deterministic local source-contract errors block; compatible outdated harnesses warn and allow normal business execution. A normal Skill invocation never authorizes Harness maintenance writes. An unknown remote version with no usable cache also warns and allows.
-- `upgrade-all` verifies the authoritative latest version, clean Git state and write access for every target before writing. It backs up the complete migration write set, including target-owned files containing legacy wrapper path references, and rolls all targets back if any apply step fails.
+- `upgrade-all` verifies the authoritative latest version, trusted immutable source release, clean Git state and write access for every target before writing. Batch approval retains and passes each target's exact plan digest; replan drift blocks writes. It creates receipt-bound snapshots outside each target Repo and rolls all targets back if any apply step fails.
 
 ## GitHub Operations
 

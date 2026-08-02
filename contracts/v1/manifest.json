@@ -16,8 +16,18 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "8ce3016d4a835600d3f3ab4be195e9f765570a066ac4a5d34207e98b33653eb3",
+      "sha256": "f0064db6c68b88af4f3fb88a325bc0dc78d358c3ed62d51013d5cb429f7ffd70",
       "role": "target-template-inventory"
+    },
+    {
+      "path": "migrations/artifacts/using-evozeus-harness-v1.0.0.md",
+      "sha256": "af3f1a58380f5763f5b1bdc25b86c65384efaa40adaca89436ea9dba2accbebe",
+      "role": "trusted-migration-artifact"
+    },
+    {
+      "path": "migrations/harness-migration-contract-v1.json",
+      "sha256": "7ec4785be1388db98f781021ea6e0926f1b84b6088465d45560be3a8cb9f3078",
+      "role": "harness-migration-contract"
     }
   ]
 }

@@ -20,7 +20,7 @@
 2. 业务 instruction surface 只保留一个四行 wrapper-owned 激活块，frontmatter、trigger、工作流、输出合同和示例保持业务所有权。
 3. `wrapper.json` 记录 Harness Skill 路径、版本和 managed identity；入口引用必须与 manifest 完全一致。
 4. structure / doctor 在读取前拒绝 absolute path、Windows absolute path、`..`、路径错配和 symlink escape。
-5. 存量迁移只删除可证明由 wrapper 注入的三个 legacy 区块及其 migration note；目标业务字节和换行尽量原样保留。
+5. 存量 migration discovery 只读；删除、移动和替换必须由版本化 profile、adapter identity、stable block identity 与 exact preimage hash 共同授权。证据不足时 `writes=false`，目标业务字节和换行原样保留。
 6. 正常调用按 `integration.mode` 与 `integration.capabilities` 的事实解释覆盖范围；instruction-surface preflight 继续依赖 prompt compliance，不新增 native `SkillInvoke` 声明。兼容旧 Harness 保持 advisory / fail-open；确定性的 manifest、路径或 source contract 错误继续阻断。
 
 ## PSPS
@@ -29,7 +29,7 @@
 | --- | --- | --- | --- |
 | Skillware 使用者 | Host 选中受管 Skill 后进入业务流程 | 正常调用加载约百行低频维护规则 | 四行强制加载块 + Harness Skill 的最小运行路径 |
 | Skillware 维护者 | attach、repair、upgrade 或 release | 业务规则与 Harness 规则难以区分 | wrapper-owned Skill、manifest identity、迁移记录 |
-| EvoZeus 维护者 | 批量升级多个目标 Repo | 追加式 Prompt 漂移，难以验证和回滚 | 确定性 write set、旧区块识别、事务回滚 |
+| EvoZeus 维护者 | 批量升级多个目标 Repo | 追加式 Prompt 漂移，难以验证和回滚 | 版本化 profile、确定性 write set、digest approval、事务回滚 |
 
 ## 架构决策
 
@@ -43,7 +43,7 @@ canonical path 固定为：
 
 路径不允许由目标 Repo 自由配置。manifest 只记录并证明该固定事实；篡改到其他路径时 preflight 直接失败，避免把 manifest 变成任意文件读取入口。
 
-Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / frontmatter 合同，与 Skillware Release 和 wrapper release 两条既有版本轴分离。
+Harness Skill 使用独立合同版本 `v1.1.0`。该版本描述 Prompt / frontmatter 合同，与 migration protocol、profile、adapter、Skillware Release 和 wrapper release 版本轴分离。
 
 ### 2. 业务激活块
 
@@ -86,7 +86,7 @@ Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / front
 ```json
 {
   "harness_skill_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
-  "harness_skill_version": "v1.0.0",
+  "harness_skill_version": "v1.1.0",
   "harness_skill_managed": true
 }
 ```
@@ -97,27 +97,25 @@ Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / front
 
 | 状态 | structure | doctor / 正常运行 | 修复路径 |
 | --- | --- | --- | --- |
-| canonical v1 | 严格通过 | 正常继续 | 无 |
-| compatible legacy Prompt | 要求迁移 | advisory / fail-open | `harness migrate-layout --dry-run` |
-| manifest 声明 v1 但文件缺失或损坏 | 阻断 | 阻断 | approved repair / upgrade |
+| canonical v1.1 | 严格通过 | 正常继续 | 无 |
+| canonical v1.0 exact artifact | 要求迁移 | apply 前阻断 | plan 后批准 exact digest |
+| compatible legacy Prompt | manual migration | advisory / fail-open | 只读 discovery + reviewed adapter backlog |
+| manifest 声明 canonical 但文件缺失或损坏 | 阻断 | 阻断 | approved repair / versioned profile |
 | 路径错配、absolute、traversal、symlink escape | 阻断 | 阻断 | 恢复 canonical path 后重跑 |
 | Harness Skill major version 不兼容 | 阻断 | 阻断 | 使用兼容 release 迁移 |
 
-## 存量迁移算法
+## 版本化迁移协议
 
-1. 解析 instruction surface 的 Markdown heading 候选边界，跳过 frontmatter 与 fenced code；Markdown EOF 不构成 wrapper 所有权证据。
-2. 仅当区块同时命中 wrapper heading 与 wrapper-owned signature 时，标记为可删除：
-   - `EvoZeus-CoEvolve 状态检查` / legacy brand；
-   - `自进化方法`；
-   - `EvoZeus-CoEvolve` / legacy brand；
-   - EvoZeus-owned Migration / Version Refresh Note。
-3. 每类区块必须命中已知 terminal signature：状态段结束于“解决顺序/处理顺序/解决方法”，自进化段结束于 `Wrapper harness version:`，wrapper 段结束于 `manual_only`，migration note 结束于 `Target business rules were preserved.`。
-4. 从后向前删除 heading、ownership signature 与 terminal signature 共同证明的区块，不改写边界外文本。缺少 terminal signature 时迁移预检失败并提示 approved repair。
-5. 删除旧 managed activation block 后，在 frontmatter 或 H1 后插入 canonical 四行块。
-6. 写入 Harness Skill，刷新 manifest identity，生成 `.evozeus-wrapper/docs/migrations/` 记录。
-7. 运行 structure；失败时由现有 upgrade-all snapshot 事务恢复全部目标。
+1. **Inspect**：解析 manifest、canonical marker 与历史候选。Regex、frontmatter、heading、terminal signature、旧路径和 Markdown 边界只生成 diagnostic candidates，`destructive_authority=false`。
+2. **Profile**：`legacy-scattered-to-canonical-v1.0@v1.0.0`、`prerelease-ambiguous-to-manual-review@v1.0.0` 与 unknown profile 固定进入 manual review；其中 prerelease profile 专门隔离缺少 exact migration contract / managed-block receipt 的 v1.1 目标。当前唯一 automatic profile 是 `canonical-v1.0-to-v1.1@v1.0.0`。
+3. **Evidence**：automatic profile 同时要求 manifest identity、唯一 stable marker block、frozen v1.0 Harness Skill artifact hash、exact v1.0 preflight hash、adapter id/version/digest。任一证据缺失、重复 marker 或额外 legacy candidate 都降级为 manual、`writes=false`。
+4. **Plan**：输出 migration protocol、contract、profile、adapter、from/to、write/delete/move set、protected business surfaces、每个 preimage/postimage、source release attestation、validation、rollback 与 self-excluding `plan_sha256`。
+5. **Approve**：用户批准 exact `plan_sha256`；apply 使用 `--approve-plan` 进行 compare-and-swap。GitHub `ADMIN` 仍需验证，但不构成 plan approval。
+6. **Source trust**：要求 official origin、clean worktree、`HEAD`、local release tag commit 与 official remote tag commit 四者一致；tagged manifest 绑定 contract，实际 Harness/preflight postimage bytes 与 tag 逐字节一致。未发布 branch 保持 `source_unreleased`、`writes=false`。
+7. **Snapshot/apply**：在 target Repo 外创建带 descriptor digest receipt 与 backup-set digest 的完整 snapshot；复验所有 target preimages 和 protected surface CAS；预先 staging 全部 postimage；只写批准集合。
+8. **Verify/rollback**：验证全部 postimage、instruction surface byte-exact 与 structure。任何失败先完整校验 snapshot metadata、receipt、备份 hash、路径类型和当前状态，再执行恢复。手工 rollback 还需显式 `--approve`。
 
-无法证明归属的同名业务区块保持不动；迁移只围绕已证明的 wrapper 写集执行，禁止猜测删除。
+Fresh attach 只在 instruction surface 同时满足“零 canonical markers、零 historical candidates”时 additive 插入四行块。预存未知 managed destination 文件会被保留并阻断，即使调用 `--force`。
 
 ## 写集
 
@@ -141,7 +139,7 @@ Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / front
 | --- | --- | --- | --- |
 | A | fresh attach 只注入四行块并生成 Harness Skill | bootstrap + contract unit tests | Eng / DX |
 | B | structure / doctor 拒绝损坏与越界合同 | security matrix tests | Code / Security |
-| C | legacy 三段 Prompt 安全迁移且业务字节保留 | LF/CRLF + target-shape migration tests | Eng / QA |
+| C | legacy/ambiguous 候选零写入，exact v1.0 profile 可验证迁移 | LF/CRLF、fenced code、missing terminal、unknown layout、rollback tests | Eng / QA |
 | D | single / AGENTS / hooked bundle 使用同一模式 | parameterized structure tests | QA / DX |
 | E | 全量回归和真实公开 Repo 只读副本 smoke | pytest、py_compile、preflight、diff check | Release |
 
@@ -152,8 +150,8 @@ Harness Skill 使用独立合同版本 `v1.0.0`。该版本描述 Prompt / front
 ## 回滚
 
 - CoEvolve Repo：revert 本 PR。
-- 目标 Repo：revert Harness migration commit；现有 upgrade-all snapshot 继续负责批量事务回滚。
-- 兼容 fallback：旧 Harness 继续使用已有三段 Prompt 与 advisory 规则，直到 owner 批准迁移。
+- 目标 Repo：使用受信 snapshot 和显式 `rollback-migration --approve`；验证失败自动恢复。
+- 兼容 fallback：旧 Harness 继续使用已有 Prompt 与 advisory 规则，直到版本化 adapter 具备完整证据链或 owner 完成人工审查。
 - 回滚不会修改目标 Skillware Release，也不会自动创建 branch、PR、UAT 或 Release。
 
 ## 非目标

@@ -16,6 +16,7 @@ from evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_harness_upgrade,
     migrate_target_layout,
+    rollback_target_layout_migration,
     plan_target_layout_migration,
     plan_feedback_audit,
     classify_pr_permission,
@@ -169,6 +170,10 @@ def main() -> int:
     upgrade.add_argument("--latest-version", required=True)
     upgrade.add_argument("--managed-dirty", action="store_true")
     upgrade.add_argument("--dry-run", action="store_true")
+    upgrade.add_argument(
+        "--approve-plan",
+        help="Approve one exact sha256:<digest> migration plan for this target.",
+    )
     upgrade.add_argument("--json", action="store_true")
     migrate_layout = harness_sub.add_parser(
         "migrate-layout",
@@ -177,7 +182,23 @@ def main() -> int:
     migrate_layout.add_argument("--target", required=True)
     migrate_layout.add_argument("--latest-version", required=True)
     migrate_layout.add_argument("--dry-run", action="store_true")
+    migrate_layout.add_argument(
+        "--approve-plan",
+        help="Approve one exact sha256:<digest> migration plan for this target.",
+    )
     migrate_layout.add_argument("--json", action="store_true")
+    rollback_migration = harness_sub.add_parser(
+        "rollback-migration",
+        help="Restore a complete Harness migration snapshot and verify every preimage.",
+    )
+    rollback_migration.add_argument("--target", required=True)
+    rollback_migration.add_argument("--snapshot", required=True)
+    rollback_migration.add_argument(
+        "--approve",
+        action="store_true",
+        help="Explicitly approve restoration from the validated snapshot.",
+    )
+    rollback_migration.add_argument("--json", action="store_true")
     upgrade_all = harness_sub.add_parser(
         "upgrade-all",
         help="Plan or apply upgrades for every outdated registered wrapped harness.",
@@ -190,6 +211,10 @@ def main() -> int:
     )
     upgrade_all.add_argument("--dry-run", action="store_true")
     upgrade_all.add_argument("--approve", action="store_true")
+    upgrade_all.add_argument(
+        "--approve-plan",
+        help="Approve one exact sha256:<digest> batch plan in addition to --approve.",
+    )
     upgrade_all.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
@@ -386,6 +411,7 @@ def main() -> int:
                 report = migrate_target_layout(
                     target=target,
                     latest_version=args.latest_version,
+                    approved_plan_sha256=args.approve_plan,
                 )
                 report["administrator_authority"] = authority
             except ValueError as exc:
@@ -393,7 +419,11 @@ def main() -> int:
                 return 1
         report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
-        return 0
+        return 1 if report.get("status") in {
+            "approval_required",
+            "blocked",
+            "manual_migration_required",
+        } else 0
     if args.group == "harness" and args.command == "migrate-layout":
         target, boundary = repository_target(args.target)
         if target is None:
@@ -410,12 +440,46 @@ def main() -> int:
                 report = migrate_target_layout(
                     target=target,
                     latest_version=args.latest_version,
+                    approved_plan_sha256=args.approve_plan,
                 )
                 report["administrator_authority"] = authority
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
         report["repository_boundary"] = boundary
+        print_report(report, args.json, "loop")
+        return 1 if report.get("status") in {
+            "approval_required",
+            "blocked",
+            "manual_migration_required",
+        } else 0
+    if args.group == "harness" and args.command == "rollback-migration":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
+        if not args.approve:
+            report = {
+                "stage": "harness_migration_rollback",
+                "status": "approval_required",
+                "writes": False,
+                "target": str(target),
+                "snapshot": str(Path(args.snapshot).expanduser()),
+                "repository_boundary": boundary,
+            }
+            print_report(report, args.json, "loop")
+            return 1
+        try:
+            authority = require_repo_admin(target)
+            report = rollback_target_layout_migration(
+                target,
+                Path(args.snapshot),
+            )
+            report["administrator_authority"] = authority
+            report["repository_boundary"] = boundary
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade-all":
@@ -431,9 +495,15 @@ def main() -> int:
                 Path(args.wrapper_root),
                 args.latest_version,
                 approve=args.approve,
+                approved_plan_sha256=args.approve_plan,
             )
         print_report(report, args.json, "loop")
-        return 0 if report.get("status") not in {"blocked", "approval_required", "rolled_back"} else 1
+        return 0 if report.get("status") not in {
+            "blocked",
+            "approval_required",
+            "rolled_back",
+            "rollback_failed",
+        } else 1
 
     parser.error("unsupported command")
     return 2

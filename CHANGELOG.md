@@ -6,25 +6,24 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Added
 
-- Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.0.0` contract version and compact instruction-surface activation block.
+- Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.1.0` contract version and compact instruction-surface activation block.
+- Added the versioned Harness migration protocol, release-bound contract, frozen v1.0 artifact, independent profile/adapter identities, exact plan approval, receipt-bound snapshots, and verified rollback lifecycle.
 
 ### Changed
 
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
 - Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
-- Changed legacy instruction migration to remove only wrapper-owned sections with positive ownership signatures while preserving target business bytes and LF/CRLF newlines.
+- Changed legacy instruction matching to read-only discovery. Regex, frontmatter, headings, terminal signatures, and old paths have no destructive authority; ambiguous and scattered layouts return `manual_migration_required`, `writes=false`.
+- Limited automatic migration to the exact canonical Harness Skill v1.0→v1.1 profile. The profile preserves the instruction surface byte-for-byte and verifies every preimage and postimage.
 
 ### Security
 
-- Added strict manifest, canonical-path, frontmatter/version, managed-identity, symlink, path-traversal, and instruction-entry agreement validation.
+- Added strict manifest, canonical-path, managed-identity, symlink, path-traversal, instruction-entry agreement, protected-surface CAS, official remote release-tag, source-byte, plan-digest, snapshot receipt, and rollback prevalidation.
 
 ### Verification
 
-- Added fresh attach, legacy migration, multi-surface, consumer smoke, malformed manifest, missing/damaged file, symlink escape, and idempotency regression coverage.
-- Full regression suite passes with `196 passed` and `8 subtests passed`.
-- A frozen 232-line public fixture from `MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e` migrates from the three legacy blocks to one canonical activation block, passes structure validation, and preserves the complete business section byte-for-byte.
-- Migration reports now declare every Git-visible source deletion and destination write for move and duplicate-removal actions, keeping admin upgrade write-set validation complete.
-- Legacy status, self-evolution, wrapper, and migration-note removal now stops at a type-specific terminal signature. Missing terminals block before writes; following business prose and H3-only sections remain byte-preserved even without an H1/H2 Markdown boundary.
+- Added fresh attach, exact artifact migration, same-business-heading, missing-terminal, CRLF, fenced-code, no-marker, unknown-layout, plan-approval, source-trust, symlink, snapshot-tamper, rollback, and ambiguous-zero-write regression coverage.
+- Migration plans declare explicit write/delete/move sets, protected business surfaces, validation, rollback, and self-excluding `plan_sha256`; every write item carries a precomputed postimage hash.
 
 ## [v0.14.0] - 2026-07-30
 

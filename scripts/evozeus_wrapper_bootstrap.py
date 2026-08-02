@@ -10,20 +10,21 @@ from datetime import date
 from pathlib import Path
 
 try:
+    from . import evozeus_harness_migration as migration_kernel
     from .evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
         OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
+        TARGET_MIGRATION_CONTRACT,
         WRAPPER_MANAGED_FILES,
+        add_fresh_harness_entry,
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
-        canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         load_wrapper_manifest,
-        migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -31,20 +32,21 @@ try:
         wrapper_manifest_status,
     )
 except ImportError:
+    import evozeus_harness_migration as migration_kernel
     from evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
         OLDEST_TARGET_WRAPPER_MANIFEST,
         TARGET_HARNESS_SKILL,
+        TARGET_MIGRATION_CONTRACT,
         WRAPPER_MANAGED_FILES,
+        add_fresh_harness_entry,
         build_onboarding_contract,
         build_status_section,
         build_wrapper_manifest,
-        canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         load_wrapper_manifest,
-        migrate_instruction_surface_to_harness_entry,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -57,6 +59,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
+MIGRATION_CONTRACT_SOURCE = (
+    ROOT / "contracts" / "v1" / "migrations" / "harness-migration-contract-v1.json"
+)
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
@@ -151,11 +156,16 @@ def resolve_current_skillware_version(target: Path, repo: str, explicit: str | N
 
 
 def copy_template_file(src: Path, dst: Path, replacements: dict[str, str], force: bool) -> str:
-    if dst.exists() and not force:
-        return f"skip existing {dst}"
+    expected = render_text(src.read_text(encoding="utf-8"), replacements).encode("utf-8")
+    if dst.exists() or dst.is_symlink():
+        if dst.is_symlink() or not dst.is_file() or dst.read_bytes() != expected:
+            raise ValueError(
+                f"existing managed destination differs from the trusted source: {dst}; "
+                "target was not modified"
+            )
+        return f"skip exact existing {dst}"
     dst.parent.mkdir(parents=True, exist_ok=True)
-    data = src.read_text(encoding="utf-8")
-    dst.write_text(render_text(data, replacements), encoding="utf-8")
+    dst.write_bytes(expected)
     return f"write {dst}"
 
 
@@ -222,6 +232,9 @@ def validate_existing_manifest_for_attach(
             "existing wrapper manifest cannot be reused safely; run migrate-layout or an "
             "approved Harness repair before attach"
         ) from exc
+    migration_bundle = validate_migration_contract_source()
+    migration_identity = migration_bundle["identity"]
+    activation_contract = migration_bundle["contract"]["canonical_activation_block"]
     expected = {
         "layout_version": 2,
         "canonical_repo": repo,
@@ -236,8 +249,33 @@ def validate_existing_manifest_for_attach(
         if not isinstance(manifest, dict) or manifest.get(field) != value
     ]
     managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
-    if not isinstance(managed_files, list) or TARGET_HARNESS_SKILL not in managed_files:
+    if (
+        not isinstance(managed_files, list)
+        or TARGET_HARNESS_SKILL not in managed_files
+        or TARGET_MIGRATION_CONTRACT not in managed_files
+    ):
         mismatches.append("managed_files")
+    expected_contract = {
+        "migration_protocol_version": migration_identity["migration_protocol_version"],
+        "contract_id": migration_identity["contract_id"],
+        "contract_version": migration_identity["contract_version"],
+        "path": migration_identity["target_path"],
+        "sha256": migration_identity["sha256"],
+    }
+    if not isinstance(manifest, dict) or manifest.get("migration_contract") != expected_contract:
+        mismatches.append("migration_contract")
+    expected_blocks = [
+        {
+            "block_id": activation_contract["block_id"],
+            "path": instruction_surface,
+            "marker_version": activation_contract["marker_version"],
+            "begin_marker": activation_contract["begin_marker"],
+            "end_marker": activation_contract["end_marker"],
+            "sha256_lf": activation_contract["sha256_lf"],
+        }
+    ]
+    if not isinstance(manifest, dict) or manifest.get("managed_blocks") != expected_blocks:
+        mismatches.append("managed_blocks")
     if mismatches:
         raise ValueError(
             "existing wrapper manifest requires migrate-layout before attach; incompatible fields: "
@@ -245,7 +283,18 @@ def validate_existing_manifest_for_attach(
         )
 
 
+def validate_migration_contract_source() -> dict[str, object]:
+    """Verify the contracts/v1 manifest binding before the first target write."""
+    bundle = migration_kernel.load_migration_contract(ROOT)
+    if Path(bundle["path"]).resolve() != MIGRATION_CONTRACT_SOURCE.resolve():
+        raise ValueError(
+            "migration contract source path is not the canonical contracts/v1 artifact"
+        )
+    return bundle
+
+
 def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
+    validate_migration_contract_source()
     template_files = [
         src
         for src in sorted(TARGET_TEMPLATE_DIR.rglob("*"))
@@ -259,52 +308,46 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
     ]
     script_dst = target / TARGET_PREFLIGHT_SCRIPT
     notice_dst = target / TARGET_NOTICE_SCRIPT
-    for destination in [
-        *(destination for _, destination in template_destinations),
-        script_dst,
-        notice_dst,
-    ]:
+    migration_contract_dst = target / TARGET_MIGRATION_CONTRACT
+    expected_artifacts: list[tuple[Path, bytes, bool]] = [
+        (
+            destination,
+            render_text(source.read_text(encoding="utf-8"), replacements).encode("utf-8"),
+            False,
+        )
+        for source, destination in template_destinations
+    ]
+    expected_artifacts.extend(
+        [
+            (script_dst, PREFLIGHT_SCRIPT.read_bytes(), True),
+            (notice_dst, NOTICE_SCRIPT.read_bytes(), True),
+            (migration_contract_dst, MIGRATION_CONTRACT_SOURCE.read_bytes(), False),
+        ]
+    )
+    for destination, expected, _ in expected_artifacts:
         validate_template_destination(target, destination)
-
-    existing_harness = target / TARGET_HARNESS_SKILL
-    if existing_harness.exists() or existing_harness.is_symlink():
-        if existing_harness.is_symlink() or not existing_harness.is_file():
-            raise ValueError(
-                f"existing canonical Harness Skill path is unsafe: {existing_harness}; "
-                "remove the unsafe path before an approved repair"
-            )
-        if not force:
-            try:
-                existing_text = existing_harness.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
+        if destination.exists() or destination.is_symlink():
+            if (
+                destination.is_symlink()
+                or not destination.is_file()
+                or destination.read_bytes() != expected
+            ):
+                relative = destination.relative_to(target)
                 raise ValueError(
-                    f"existing canonical Harness Skill cannot be verified: {existing_harness}; "
-                    "use an approved repair with --force"
-                ) from exc
-            if not canonical_harness_skill_text_valid(existing_text):
-                raise ValueError(
-                    f"existing canonical Harness Skill is incompatible: {existing_harness}; "
-                    "preserve it and use an approved repair with --force"
+                    "existing managed destination has no exact trusted preimage: "
+                    f"{relative}; --force cannot authorize replacement; target was not modified"
                 )
 
     actions: list[str] = []
-    for src, destination in template_destinations:
-        actions.append(copy_template_file(src, destination, replacements, force))
-
-    if script_dst.exists() and not force:
-        actions.append(f"skip existing {script_dst}")
-    else:
-        script_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
-        script_dst.chmod(0o755)
-        actions.append(f"write {script_dst}")
-    if notice_dst.exists() and not force:
-        actions.append(f"skip existing {notice_dst}")
-    else:
-        notice_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(NOTICE_SCRIPT, notice_dst)
-        notice_dst.chmod(0o755)
-        actions.append(f"write {notice_dst}")
+    for destination, expected, executable in expected_artifacts:
+        if destination.is_file():
+            actions.append(f"skip exact existing {destination}")
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(expected)
+        if executable:
+            destination.chmod(0o755)
+        actions.append(f"write {destination}")
     return actions
 
 
@@ -423,7 +466,7 @@ def inject_evolution_method(
     replacements: dict[str, str],
     instruction_surface: str = "SKILL.md",
 ) -> list[str]:
-    changed = migrate_instruction_surface_to_harness_entry(target, instruction_surface)
+    changed = add_fresh_harness_entry(target, instruction_surface)
     action = "write" if changed else "keep"
     return [f"{action} canonical Harness Skill activation block in {target / instruction_surface}"]
 

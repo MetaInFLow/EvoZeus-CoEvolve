@@ -10,7 +10,7 @@
       "target_writes": true,
       "availability": "compatibility-only",
       "source_root": "templates/target",
-      "source_tree_sha256": "sha256:12ce26a96ab7b927014c295f178ff9e244d72869343084dec33ee3c5f4db05f2",
+      "source_tree_sha256": "sha256:dacc18633730573e0afb8be67bf9f04e016f6d1d4d8a38ab2bf73289e6174d5d",
       "files": [
         ".codex/hooks.json",
         ".codex/hooks/evozeus_wrapper_start_check.py",
@@ -30,6 +30,13 @@
         "docs/index.md",
         "docs/onboarding.md",
         "docs/wrapper-migrations/README.md"
+      ],
+      "contract_files": [
+        {
+          "source": "migrations/harness-migration-contract-v1.json",
+          "target": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+          "sha256": "7ec4785be1388db98f781021ea6e0926f1b84b6088465d45560be3a8cb9f3078"
+        }
       ]
     }
   }

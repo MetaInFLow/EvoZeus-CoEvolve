@@ -42,9 +42,9 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 - Do not create a fake root `SKILL.md`.
 - Write the complete shared contract once at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`; keep the instruction-surface activation block at eight lines or fewer.
 - Record the canonical path, independent Harness Skill version, and wrapper-managed identity in `.evozeus-wrapper/wrapper.json`.
-- Legacy migration removes only the old status, self-evolution, wrapper, and refresh-note sections that carry wrapper heading, ownership, and terminal signatures. Preserve every target-owned section and its newline bytes; route missing terminal signatures to approved repair.
+- Legacy headings, ownership strings, terminal signatures, frontmatter, and path patterns only create read-only migration candidates. Preserve every target byte and return `manual_migration_required`, `writes=false` until a versioned profile and exact preimage adapter authorize a write set.
 - Add `.evozeus-wrapper/docs/migrations/README.md` so future wrapper harness upgrades have a migration ledger.
-- Do not overwrite existing files without explicit user confirmation.
+- Preserve unknown existing files at managed destinations. User confirmation alone cannot supply ownership evidence; require an exact trusted preimage or manifest receipt before refresh.
 - Keep `.evozeus-wrapper/wrapper.json` as the only operational harness manifest.
 
 ## Stop Conditions

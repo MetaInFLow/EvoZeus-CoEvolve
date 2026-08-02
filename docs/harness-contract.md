@@ -164,8 +164,10 @@ python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill -
 python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
 python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --approve-plan 'sha256:<exact-plan-digest>' --json
+python3 scripts/evozeus_wrapper.py harness rollback-migration --target /absolute/path/to/skill --snapshot /absolute/path/to/trusted-snapshot --approve --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --approve-plan 'sha256:<exact-batch-plan-digest>' --json
 ```
 
 `loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
@@ -181,16 +183,19 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - `dashboard.deployment_mode=opt_in_github_pages`；workflow validation 不依赖 Pages，部署由 `EVOZEUS_PAGES_ENABLED=true` 显式开启。
 - 最新 wrapper 版本默认取 GitHub latest release；来源不可用时必须返回 `latest_unknown` 和查询证据，不能回退为当前版本。
 - wrapper major upgrade 必须用户确认。
-- consolidated layout 的版本刷新只改 harness-managed files，不改目标 Skill 业务规则。
-- legacy layout migration 可以更新 target-owned 文档或脚本中的旧 wrapper 路径引用；计划必须列出并备份完整 write set，且不得改变业务语义。
+- consolidated layout 的版本刷新只改 profile 明确授权且具备 exact preimage hash 的 harness-managed files，不改目标 Skill 业务规则。
+- legacy layout、heading、frontmatter、terminal signature、regex 与旧路径只产生 read-only discovery candidates；`legacy-scattered-to-canonical-v1.0`、`prerelease-ambiguous-to-manual-review` 和 unknown profile 固定返回 `writes=false`。其中 prerelease profile 覆盖缺少 exact migration contract / managed-block receipt 的 v1.1 目标。
 - `migrate-layout` 和 `upgrade-all` 都必须拒绝绝对路径、`..` 越界和任何包含 symlink component 的 write path；manifest-selected instruction surface 同样必须是 target 内部的普通文件。
-- wrapper upgrade 必须生成迁移方案，列出每个 source/destination、冲突、保留的宿主接点、验证命令和回滚方案；有冲突时不得写入。
-- layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新 canonical Harness Skill、compact entry 和 manifest integration，并通过 post-migration structure validation 后才返回成功。
+- wrapper upgrade 必须生成带 `migration_protocol_version`、profile/adapter 独立身份、from/to、write/delete/move set、每个 preimage/postimage、受保护业务面、验证、回滚和 `plan_sha256` 的迁移方案；有冲突时不得写入。
+- apply 必须接收 `--approve-plan sha256:<digest>` 并与重算计划完全一致。GitHub `ADMIN` 只证明 Repo 权限，不替代计划批准。批量升级同时要求 `--approve` 与 exact `batch_plan_sha256`，并保存每个 target 的计划 digest 逐目标传入；任何 batch/target replan digest 变化都会阻断写入。
+- 自动迁移当前仅覆盖 `canonical-v1.0-to-v1.1@v1.0.0` exact artifact profile。该 profile 保持 compact entry 与完整 instruction surface 字节不变，只刷新合同列出的 Harness Skill、preflight、migration contract、manifest 和 migration record。
+- apply 前必须验证官方 origin、clean source worktree、`HEAD==release tag commit==official remote tag commit`、tagged manifest/contract 与所有实际 postimage source bytes。未发布 source 允许 plan，apply 固定 `source_unreleased`、`writes=false`。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
-- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.0.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.1.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
 - 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
 - `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。
-- 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
+- destructive authority 只能来自 manifest/stable block identity、版本化 profile/adapter 和 exact preimage hash。历史候选没有该证据链时进入 manual review，任何目标字节保持原样。
+- 每次 apply 在目标 Repo 外创建 receipt-bound snapshot。rollback 在首个恢复写入前完成 schema、transaction、plan digest、descriptor digest、backup-set digest、全部备份 hash、路径类型与目标当前状态校验；手工 rollback 必须传 `--approve`。
 - 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 

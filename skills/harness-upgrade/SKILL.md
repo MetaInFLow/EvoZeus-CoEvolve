@@ -1,53 +1,89 @@
 ---
 name: evozeus-wrapper-harness-upgrade
-description: Use when checking or upgrading the wrapper harness version embedded in a target Skill repo.
+description: Use when inspecting, planning, approving, applying, verifying, or rolling back the versioned Harness Skill migration of an independent target Repo.
 ---
 
 # Harness Upgrade
 
-Use this stage to keep target Skill infrastructure aligned with `MetaInFLow/EvoZeus-CoEvolve`.
+Use this Skill for target Harness maintenance. The target boundary is one independent Git Repo root. The canonical target-local Skill remains `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`; its current contract version is `v1.1.0`.
+
+## Required lifecycle
+
+Run every change through this sequence:
+
+1. **Inspect**：resolve the independent Repo root, read `.evozeus-wrapper/wrapper.json`, inspect the compact activation marker, and collect historical headings/signatures as read-only discovery candidates.
+2. **Plan**：load `contracts/v1/migrations/harness-migration-contract-v1.json`; emit the protocol, profile, adapter identity, exact from/to state, write/delete/move sets, protected business surfaces, source-release attestation, validation, rollback, and `plan_sha256`.
+3. **Approve**：show the complete plan to the user and obtain approval for that exact `sha256:<digest>`. GitHub `ADMIN` authority does not approve a plan.
+4. **Apply**：recompute the plan, require `--approve-plan` to match, verify every preimage and the official immutable source release, create a receipt-bound snapshot outside the target Repo, stage all postimages, then write only the approved set.
+5. **Verify**：check every postimage, preserve marker-external business bytes exactly, and run target structure validation.
+6. **Rollback**：on any apply or verification failure, validate the whole snapshot and receipt before the first restore mutation. Manual rollback requires `--approve`.
 
 ## Commands
 
 ```bash
-python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness upgrade-check \
+  --target /absolute/path/to/skill --json
+
+python3 scripts/evozeus_wrapper.py harness migrate-layout \
+  --target /absolute/path/to/skill \
+  --latest-version v0.14.0 \
+  --dry-run --json
+
+python3 scripts/evozeus_wrapper.py harness migrate-layout \
+  --target /absolute/path/to/skill \
+  --latest-version v0.14.0 \
+  --approve-plan 'sha256:<exact-plan-digest>' --json
+
+python3 scripts/evozeus_wrapper.py harness rollback-migration \
+  --target /absolute/path/to/skill \
+  --snapshot /absolute/path/to/trusted-snapshot \
+  --approve --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version v0.14.0 --dry-run --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version v0.14.0 --approve \
+  --approve-plan 'sha256:<exact-batch-plan-digest>' --json
 ```
 
-## Rules
+Batch apply requires both `--approve` and the exact dry-run `batch_plan_sha256` through `--approve-plan`. The approved batch retains each target's exact `plan_sha256` and passes that digest into the per-target apply call. If any target is replanned to a different digest, stop the batch before that target write and restore earlier targets from their validated snapshots.
 
-- Skill release version and wrapper harness version are separate axes.
-- Resolve every target to its independent Git Repo root. Skill, package, pack, and app directories inherit that root Harness.
-- Reject plain folders and any active Harness manifest below the Repo root.
-- Read-only checks and dry-run plans do not require administrator authority. Every Harness write, upgrade, or upload requires verified GitHub `ADMIN` permission.
-- `upgrade-check` resolves GitHub latest release by default. It may report `latest_unknown`, but must never self-substitute the installed version.
-- Only update harness-managed files.
-- Do not touch target Skill business rules.
-- Preserve Codex project-local hook registration at `.codex/hooks.json`; keep its adapter under `.evozeus-wrapper/hooks/` and label it `repo_maintenance_hook` with `canonical_repository` scope.
-- Prevalidate `.codex/hooks.json` as structured JSON, preserve unrelated hooks, and create or refresh exactly one wrapper SessionStart registration.
-- Keep the full invocation, maintenance, authorization, UAT, Release, and rollback contract in `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`.
-- Keep exactly one compact activation block of at most eight lines in the diagnosed instruction surface. Its Markdown label and relative link must both equal the manifest `harness_skill_path`.
-- Record `harness_skill_path`, `harness_skill_version`, and `harness_skill_managed=true` in `.evozeus-wrapper/wrapper.json`.
-- Record every wrapper migration under `.evozeus-wrapper/docs/migrations/` with from/to wrapper version, file moves, validation, and rollback.
-- Update `.evozeus-wrapper/wrapper.json` to `layout_version=2` only after all destination conflicts are cleared.
-- Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.
-- During legacy migration, remove only sections with proven wrapper heading, ownership signature, and terminal signature; preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
-- Refresh the canonical Harness Skill, compact activation block, and manifest integration; require structure post-validation before reporting success.
-- Keep workflow validation active independently of optional Pages deployment; Pages requires `EVOZEUS_PAGES_ENABLED=true`.
-- Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.
-- Major wrapper upgrades require explicit user confirmation.
-- `upgrade-all` must prevalidate every registered target before the first write and restore every target snapshot if any apply step fails.
-- Resolve authority before deciding targets are current. The requested latest version must match the dispatcher cache, environment override, or GitHub latest release. Every target must have a verifiable clean Git worktree, writable write-set files and parents, and no symlink in any write path.
-- Snapshot every file the migration may rewrite, move, refresh, or delete. Legacy wrapper path references in target-owned files are part of this explicit write set even though business semantics remain unchanged.
-- Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.
-- A target harness manifest declares global capability ownership and scope, but live user-level dispatcher installation/trust comes from `hook global status` or the diagnosis overlay.
-- The global dispatcher is a native `SessionStart` aggregate gate, not a native per-Skill invocation hook.
+## Versioned authority profiles
 
-## Stop Conditions
+- `legacy-scattered-to-canonical-v1.0@v1.0.0`：manual review, `writes=false`. Regex, frontmatter, heading, terminal text, path names, and inferred layout only discover candidates.
+- `canonical-v1.0-to-v1.1@v1.0.0`：automatic planning is available only when manifest identity, stable block identity, exact frozen Harness Skill preimage, exact preflight preimage, and adapter digest all match.
+- `prerelease-ambiguous-to-manual-review@v1.0.0`：a v1.1 Harness without the exact migration contract and managed-block receipts remains manual, `writes=false`.
+- `unknown-to-manual-review@v1.0.0`：manual review, `writes=false`.
 
-- `.evozeus-wrapper/wrapper.json` is missing and no legacy layout can be migrated or the user has not approved repair.
-- A migration destination differs from its legacy source.
-- Managed files, including `.codex/hooks.json` or `.evozeus-wrapper/hooks/evozeus_wrapper_start_check.py`, have local edits and no merge strategy exists.
+Destructive authority requires the versioned migration profile plus adapter identity and exact preimage hashes. A missing field, duplicate marker, unknown layout, extra legacy candidate, dirty target, changed preimage, changed protected surface, untrusted source, or unapproved plan digest blocks all writes.
+
+## Source and snapshot trust
+
+- The write source must use the official `MetaInFLow/EvoZeus-CoEvolve` origin, a clean worktree, `HEAD` equal to the declared release tag commit, and the same tag commit advertised by the official origin.
+- The tagged contract manifest must bind the contract digest. Every source file used as a postimage must equal both its declared digest and its bytes in that tag.
+- An unreleased branch may inspect and plan. Its apply status remains `source_unreleased`, `writes=false`.
+- The snapshot base must stay outside the target Repo. Reject symlinks in the base, transaction directory, descriptor, files tree, and backup paths.
+- Rollback accepts only a direct child of the trusted snapshot root with the expected schema, transaction identity, plan digest, descriptor digest receipt, backup-set digest, complete metadata, and valid backup hashes.
+
+## Protected target surfaces
+
+- The compact activation block uses the stable `evozeus-harness-entry` marker and manifest-bound relative link.
+- Fresh attach may add the block only when the surface has zero canonical markers and zero historical candidates.
+- Historical candidates never authorize deletion, relocation, or replacement. Route them to a reviewed adapter/profile backlog.
+- The canonical v1.0→v1.1 profile does not write the instruction surface. Its full-file preimage hash is a compare-and-swap protected surface and its bytes must remain identical after apply.
+- Pre-existing unknown files at managed destinations are preserved and block bootstrap/repair, including `--force`, unless an exact trusted preimage or manifest receipt proves ownership.
+
+## Stop conditions
+
+Stop with `writes=false` when any condition below holds:
+
+- `.evozeus-wrapper/wrapper.json` is missing, ambiguous, incomplete, or conflicts with a legacy manifest.
+- The plan lacks an automatic profile or any independent protocol/profile/adapter identity.
+- The source release, remote tag commit, contract, adapter, frozen preimage, or postimage cannot be verified exactly.
+- The target Git status is unavailable or dirty.
+- A write path escapes the target, traverses a symlink, has an unsafe parent type, or changed after planning.
+- `--approve-plan` is absent or differs from the current `plan_sha256`.
+- Snapshot creation or complete pre-rollback validation fails.
+
+Read-only diagnosis can continue after a stop. Any repair requires a new versioned profile or an explicitly reviewed manual procedure.
