@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -342,13 +343,15 @@ def _read_owned_snapshot_file(
     label: str,
 ) -> bytes:
     state = secure_snapshot.file_state(relative)
+    if state.get("kind") == "absent":
+        raise ValueError(f"{label} is missing: {relative}")
     if (
         state.get("kind") != "file"
         or state.get("uid") != os.getuid()
         or state.get("mode") != mode
         or not isinstance(state.get("sha256"), str)
     ):
-        raise ValueError(f"{label} owner, type, or mode is invalid")
+        raise ValueError(f"{label} owner, type, or mode is invalid: {relative}")
     return secure_snapshot.read_exact(relative, state["sha256"])
 
 
@@ -1465,6 +1468,10 @@ class SecureTargetFS:
             except FileNotFoundError:
                 return {"kind": "absent", "sha256": None, "mode": None, "uid": None}
             except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise ValueError(
+                        f"secure target file is a symlink: {relative.as_posix()}"
+                    ) from exc
                 raise ValueError(
                     f"secure target file is unsafe: {relative.as_posix()}: {exc}"
                 ) from exc
@@ -2399,7 +2406,7 @@ def rollback_migration_snapshot(
                 secure_snapshot,
                 backup_relative,
                 mode=0o600,
-                label=f"migration snapshot backup {item.get('path')}",
+                label="migration snapshot backup",
             )
             if f"sha256:{sha256_bytes(data)}" != item.get("sha256"):
                 raise ValueError(f"migration snapshot backup hash mismatch: {item.get('path')}")
