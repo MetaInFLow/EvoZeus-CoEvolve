@@ -498,6 +498,44 @@ def test_resume_without_date_recovers_original_ledger_branch_date(tmp_path: Path
     assert "stale_ownership" not in blocker_codes(resumed)
 
 
+def test_resume_accepts_v130_legacy_hyphenated_branch_encoding(tmp_path: Path) -> None:
+    repo = create_repo(tmp_path)
+    worktree = tmp_path / "isolated-worktree"
+    ledger_root = tmp_path / "private-ledger"
+    env = planner_env(fake_github_bin(tmp_path))
+    initial, initial_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        approve_save_plan=True,
+        date="20200101",
+    )
+    assert initial_code == 0
+    ledger_path = Path(initial["ledger"]["path"])
+    legacy_branch = "codex/bug/20200101-alice-skill-fix-feedback-flow"
+    run(["git", "branch", legacy_branch, "origin/main"], repo)
+
+    legacy_plan = json.loads(ledger_path.read_text(encoding="utf-8"))
+    legacy_plan["contract"]["version"] = "1.3.0"
+    legacy_plan["branch"]["target"] = legacy_branch
+    ledger_path.write_text(json.dumps(legacy_plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    resumed, resumed_code = execute_plan(
+        repo,
+        worktree,
+        ledger_root,
+        env,
+        resume_plan=str(ledger_path),
+        date=None,
+    )
+
+    assert resumed_code == 0
+    assert resumed["resume"]["decision"] == "resume"
+    assert resumed["branch"]["target"] == legacy_branch
+    assert "stale_ownership" not in blocker_codes(resumed)
+
+
 def test_core_scenarios_cover_dirty_wrong_base_collision_fork_and_no_pr(tmp_path: Path) -> None:
     binary_dir = fake_github_bin(tmp_path)
     ledger_root = tmp_path / "ledger"
@@ -1208,6 +1246,13 @@ def test_pr_metadata_gate_recomputes_event_identity_and_live_issue(tmp_path: Pat
         "issue_runner": issue_runner,
     }
     check_branch_pr_metadata(target, body, **trusted_context)
+
+    legacy_target = "codex/bug/20260731-alice-skill-fix-feedback-flow"
+    check_branch_pr_metadata(
+        target,
+        body.replace(TARGET_BRANCH, legacy_target),
+        **{**trusted_context, "github_head_ref": legacy_target},
+    )
 
     with pytest.raises(SystemExit):
         check_branch_pr_metadata(

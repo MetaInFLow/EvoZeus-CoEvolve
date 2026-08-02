@@ -18,7 +18,7 @@
     "canonical_url": "https://github.com/MetaInFLow/EvoZeus/blob/main/scripts/evozeus-branch-preflight.mjs",
     "immutable_source_url": "https://github.com/MetaInFLow/EvoZeus/blob/26f7d8109b08f6104184d03f63393933dcc61522/scripts/evozeus-branch-preflight.mjs",
     "snapshot_path": ".evozeus-wrapper/scripts/evozeus-branch-preflight.mjs",
-    "sha256": "53c1f05dd074e8d1344ad923669ec1c072f533725fba541b32200ffb8b71d0a5"
+    "sha256": "d0cec712b7ed17e37d5d1e5d972d9fab94a59811370d153359b36989e2a7b9ff"
   },
   "compatibility": {
     "supported_contract_major": 1,
