@@ -1,13 +1,14 @@
 {
   "$id": "https://github.com/MetaInFLow/EvoZeus/blob/main/contracts/v1/contributor-branch-contract.json",
   "contract": "evozeus.contributor_branch",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "schema_version": "v1",
   "compatibility": { "evozeus": ">=0.4.1", "coevolve_consumer": ">=0.14.0", "unknown_fields": "ignore", "unknown_profile_or_major_version": "fail_closed" },
   "protected_refs": { "exact": ["main", "master", "uat/current", "stable"], "prefixes": ["release/"], "direct_business_write": "deny" },
   "host_compatibility": { "supported_hosts": ["codex", "claude"], "plan_semantics": "identical", "host_input_to_planner": false },
   "branch_naming": {
-    "template": "codex/{type}/{yyyymmdd}-{actor}-{component}-{summary}",
+    "template": "codex/{type}/{yyyymmdd}-{encoded_actor}-{encoded_component}-{encoded_summary}",
+    "token_encoding": "lowercase variable tokens with hyphens replaced by underscores before joining",
     "actor_source": "verified_github_login_lowercase",
     "max_leaf_bytes": 240,
     "local_ref_namespace_conflicts": "block",

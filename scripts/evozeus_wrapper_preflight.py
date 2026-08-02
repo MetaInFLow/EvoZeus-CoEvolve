@@ -2401,8 +2401,10 @@ def check_branch_pr_metadata(
     verified_actor = values["Verified actor"]
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", verified_actor):
         fail("PR verified actor must use a GitHub login")
+    def branch_token(value: str) -> str:
+        return str(value).lower().replace("-", "_")
     branch_match = re.fullmatch(
-        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(verified_actor.lower())}-{re.escape(component)}-{re.escape(summary)}",
+        rf"codex/{re.escape(purpose_type)}/(20[0-9]{{6}})-{re.escape(branch_token(verified_actor))}-{re.escape(branch_token(component))}-{re.escape(branch_token(summary))}",
         values["Target branch"],
     )
     if not branch_match:
