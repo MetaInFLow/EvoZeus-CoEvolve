@@ -281,12 +281,16 @@ def _secure_synthetic_plan(target: Path) -> dict[str, object]:
             {
                 "path": "owned.txt",
                 "preimage_sha256": "sha256:" + hashlib.sha256(owned_preimage).hexdigest(),
+                "preimage_mode": 0o644,
                 "postimage_sha256": "sha256:" + hashlib.sha256(owned_postimage).hexdigest(),
+                "postimage_mode": 0o644,
             },
             {
                 "path": "generated/nested/new.txt",
                 "preimage_sha256": None,
+                "preimage_mode": None,
                 "postimage_sha256": "sha256:" + hashlib.sha256(created_postimage).hexdigest(),
+                "postimage_mode": 0o644,
             },
         ],
         "delete_set": [],
@@ -914,6 +918,40 @@ def test_rollback_removes_transaction_created_directories_that_were_absent(
     assert result["status"] == "rolled_back"
     assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
     assert not target.joinpath("generated").exists()
+
+
+def test_rollback_rejects_a_hash_matching_file_with_an_unapproved_mode(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "rollback-mode-state")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "rollback-mode-state-base"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    owned = target / "owned.txt"
+    item = next(entry for entry in plan["write_set"] if entry["path"] == "owned.txt")
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "owned.txt",
+            b"OWNED-POSTIMAGE\n",
+            expected_preimage=item["preimage_sha256"],
+            expected_mode=item["preimage_mode"],
+            mode=item["postimage_mode"],
+        )
+    owned.chmod(0o600)
+
+    with pytest.raises(ValueError, match="changed outside the migration transaction"):
+        migration_kernel.rollback_migration_snapshot(
+            target,
+            snapshot,
+            trusted_snapshot_root=trusted_base,
+        )
+
+    assert owned.read_bytes() == b"OWNED-POSTIMAGE\n"
+    assert stat.S_IMODE(owned.stat().st_mode) == 0o600
 
 
 def test_post_apply_state_accepts_only_the_approved_git_and_inventory_delta(

@@ -1633,10 +1633,22 @@ class SecureTargetFS:
                     pass
             self._close_descriptors(descriptors)
 
-    def remove_exact(self, raw: object, expected_sha256: str) -> None:
+    def remove_exact(
+        self,
+        raw: object,
+        expected_sha256: str,
+        *,
+        expected_mode: int | None = None,
+    ) -> None:
         descriptors, name, relative = self._open_parent(raw, create_parents=False)
         try:
             self.read_exact(relative.as_posix(), expected_sha256)
+            if expected_mode is not None:
+                state = self.file_state(relative.as_posix())
+                if state.get("mode") != expected_mode:
+                    raise ValueError(
+                        f"secure target remove mode CAS changed: {relative.as_posix()}"
+                    )
             self._verify_parent_binding(relative, descriptors[-1])
             os.unlink(name, dir_fd=descriptors[-1])
             os.fsync(descriptors[-1])
@@ -2118,8 +2130,29 @@ def mark_migration_transaction(
     return transaction
 
 
-def _rollback_allowed_states(plan: dict[str, Any], relative_text: str, preimage: str) -> list[str]:
-    states = [preimage]
+def _rollback_file_state(sha256: object, mode: object) -> dict[str, Any]:
+    if sha256 is None or sha256 == "absent":
+        if mode is not None:
+            raise ValueError("absent rollback state cannot declare a file mode")
+        return {"kind": "absent"}
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(sha256)):
+        raise ValueError("rollback file state digest is invalid")
+    if (
+        not isinstance(mode, int)
+        or isinstance(mode, bool)
+        or not 0 <= mode <= 0o7777
+    ):
+        raise ValueError("rollback file state mode is invalid")
+    return {"kind": "file", "sha256": sha256, "mode": mode}
+
+
+def _rollback_allowed_states(
+    plan: dict[str, Any],
+    relative_text: str,
+    preimage_sha256: object,
+    preimage_mode: object,
+) -> list[dict[str, Any]]:
+    states = [_rollback_file_state(preimage_sha256, preimage_mode)]
     for item in plan.get("write_set", []):
         if item.get("path") == relative_text:
             postimage = item.get("postimage_sha256")
@@ -2127,13 +2160,15 @@ def _rollback_allowed_states(plan: dict[str, Any], relative_text: str, preimage:
                 raise ValueError(
                     f"migration write set has no postimage: {relative_text}"
                 )
-            states.append(postimage)
+            states.append(
+                _rollback_file_state(postimage, item.get("postimage_mode"))
+            )
     for item in plan.get("delete_set", []):
         if item.get("path") == relative_text:
-            states.append("absent")
+            states.append(_rollback_file_state("absent", None))
     for item in plan.get("move_set", []):
         if item.get("source") == relative_text:
-            states.append("absent")
+            states.append(_rollback_file_state("absent", None))
         if item.get("destination") == relative_text:
             postimage = item.get("destination_postimage_sha256") or item.get(
                 "source_preimage_sha256"
@@ -2142,8 +2177,15 @@ def _rollback_allowed_states(plan: dict[str, Any], relative_text: str, preimage:
                 raise ValueError(
                     f"migration move set has no destination postimage: {relative_text}"
                 )
-            states.append(postimage)
-    return list(dict.fromkeys(states))
+            postimage_mode = item.get("destination_postimage_mode") or item.get(
+                "source_preimage_mode"
+            )
+            states.append(_rollback_file_state(postimage, postimage_mode))
+    unique: list[dict[str, Any]] = []
+    for state in states:
+        if state not in unique:
+            unique.append(state)
+    return unique
 
 
 def create_migration_snapshot(
@@ -2220,13 +2262,11 @@ def create_migration_snapshot(
                         expected_preimage=None,
                         mode=0o600,
                     )
-                preimage_state = (
-                    state["sha256"] if state["kind"] == "file" else "absent"
-                )
                 item["allowed_rollback_states"] = _rollback_allowed_states(
                     plan,
                     relative_text,
-                    preimage_state,
+                    state["sha256"],
+                    state["mode"],
                 )
                 files.append(item)
 
@@ -2391,7 +2431,7 @@ def rollback_migration_snapshot(
         or len(planned_paths) != len(set(planned_paths))
     ):
         raise ValueError("migration snapshot planned path set is invalid")
-    validated: list[tuple[dict[str, Any], str, bytes | None]] = []
+    validated: list[tuple[dict[str, Any], dict[str, Any], bytes | None]] = []
     seen_paths: set[str] = set()
     with SecureSnapshotFS(trusted_base) as secure_snapshot, SecureTargetFS(
         target
@@ -2404,24 +2444,20 @@ def rollback_migration_snapshot(
                 raise ValueError(f"migration snapshot contains duplicate path: {relative_text}")
             seen_paths.add(str(relative_text))
             current = secure_target.file_state(relative_text)
-            current_state = current["sha256"] if current["kind"] == "file" else "absent"
-            allowed_states = item.get("allowed_rollback_states")
-            snapshot_preimage = (
-                item.get("sha256") if item.get("kind") == "file" else "absent"
+            current_state = _rollback_file_state(
+                current.get("sha256"),
+                current.get("mode"),
             )
+            allowed_states = item.get("allowed_rollback_states")
             expected_allowed_states = _rollback_allowed_states(
                 approved_plan,
                 str(relative_text),
-                str(snapshot_preimage),
+                item.get("sha256"),
+                item.get("mode"),
             )
             if (
                 not isinstance(allowed_states, list)
                 or not allowed_states
-                or any(
-                    not isinstance(value, str)
-                    or value != "absent" and not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
-                    for value in allowed_states
-                )
                 or allowed_states != expected_allowed_states
                 or current_state not in allowed_states
             ):
@@ -2471,14 +2507,25 @@ def rollback_migration_snapshot(
     with SecureTargetFS(target) as secure_target:
         for item, current_state, data in validated:
             if item.get("kind") == "absent":
-                if current_state != "absent":
-                    secure_target.remove_exact(item["path"], current_state)
+                if current_state.get("kind") != "absent":
+                    secure_target.remove_exact(
+                        item["path"],
+                        current_state["sha256"],
+                        expected_mode=current_state["mode"],
+                    )
                 continue
             secure_target.write_exact(
                 item["path"],
                 data or b"",
                 expected_preimage=(
-                    None if current_state == "absent" else current_state
+                    None
+                    if current_state.get("kind") == "absent"
+                    else current_state["sha256"]
+                ),
+                expected_mode=(
+                    None
+                    if current_state.get("kind") == "absent"
+                    else current_state["mode"]
                 ),
                 mode=int(item["mode"]),
             )
@@ -2502,7 +2549,10 @@ def rollback_migration_snapshot(
                 if current["kind"] != "absent":
                     raise ValueError(f"rollback failed to remove created path: {item.get('path')}")
                 continue
-            if current.get("sha256") != item.get("sha256"):
+            if (
+                current.get("sha256") != item.get("sha256")
+                or current.get("mode") != item.get("mode")
+            ):
                 raise ValueError(f"rollback verification failed: {item.get('path')}")
     mark_migration_transaction(
         snapshot_root,
