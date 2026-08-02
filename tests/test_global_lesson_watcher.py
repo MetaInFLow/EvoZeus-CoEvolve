@@ -172,6 +172,26 @@ class GlobalLessonWatcherLifecycleTest(unittest.TestCase):
             )
             self.assertEqual(dispatcher.read_bytes(), before)
 
+    def test_status_reports_core_utf8_decode_errors_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            dispatcher, core_state = self._seed_core_runtime(home)
+
+            dispatcher.write_bytes(b"\xff\xfe")
+            dispatcher_status = read_global_hook_status(home)
+            self.assertTrue(
+                any("Core-owned global dispatcher cannot be read" in error
+                    for error in dispatcher_status["errors"])
+            )
+
+            self._seed_core_runtime(home)
+            core_state.write_bytes(b"\xff\xfe")
+            state_status = read_global_hook_status(home)
+            self.assertTrue(
+                any("invalid Core-owned global dispatcher state" in error
+                    for error in state_status["errors"])
+            )
+
     def test_partial_registration_is_upgrade_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
