@@ -437,10 +437,14 @@ def copy_templates(
     actions: list[str] = []
     with migration_kernel.SecureTargetFS(target) as secure_target:
         planned_states: dict[str, dict[str, object]] = {}
-        for relative, expected, _mode in relative_artifacts:
+        for relative, expected, mode in relative_artifacts:
             state = secure_target.file_state(relative)
             expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
-            if state["kind"] == "file" and state["sha256"] == expected_sha256:
+            if (
+                state["kind"] == "file"
+                and state["sha256"] == expected_sha256
+                and state["mode"] == mode
+            ):
                 planned_states[relative] = state
                 continue
             if state["kind"] != "absent":
@@ -462,13 +466,17 @@ def copy_templates(
                     mode=mode,
                 )
                 actions.append(f"write {target / relative}")
-            for relative, expected, _mode in relative_artifacts:
+            for relative, expected, mode in relative_artifacts:
                 expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
-                if secure_target.file_state(relative).get("sha256") != expected_sha256:
+                current = secure_target.file_state(relative)
+                if (
+                    current.get("sha256") != expected_sha256
+                    or current.get("mode") != mode
+                ):
                     raise ValueError(f"target artifact postimage changed: {relative}")
         except Exception as exc:
             rollback_errors: list[str] = []
-            for relative, expected, _mode in reversed(relative_artifacts):
+            for relative, expected, mode in reversed(relative_artifacts):
                 if planned_states[relative]["kind"] != "absent":
                     continue
                 expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
@@ -476,12 +484,19 @@ def copy_templates(
                     current = secure_target.file_state(relative)
                     if current["kind"] == "absent":
                         continue
-                    if current.get("sha256") != expected_sha256:
+                    if (
+                        current.get("sha256") != expected_sha256
+                        or current.get("mode") != mode
+                    ):
                         rollback_errors.append(
                             f"{relative}: unexpected rollback state {current}"
                         )
                         continue
-                    secure_target.remove_exact(relative, expected_sha256)
+                    secure_target.remove_exact(
+                        relative,
+                        expected_sha256,
+                        expected_mode=mode,
+                    )
                 except Exception as rollback_exc:
                     rollback_errors.append(f"{relative}: {rollback_exc}")
             try:

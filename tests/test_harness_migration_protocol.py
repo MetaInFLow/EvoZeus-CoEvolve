@@ -1426,6 +1426,38 @@ def test_bootstrap_force_preserves_unknown_managed_destination(
     assert after == before
 
 
+@pytest.mark.parametrize("force", [False, True])
+def test_bootstrap_rejects_exact_bytes_with_the_wrong_mode_before_writing(
+    tmp_path: Path,
+    force: bool,
+) -> None:
+    target = tmp_path / f"bootstrap-wrong-mode-{force}"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_text("# Owner Skill\n", encoding="utf-8")
+    preflight = target / lifecycle.TARGET_PREFLIGHT_SCRIPT
+    preflight.parent.mkdir(parents=True)
+    preflight.write_bytes((ROOT / "scripts/evozeus_wrapper_preflight.py").read_bytes())
+    preflight.chmod(0o644)
+
+    with pytest.raises(ValueError, match="no exact trusted preimage"):
+        bootstrap.copy_templates(
+            target,
+            _replacement_values(),
+            force=force,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert preflight.read_bytes() == (
+        ROOT / "scripts/evozeus_wrapper_preflight.py"
+    ).read_bytes()
+    assert stat.S_IMODE(preflight.stat().st_mode) == 0o644
+    assert {
+        path.relative_to(target).as_posix()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == {"SKILL.md", lifecycle.TARGET_PREFLIGHT_SCRIPT}
+
+
 def test_prerelease_v11_without_exact_contract_identity_is_manual_zero_write(
     tmp_path: Path,
 ) -> None:
