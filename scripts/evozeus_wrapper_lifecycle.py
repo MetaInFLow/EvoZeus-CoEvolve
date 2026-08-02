@@ -891,6 +891,20 @@ def classify_integration_mode(
             "scope": "all_registered_wrapped_skills",
             "covers_skill_invocation": False,
         },
+        "global_prompt_lesson_watcher": {
+            "installed": False,
+            "native_enforced": False,
+            "event": "UserPromptSubmit",
+            "scope": "all_user_prompts",
+            "covers_skill_invocation": False,
+            "persistence": "none_before_confirmation",
+            "failure_mode": "fail_open",
+            "lifecycle_owner": "MetaInFLow/EvoZeus-CoEvolve",
+            "runtime_owner": "MetaInFLow/EvoZeus",
+            "runtime_api": "evozeus.user-prompt.lesson-runtime.v1",
+            "method_owner": "MetaInFLow/EvoZeus-session-signal-skill",
+            "component_api": "evozeus.session-signal.lesson-candidate.v1",
+        },
         "skill_entry_preflight": {
             "installed": skill_entry_preflight_installed,
             "native_enforced": False,
@@ -1263,10 +1277,33 @@ def diagnose_skill(
     global_capability = architecture["integration"]["capabilities"][
         "global_session_dispatcher"
     ]
+    prompt_capability = architecture["integration"]["capabilities"][
+        "global_prompt_lesson_watcher"
+    ]
+    global_runtime_present = (
+        global_hook_status["runtime_endpoint_ready"]
+        and global_hook_status["state_installed"]
+    )
+    session_installed = (
+        global_hook_status["session_registration_installed"] and global_runtime_present
+    )
+    prompt_installed = (
+        global_hook_status["prompt_registration_installed"] and global_runtime_present
+    )
     global_capability.update(
         {
-            "installed": global_hook_status["status"] == "installed",
-            "native_enforced": global_hook_status["native_enforced"],
+            "installed": session_installed,
+            "native_enforced": session_installed
+            and global_hook_status["trust_status"] == "trusted",
+            "trust_status": global_hook_status["trust_status"],
+            "status_source": "user_runtime_diagnosis",
+        }
+    )
+    prompt_capability.update(
+        {
+            "installed": prompt_installed,
+            "native_enforced": prompt_installed
+            and global_hook_status["trust_status"] == "trusted",
             "trust_status": global_hook_status["trust_status"],
             "status_source": "user_runtime_diagnosis",
         }

@@ -1,0 +1,11 @@
+{
+  "schema_version": "evozeus.coevolve.external-runtime-dependency.v1",
+  "component_id": "evozeus_user_prompt_lesson_runtime",
+  "repository": "MetaInFLow/EvoZeus",
+  "source_revision": "4dc94613ee01c6bd3c7fa8f5f123c6fe398742f4",
+  "availability": "unreleased",
+  "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
+  "api": "evozeus.user-prompt.lesson-runtime.v1",
+  "dispatcher": ".evozeus/hooks/evozeus_wrapper_dispatcher.py",
+  "owner": "evozeus-core"
+}

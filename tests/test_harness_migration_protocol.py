@@ -640,7 +640,10 @@ def test_batch_reports_rollback_failure_without_claiming_zero_writes(
     monkeypatch.setattr(
         global_hook,
         "read_global_hook_status",
-        lambda _home: {"status": "not_installed"},
+        lambda _home: {
+            "status": "not_installed",
+            "any_registration_installed": False,
+        },
     )
     monkeypatch.setattr(lifecycle, "migrate_target_layout", migrate)
     monkeypatch.setattr(

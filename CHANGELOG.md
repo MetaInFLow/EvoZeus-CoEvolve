@@ -8,6 +8,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.1.0` contract version and compact instruction-surface activation block.
 - Added the versioned Harness migration protocol, release-bound contract, frozen v1.0 artifact, independent profile/adapter identities, exact plan approval, receipt-bound snapshots, and verified rollback lifecycle.
+- Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
+- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound v1.1.0 contract file that remains compatible with the Core v1 bundle loader.
 
 ### Changed
 
@@ -19,11 +21,18 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Security
 
 - Added strict manifest, canonical-path, managed-identity, symlink, path-traversal, instruction-entry agreement, protected-surface CAS, official remote release-tag, source-byte, plan-digest, snapshot receipt, and rollback prevalidation.
+- Blocked lifecycle installation until the Core-owned dispatcher is byte-identical to the active product component and all control paths pass HOME containment and symlink checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
 
 ### Verification
 
 - Added fresh attach, exact artifact migration, same-business-heading, missing-terminal, CRLF, fenced-code, no-marker, unknown-layout, plan-approval, source-trust, symlink, snapshot-tamper, rollback, and ambiguous-zero-write regression coverage.
 - Migration plans declare explicit write/delete/move sets, protected business surfaces, validation, rollback, and self-excluding `plan_sha256`; every write item carries a precomputed postimage hash.
+- Added lifecycle coverage for missing or incompatible Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership, and optional zero-mutation execution against a real Core checkout.
+
+### Fixed
+
+- Converted malformed non-list `SessionStart` and `UserPromptSubmit` values into read-only lifecycle status errors.
+- Preserved the Core-owned dispatcher and product state across CoEvolve install, refresh, trust updates, and uninstall.
 
 ## [v0.14.0] - 2026-07-30
 

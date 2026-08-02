@@ -28,6 +28,7 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
 
     assert manifest["schema_version"] == "evozeus.coevolve.contract-manifest.v1"
     assert manifest["bundle_id"] == "evozeus-coevolve"
+    assert manifest["bundle_version"] == "v1.2.0"
     assert manifest["runtime_compatibility"] == {
         "min_inclusive": "0.1.0",
         "max_exclusive": "0.3.0",
@@ -42,6 +43,38 @@ def test_contract_manifest_hashes_every_declared_file() -> None:
     assert declared_paths == actual_paths
     for entry in manifest["files"]:
         assert entry["sha256"] == sha256_file(BUNDLE / entry["path"])
+
+
+def test_contract_manifest_depends_on_core_owned_user_prompt_runtime() -> None:
+    manifest = json.loads((BUNDLE / "manifest.json").read_text(encoding="utf-8"))
+    dependency = json.loads(
+        (BUNDLE / "user-prompt-lesson-runtime-lifecycle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert manifest["source_revision"] == "v0.14.0"
+    assert "external_component_dependencies" not in manifest
+    assert dependency == {
+        "schema_version": "evozeus.coevolve.external-runtime-dependency.v1",
+        "component_id": "evozeus_user_prompt_lesson_runtime",
+        "repository": "MetaInFLow/EvoZeus",
+        "source_revision": "4dc94613ee01c6bd3c7fa8f5f123c6fe398742f4",
+        "availability": "unreleased",
+        "pull_request": "https://github.com/MetaInFLow/EvoZeus/pull/50",
+        "api": "evozeus.user-prompt.lesson-runtime.v1",
+        "dispatcher": ".evozeus/hooks/evozeus_wrapper_dispatcher.py",
+        "owner": "evozeus-core",
+    }
+    dependency_entry = next(
+        entry
+        for entry in manifest["files"]
+        if entry["path"] == "user-prompt-lesson-runtime-lifecycle.json"
+    )
+    assert dependency_entry["role"] == "external-runtime-dependency"
+    assert dependency_entry["sha256"] == sha256_file(
+        BUNDLE / dependency_entry["path"]
+    )
 
 
 def test_external_sidecar_inventory_has_no_target_writes() -> None:
