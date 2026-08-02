@@ -3078,7 +3078,11 @@ def _canonical_v1_upgrade_evidence(
         path = safe_target_relative_file(target, target_path) if isinstance(target_path, str) else None
         actual_sha256 = f"sha256:{file_sha256(path)}" if path is not None else None
         expected_sha256 = f"sha256:{artifact.get('sha256')}"
-        matched = actual_sha256 == expected_sha256
+        expected_mode = _official_exact_file_mode(artifact.get("mode"))
+        actual_mode = path.stat().st_mode & 0o7777 if path is not None else None
+        matched = (
+            actual_sha256 == expected_sha256 and actual_mode == expected_mode
+        )
         preimages.append(
             {
                 "artifact_id": artifact.get("artifact_id"),
@@ -3086,6 +3090,8 @@ def _canonical_v1_upgrade_evidence(
                 "artifact_path": artifact.get("artifact_path"),
                 "expected_sha256": expected_sha256,
                 "actual_sha256": actual_sha256,
+                "expected_mode": expected_mode,
+                "actual_mode": actual_mode,
                 "matched": matched,
             }
         )
@@ -3165,6 +3171,14 @@ def _official_upgrade_profile(
     if profile is None:
         raise ValueError(f"verified official upgrade profile is missing: {profile_id}")
     return profile
+
+
+def _official_exact_file_mode(value: object) -> int:
+    if value == "100644":
+        return 0o644
+    if value == "100755":
+        return 0o755
+    raise ValueError(f"official exact file mode is invalid: {value}")
 
 
 def _apply_official_manifest_patch(
@@ -3276,8 +3290,10 @@ def _official_upgrade_write_plan(
             expected_postimage = "sha256:" + str(postimage.get("sha256"))
             if f"sha256:{hashlib.sha256(data).hexdigest()}" != expected_postimage:
                 raise ValueError(f"official exact artifact digest mismatch: {relative}")
+            postimage_mode = _official_exact_file_mode(postimage.get("mode"))
             if operation_type == "create_exact":
                 preimage = None
+                preimage_mode = None
                 if destination.exists() or destination.is_symlink():
                     raise ValueError(f"official create destination already exists: {relative}")
             else:
@@ -3285,10 +3301,12 @@ def _official_upgrade_write_plan(
                 if not isinstance(preimage_value, dict):
                     raise ValueError(f"official replace preimage is missing: {relative}")
                 preimage = "sha256:" + str(preimage_value.get("sha256"))
+                preimage_mode = _official_exact_file_mode(preimage_value.get("mode"))
                 if (
                     not destination.is_file()
                     or destination.is_symlink()
                     or f"sha256:{file_sha256(destination)}" != preimage
+                    or (destination.stat().st_mode & 0o7777) != preimage_mode
                 ):
                     raise ValueError(f"official replace preimage mismatch: {relative}")
             staged[relative] = data
@@ -3297,7 +3315,9 @@ def _official_upgrade_write_plan(
                     "path": relative,
                     "operation": operation_type,
                     "preimage_sha256": preimage,
+                    "preimage_mode": preimage_mode,
                     "postimage_sha256": expected_postimage,
+                    "postimage_mode": postimage_mode,
                     "source_sha256": expected_postimage,
                     "source_path": (
                         Path("contracts/v1") / artifact_relative
@@ -3312,13 +3332,18 @@ def _official_upgrade_write_plan(
             data = (json.dumps(patched, ensure_ascii=False, indent=2) + "\n").encode(
                 "utf-8"
             )
+            if not destination.is_file() or destination.is_symlink():
+                raise ValueError("official manifest patch target is unsafe")
+            manifest_mode = destination.stat().st_mode & 0o7777
             staged[relative] = data
             write_set.append(
                 {
                     "path": relative,
                     "operation": operation_type,
                     "preimage_sha256": f"sha256:{file_sha256(destination)}",
+                    "preimage_mode": manifest_mode,
                     "postimage_sha256": f"sha256:{hashlib.sha256(data).hexdigest()}",
+                    "postimage_mode": manifest_mode,
                     "source_sha256": None,
                     "authority": operation.get("change_id"),
                 }
@@ -3988,7 +4013,9 @@ def _apply_canonical_v1_upgrade(
             for field in (
                 "operation",
                 "preimage_sha256",
+                "preimage_mode",
                 "postimage_sha256",
+                "postimage_mode",
                 "source_sha256",
                 "source_path",
                 "authority",
@@ -4030,12 +4057,6 @@ def _apply_canonical_v1_upgrade(
         with migration_kernel.SecureTargetFS(target) as secure_target:
             for relative in sorted(staged):
                 item = write_items[relative]
-                current = secure_target.file_state(relative)
-                mode = (
-                    0o755
-                    if Path(relative).suffix == ".py"
-                    else current["mode"] if current["kind"] == "file" else 0o644
-                )
                 changed_files.append(relative)
                 migration_kernel.mark_migration_transaction(
                     snapshot,
@@ -4046,12 +4067,16 @@ def _apply_canonical_v1_upgrade(
                     relative,
                     staged[relative],
                     expected_preimage=item.get("preimage_sha256"),
-                    mode=mode,
+                    expected_mode=item.get("preimage_mode"),
+                    mode=item["postimage_mode"],
                 )
 
             for item in plan["write_set"]:
                 actual = secure_target.file_state(item["path"])
-                if actual.get("sha256") != item["postimage_sha256"]:
+                if (
+                    actual.get("sha256") != item["postimage_sha256"]
+                    or actual.get("mode") != item["postimage_mode"]
+                ):
                     raise ValueError(
                         f"migration postimage verification failed: {item['path']}"
                     )

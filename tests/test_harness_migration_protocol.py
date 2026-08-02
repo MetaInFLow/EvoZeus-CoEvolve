@@ -392,6 +392,7 @@ def test_attach_create_cas_preserves_a_racing_unknown_leaf(
         *,
         expected_preimage: str | None,
         mode: int,
+        expected_mode: int | None = None,
     ) -> None:
         nonlocal raced_path
         if raced_path is None:
@@ -404,6 +405,7 @@ def test_attach_create_cas_preserves_a_racing_unknown_leaf(
             data,
             expected_preimage=expected_preimage,
             mode=mode,
+            expected_mode=expected_mode,
         )
 
     monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", race_leaf)
@@ -485,6 +487,7 @@ def test_attach_rolls_back_a_complete_create_left_by_a_commit_error(
         *,
         expected_preimage: str | None,
         mode: int,
+        expected_mode: int | None = None,
     ) -> None:
         original_write(
             secure_target,
@@ -492,6 +495,7 @@ def test_attach_rolls_back_a_complete_create_left_by_a_commit_error(
             data,
             expected_preimage=expected_preimage,
             mode=mode,
+            expected_mode=expected_mode,
         )
         raise OSError("simulated directory fsync failure")
 
@@ -532,6 +536,7 @@ def test_attach_reports_rollback_failed_for_an_unknown_commit_error_residue(
         *,
         expected_preimage: str | None,
         mode: int,
+        expected_mode: int | None = None,
     ) -> None:
         nonlocal residue
         original_write(
@@ -540,6 +545,7 @@ def test_attach_reports_rollback_failed_for_an_unknown_commit_error_residue(
             data,
             expected_preimage=expected_preimage,
             mode=mode,
+            expected_mode=expected_mode,
         )
         residue = secure_target.target / str(raw)
         residue.write_bytes(b"UNKNOWN-AFTER-COMMIT\n")
@@ -621,6 +627,7 @@ def test_snapshot_artifacts_and_transaction_use_secure_exclusive_writes(
         *,
         expected_preimage: str | None,
         mode: int,
+        expected_mode: int | None = None,
     ) -> None:
         if secure_target.target == trusted_base.resolve():
             calls.append((str(raw), expected_preimage))
@@ -630,6 +637,7 @@ def test_snapshot_artifacts_and_transaction_use_secure_exclusive_writes(
             data,
             expected_preimage=expected_preimage,
             mode=mode,
+            expected_mode=expected_mode,
         )
 
     monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", record_write)
@@ -676,6 +684,7 @@ def test_snapshot_leaf_race_is_fail_closed_and_preserves_unknown_bytes(
         *,
         expected_preimage: str | None,
         mode: int,
+        expected_mode: int | None = None,
     ) -> None:
         nonlocal residue
         relative = str(raw)
@@ -692,6 +701,7 @@ def test_snapshot_leaf_race_is_fail_closed_and_preserves_unknown_bytes(
             data,
             expected_preimage=expected_preimage,
             mode=mode,
+            expected_mode=expected_mode,
         )
 
     monkeypatch.setattr(migration_kernel.SecureTargetFS, "write_exact", race_leaf)
@@ -789,6 +799,28 @@ def test_secure_nested_directory_creation_fsyncs_each_parent(
         )
 
     assert set(created_under) <= set(fsynced_directories)
+
+
+def test_secure_replace_mode_cas_preserves_a_changed_preimage(tmp_path: Path) -> None:
+    target = tmp_path / "secure-mode-cas"
+    target.mkdir()
+    managed = target / "managed.txt"
+    managed.write_bytes(b"PREIMAGE\n")
+    managed.chmod(0o644)
+    expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        with pytest.raises(ValueError, match="mode CAS changed"):
+            secure_target.write_exact(
+                "managed.txt",
+                b"POSTIMAGE\n",
+                expected_preimage=expected,
+                expected_mode=0o755,
+                mode=0o644,
+            )
+
+    assert managed.read_bytes() == b"PREIMAGE\n"
+    assert stat.S_IMODE(managed.stat().st_mode) == 0o644
 
 
 @pytest.mark.parametrize("swap", ["leaf", "parent"])
@@ -988,6 +1020,14 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
         )
         for item in plan["write_set"]
     }
+    planned_modes_before = {
+        item["path"]: (
+            stat.S_IMODE(target.joinpath(item["path"]).stat().st_mode)
+            if target.joinpath(item["path"]).is_file()
+            else None
+        )
+        for item in plan["write_set"]
+    }
 
     assert plan["source_trust"]["status"] == "trusted_release"
     assert plan["source_trust"]["remote_tag_verified"] is True
@@ -996,6 +1036,7 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     assert plan["profile"]["from_state"]["harness_skill_version"] == "v1.0.0"
     assert plan["profile"]["to_state"]["harness_skill_version"] == "v1.1.0"
     assert all(item.get("postimage_sha256") for item in plan["write_set"])
+    assert all(isinstance(item.get("postimage_mode"), int) for item in plan["write_set"])
 
     approval_required = lifecycle.migrate_target_layout(
         target,
@@ -1030,6 +1071,10 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     assert b"v0.14.0 -> v0.15.0" in record
     assert b"wrapper.json" in record
     assert b"2026-08-02" not in record
+    for item in plan["write_set"]:
+        assert stat.S_IMODE(target.joinpath(item["path"]).stat().st_mode) == item[
+            "postimage_mode"
+        ]
 
     rolled_back = lifecycle.rollback_target_layout_migration(
         target,
@@ -1041,6 +1086,39 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     for relative, expected in planned_before.items():
         path = target / relative
         assert (path.read_bytes() if path.is_file() else None) == expected
+        assert (
+            stat.S_IMODE(path.stat().st_mode) if path.is_file() else None
+        ) == planned_modes_before[relative]
+
+
+def test_exact_profile_rejects_a_matching_preimage_with_the_wrong_mode(
+    tmp_path: Path,
+) -> None:
+    source = _make_release_source(tmp_path)
+    target = _prepare_exact_v1_target(tmp_path)
+    preflight = target / lifecycle.TARGET_PREFLIGHT_SCRIPT
+    preflight.chmod(0o644)
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        today=date(2026, 8, 2),
+        require_clean_git=False,
+        wrapper_root=source,
+        remote_tag_resolver=_source_tag_resolver(source),
+    )
+
+    evidence = next(
+        item
+        for item in plan["ownership_evidence"]["trusted_preimages"]
+        if item["target_path"] == lifecycle.TARGET_PREFLIGHT_SCRIPT
+    )
+    assert evidence["expected_sha256"] == evidence["actual_sha256"]
+    assert evidence["expected_mode"] == 0o755
+    assert evidence["actual_mode"] == 0o644
+    assert evidence["matched"] is False
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["writes"] is False
 
 
 def test_unpublished_or_locally_forged_tag_is_zero_write(tmp_path: Path) -> None:

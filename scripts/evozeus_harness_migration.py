@@ -244,7 +244,10 @@ def _git_changed_paths(target: Path) -> list[str]:
 def _approved_changed_paths(plan: dict[str, Any]) -> list[str]:
     paths: set[str] = set()
     for item in plan.get("write_set", []):
-        if item.get("preimage_sha256") != item.get("postimage_sha256"):
+        if (
+            item.get("preimage_sha256") != item.get("postimage_sha256")
+            or item.get("preimage_mode") != item.get("postimage_mode")
+        ):
             paths.add(_safe_relative_path(item.get("path")).as_posix())
     for item in plan.get("delete_set", []):
         paths.add(_safe_relative_path(item.get("path")).as_posix())
@@ -276,7 +279,13 @@ def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
                 )
         for item in plan.get("write_set", []):
             current = secure_target.file_state(item.get("path"))
-            if current.get("sha256") != item.get("postimage_sha256"):
+            if (
+                current.get("sha256") != item.get("postimage_sha256")
+                or (
+                    "postimage_mode" in item
+                    and current.get("mode") != item.get("postimage_mode")
+                )
+            ):
                 raise ValueError(
                     f"post-apply approved write is missing: {item.get('path')}"
                 )
@@ -815,6 +824,7 @@ def _official_upgrade_profile_compatibility(
                     "artifact_id": "official-closure-preimage:" + str(target_path),
                     "target_path": target_path,
                     "sha256": preimage.get("sha256"),
+                    "mode": preimage.get("mode"),
                 }
             )
         if operation_type in {"create_exact", "replace_exact"}:
@@ -1530,6 +1540,7 @@ class SecureTargetFS:
         data: bytes,
         *,
         expected_preimage: str | None,
+        expected_mode: int | None = None,
         mode: int,
     ) -> None:
         descriptors, name, relative = self._open_parent(raw, create_parents=True)
@@ -1577,6 +1588,13 @@ class SecureTargetFS:
                     raise ValueError(
                         f"secure target replace CAS changed: {relative.as_posix()}"
                     )
+                if (
+                    expected_mode is not None
+                    and stat.S_IMODE(metadata.st_mode) != expected_mode
+                ):
+                    raise ValueError(
+                        f"secure target replace mode CAS changed: {relative.as_posix()}"
+                    )
                 os.lseek(descriptor, 0, os.SEEK_SET)
             metadata = os.fstat(descriptor)
             opened_identity = (metadata.st_dev, metadata.st_ino)
@@ -1593,6 +1611,10 @@ class SecureTargetFS:
             if actual != data:
                 raise ValueError(
                     f"secure target postimage verification failed: {relative.as_posix()}"
+                )
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+                raise ValueError(
+                    f"secure target postimage mode verification failed: {relative.as_posix()}"
                 )
             self._verify_parent_binding(relative, parent_fd)
             os.fsync(parent_fd)
@@ -1837,13 +1859,30 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
         relative = _safe_relative_path(item.get("path")).as_posix()
         mutation_paths.append(relative)
         preimage = item.get("preimage_sha256")
+        preimage_mode = item.get("preimage_mode")
         postimage = item.get("postimage_sha256")
+        postimage_mode = item.get("postimage_mode")
+        mode_bound = "preimage_mode" in item or "postimage_mode" in item
         if preimage is not None and not re.fullmatch(
             r"sha256:[0-9a-f]{64}", str(preimage)
         ):
             raise ValueError(f"migration write preimage is invalid: {relative}")
+        if mode_bound and preimage is None and preimage_mode is not None:
+            raise ValueError(f"migration create preimage mode is invalid: {relative}")
+        if mode_bound and preimage is not None and (
+            not isinstance(preimage_mode, int)
+            or isinstance(preimage_mode, bool)
+            or not 0 <= preimage_mode <= 0o7777
+        ):
+            raise ValueError(f"migration write preimage mode is invalid: {relative}")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(postimage)):
             raise ValueError(f"migration write postimage is invalid: {relative}")
+        if mode_bound and (
+            not isinstance(postimage_mode, int)
+            or isinstance(postimage_mode, bool)
+            or not 0 <= postimage_mode <= 0o7777
+        ):
+            raise ValueError(f"migration write postimage mode is invalid: {relative}")
     for item in operation_sets["delete_set"]:
         relative = _safe_relative_path(item.get("path")).as_posix()
         mutation_paths.append(relative)
@@ -1905,6 +1944,12 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
             raise ValueError(
                 f"migration preimage hash changed: {item.get('path')}: "
                 f"expected={expected}; actual={actual}"
+            )
+        actual_mode = path.stat().st_mode & 0o7777
+        if "preimage_mode" in item and actual_mode != item.get("preimage_mode"):
+            raise ValueError(
+                f"migration preimage mode changed: {item.get('path')}: "
+                f"expected={item.get('preimage_mode')}; actual={actual_mode}"
             )
     for item in operation_sets["delete_set"]:
         path = _target_path(target, item.get("path"))
