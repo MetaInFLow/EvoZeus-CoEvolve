@@ -21,57 +21,193 @@
     "schema_version": {
       "const": "evozeus.coevolve.legacy-prompt-adapter.v1"
     },
-    "adapter_id": { "type": "string", "minLength": 1 },
-    "adapter_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
-    "implementation": { "$ref": "#/$defs/binding" },
-    "source_envelope": { "$ref": "#/$defs/binding" },
-    "expected_headings": { "type": "object" },
+    "adapter_id": { "const": "legacy-v0.14-three-section-exact-transform" },
+    "adapter_version": {
+      "type": "string",
+      "const": "v1.0.0",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "entrypoint"],
+      "properties": {
+        "path": { "const": "scripts/evozeus_harness_legacy_prompt_adapter.py" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "entrypoint": { "const": "plan_supervised_legacy_prompt_transform" }
+      }
+    },
+    "source_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "const": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "expected_headings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evolution", "wrapper"],
+      "properties": {
+        "status": { "const": "EvoZeus-CoEvolve 状态检查" },
+        "evolution": { "const": "自进化方法" },
+        "wrapper": { "const": "EvoZeus-CoEvolve" }
+      }
+    },
     "forbidden_legacy_headings": {
       "type": "array",
-      "items": { "type": "string" }
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
     },
     "templates": {
       "type": "array",
+      "prefixItems": [
+        { "$ref": "#/$defs/statusTemplate" },
+        { "$ref": "#/$defs/evolutionTemplate" },
+        { "$ref": "#/$defs/wrapperTemplate" }
+      ],
+      "items": false,
       "minItems": 3,
-      "maxItems": 3,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "path", "sha256", "placeholders"],
-        "properties": {
-          "kind": { "enum": ["status", "evolution", "wrapper"] },
-          "path": { "$ref": "#/$defs/relativePath" },
-          "sha256": { "$ref": "#/$defs/sha256" },
-          "placeholders": {
-            "type": "array",
-            "items": { "type": "string" },
-            "uniqueItems": true
-          }
-        }
-      }
+      "maxItems": 3
     },
-    "canonical_activation_block_lf": { "type": "string", "minLength": 1 },
-    "canonical_activation_sha256_lf": { "$ref": "#/$defs/sha256" },
-    "transform_contract": { "type": "object" }
+    "canonical_activation_block_lf": {
+      "const": "<!-- evozeus-harness-entry:v1 -->\n**CRITICAL — 进入业务主链路前 MUST 使用 Read 工具读取并执行\n[.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md](.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md)。**\n<!-- /evozeus-harness-entry -->"
+    },
+    "canonical_activation_sha256_lf": {
+      "const": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea"
+    },
+    "transform_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "discovery_authority",
+        "reviewed_source_envelope_required",
+        "legacy_owned_section_count",
+        "legacy_template_match",
+        "instruction_surface_preservation",
+        "manifest_projection",
+        "file_preconditions",
+        "newline_policy",
+        "write_authority",
+        "execution_authority",
+        "compare_and_swap",
+        "proof_digest"
+      ],
+      "properties": {
+        "discovery_authority": { "const": false },
+        "reviewed_source_envelope_required": { "const": true },
+        "legacy_owned_section_count": { "const": 3 },
+        "legacy_template_match": { "const": "rendered-byte-exact" },
+        "instruction_surface_preservation": { "const": "complement-bytes-exact" },
+        "manifest_projection": { "const": "rendered-byte-exact" },
+        "file_preconditions": {
+          "const": "full-envelope-exact-or-explicit-preserve"
+        },
+        "newline_policy": { "const": "preserve-uniform-lf-or-crlf" },
+        "write_authority": { "const": "none" },
+        "execution_authority": { "const": "separate-supervised-approval" },
+        "compare_and_swap": { "const": "full-file-preimage-required" },
+        "proof_digest": { "const": "canonical-json-sha256" }
+      }
+    }
   },
   "$defs": {
-    "relativePath": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
-    },
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "binding": {
+    "templateBase": {
       "type": "object",
-      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "placeholders"],
       "properties": {
-        "path": { "$ref": "#/$defs/relativePath" },
+        "kind": { "enum": ["status", "evolution", "wrapper"] },
+        "path": {
+          "type": "string",
+          "pattern": "^contracts/v1/migrations/adapters/legacy-v0\\.14-three-section/(?:status|evolution|wrapper)\\.md\\.tpl$"
+        },
         "sha256": { "$ref": "#/$defs/sha256" },
-        "entrypoint": { "type": "string" }
+        "placeholders": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        }
       }
+    },
+    "statusTemplate": {
+      "allOf": [
+        { "$ref": "#/$defs/templateBase" },
+        {
+          "properties": {
+            "kind": { "const": "status" },
+            "path": {
+              "const": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/status.md.tpl"
+            },
+            "placeholders": {
+              "prefixItems": [
+                { "const": "CURRENT_VERSION" },
+                { "const": "REPO_NAME" },
+                { "const": "WRAPPER_VERSION" }
+              ],
+              "items": false,
+              "minItems": 3,
+              "maxItems": 3
+            }
+          }
+        }
+      ]
+    },
+    "evolutionTemplate": {
+      "allOf": [
+        { "$ref": "#/$defs/templateBase" },
+        {
+          "properties": {
+            "kind": { "const": "evolution" },
+            "path": {
+              "const": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/evolution.md.tpl"
+            },
+            "placeholders": {
+              "prefixItems": [
+                { "const": "CURRENT_VERSION" },
+                { "const": "REPO_NAME" },
+                { "const": "VISIBILITY" },
+                { "const": "WRAPPER_VERSION" }
+              ],
+              "items": false,
+              "minItems": 4,
+              "maxItems": 4
+            }
+          }
+        }
+      ]
+    },
+    "wrapperTemplate": {
+      "allOf": [
+        { "$ref": "#/$defs/templateBase" },
+        {
+          "properties": {
+            "kind": { "const": "wrapper" },
+            "path": {
+              "const": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/wrapper.md.tpl"
+            },
+            "placeholders": {
+              "prefixItems": [
+                { "const": "REPO_NAME" },
+                { "const": "WRAPPER_VERSION" }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        }
+      ]
     }
   }
 }

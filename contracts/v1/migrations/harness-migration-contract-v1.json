@@ -5,6 +5,7 @@
   "contract_version": "v1.0.0",
   "path_roots": {
     "artifact_path": "contracts/v1",
+    "repository_path": "repository_root",
     "target_path": "target_repository_root"
   },
   "current_harness_skill_version": "v1.1.0",
@@ -24,6 +25,59 @@
     "closure_schema": "migrations/schemas/target-closure-v1.schema.json",
     "candidate_execution": "trusted_base_verifier_candidate_blobs_as_data"
   },
+  "reviewed_legacy_migrations": [
+    {
+      "profile_id": "legacy-v0.14-three-section-to-canonical-v1.1",
+      "profile_version": "v1.0.0",
+      "profile_path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
+      "profile_schema": {
+        "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
+        "sha256": "07fa2b758bbf22b34eb893abc4eb28c2139023440c1062ad7eaed746a9860416"
+      },
+      "source_envelope": {
+        "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
+        "sha256": "cc8a46d8e7111160a6d76e66b9fc0a1f8eccb8b1c4a57c9022a53076f04c43e5",
+        "schema": {
+          "path": "migrations/schemas/legacy-source-envelope-v1.schema.json",
+          "sha256": "f5575dae08b81e958dcc1e82539120868fdd10db201579ecc29b51330d67b667"
+        }
+      },
+      "adapter": {
+        "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
+        "sha256": "0ede3f7dffadcdc82e8e58d6d7998697efb1a80036c90879ff14b769659285b8",
+        "schema": {
+          "path": "migrations/schemas/legacy-prompt-adapter-v1.schema.json",
+          "sha256": "e62604a27d8fc3c2549e97354f9cb9925b773063db20752cff1e67828ce71745"
+        },
+        "implementation": {
+          "root": "repository_path",
+          "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
+          "sha256": "403143476b38b0fe721c86f8b2937844606aa01bf409e141d22ffd8604d9c85d",
+          "entrypoint": "plan_supervised_legacy_prompt_transform"
+        }
+      },
+      "target_closure_pointer": {
+        "path": "migrations/history/harness-skill/current.json",
+        "pointer_id": "using-evozeus-harness-current-closure",
+        "selected_id": "using-evozeus-harness",
+        "selected_version": "v1.1.0",
+        "selected_path": "migrations/history/harness-skill/v1.1.0/closure.json"
+      },
+      "release_lineage": {
+        "source_repository": "MetaInFLow/diagnose-enterprise-ai-scenarios",
+        "source_commit": "ee2bd6e8232d14ad9070b4ee7875595e9e8e4a4f",
+        "source_tree": "801f60fa4df1a6c3a60fe44e8f0b81fe490cc5eb",
+        "target_release": "v0.15.0"
+      },
+      "execution": {
+        "mode": "supervised_exact_plan",
+        "discovery_authority": false,
+        "adapter_write_authority": false,
+        "approval": "one_time_exact_plan_digest",
+        "runtime_apply": "not_implemented"
+      }
+    }
+  ],
   "discovery_profiles": [
     {
       "profile_id": "legacy-scattered-to-canonical-v1.0",

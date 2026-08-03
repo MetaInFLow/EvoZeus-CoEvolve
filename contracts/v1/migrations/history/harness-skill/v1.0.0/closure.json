@@ -218,7 +218,8 @@
       "artifact_path": "artifacts/scripts/evozeus_notice.py",
       "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
       "materialization": {
-        "policy": "copy_exact"
+        "policy": "copy_exact",
+        "mode_policy": "set_declared_executable"
       },
       "source_path": "scripts/evozeus_notice.py",
       "source_binding": "construction_revision"

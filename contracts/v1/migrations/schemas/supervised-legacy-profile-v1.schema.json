@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/supervised-legacy-profile-v1.schema.json",
+  "title": "EvoZeus supervised legacy migration profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "profile_schema",
+    "protocol",
+    "source_envelope",
+    "adapter",
+    "target_closure_pointer",
+    "release_axis",
+    "execution",
+    "automatic",
+    "operations",
+    "deferred_rendered_surfaces",
+    "protected_business_surfaces",
+    "fallback"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.supervised-legacy-profile.v1"
+    },
+    "profile_id": {
+      "const": "legacy-v0.14-three-section-to-canonical-v1.1"
+    },
+    "profile_version": {
+      "type": "string",
+      "const": "v1.0.0",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "profile_schema": { "$ref": "#/$defs/binding" },
+    "protocol": { "$ref": "#/$defs/binding" },
+    "source_envelope": { "$ref": "#/$defs/binding" },
+    "adapter": { "$ref": "#/$defs/binding" },
+    "target_closure_pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "pointer_id", "selected"],
+      "properties": {
+        "path": { "const": "migrations/history/harness-skill/current.json" },
+        "pointer_id": { "const": "using-evozeus-harness-current-closure" },
+        "selected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "path"],
+          "properties": {
+            "id": { "const": "using-evozeus-harness" },
+            "version": { "const": "v1.1.0" },
+            "path": {
+              "const": "migrations/history/harness-skill/v1.1.0/closure.json"
+            }
+          }
+        }
+      }
+    },
+    "release_axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_wrapper_from",
+        "target_wrapper_to",
+        "artifact_source_from",
+        "artifact_source_to"
+      ],
+      "properties": {
+        "target_wrapper_from": { "const": "v0.14.0" },
+        "target_wrapper_to": { "const": "v0.15.0" },
+        "artifact_source_from": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "repository", "revision", "tree", "release"],
+          "properties": {
+            "kind": { "const": "reviewed_source_commit" },
+            "repository": {
+              "const": "MetaInFLow/diagnose-enterprise-ai-scenarios"
+            },
+            "revision": { "$ref": "#/$defs/gitOid" },
+            "tree": { "$ref": "#/$defs/gitOid" },
+            "release": { "type": "null" }
+          }
+        },
+        "artifact_source_to": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "release", "binding"],
+          "properties": {
+            "kind": { "const": "required_release" },
+            "release": { "const": "v0.15.0" },
+            "binding": { "const": "contract_bundle.source_revision" }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "discovery_authority",
+        "adapter_write_authority",
+        "approval",
+        "approval_scope",
+        "compare_and_swap",
+        "snapshot",
+        "post_verify",
+        "rollback",
+        "runtime_apply"
+      ],
+      "properties": {
+        "mode": { "const": "supervised_exact_plan" },
+        "discovery_authority": { "const": false },
+        "adapter_write_authority": { "const": false },
+        "approval": { "const": "one_time_exact_plan_digest" },
+        "approval_scope": { "const": "one_target_one_preimage_one_postimage" },
+        "compare_and_swap": { "const": "full_file_preimage" },
+        "snapshot": { "const": "required_before_any_write" },
+        "post_verify": { "const": "adapter_proof_and_current_closure" },
+        "rollback": { "const": "restore_snapshot_on_any_failure" },
+        "runtime_apply": { "const": "not_implemented" }
+      }
+    },
+    "automatic": { "const": false },
+    "operations": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/exactOperation" },
+          { "$ref": "#/$defs/manifestOperation" },
+          { "$ref": "#/$defs/supervisedOperation" }
+        ]
+      }
+    },
+    "deferred_rendered_surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target_path", "policy", "version_fact_source"],
+        "properties": {
+          "target_path": { "$ref": "#/$defs/relativePath" },
+          "policy": { "const": "preserve_byte_exact_no_write" },
+          "version_fact_source": { "const": ".evozeus-wrapper/wrapper.json" }
+        }
+      }
+    },
+    "protected_business_surfaces": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["selector", "rule"],
+          "properties": {
+            "selector": { "const": "manifest.instruction_surface" },
+            "rule": { "const": "adapter_proven_complement_bytes_exact" }
+          }
+        }
+      ],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown_layout", "scattered_layout", "missing_evidence", "ambiguous_prompt"],
+      "properties": {
+        "unknown_layout": { "const": "manual_migration_required_zero_write" },
+        "scattered_layout": { "const": "manual_migration_required_zero_write" },
+        "missing_evidence": { "const": "manual_migration_required_zero_write" },
+        "ambiguous_prompt": { "const": "manual_migration_required_zero_write" }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "preimage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": { "state": { "const": "absent" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "mode"],
+          "properties": {
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "mode": { "enum": ["100644", "100755"] }
+          }
+        }
+      ]
+    },
+    "postimage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_path", "sha256", "mode"],
+      "properties": {
+        "artifact_path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "mode": { "enum": ["100644", "100755"] }
+      }
+    },
+    "exactOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_id", "type", "target_path", "preimage", "postimage"],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["create_exact", "replace_exact"] },
+        "target_path": { "$ref": "#/$defs/relativePath" },
+        "preimage": { "$ref": "#/$defs/preimage" },
+        "postimage": { "$ref": "#/$defs/postimage" }
+      }
+    },
+    "manifestOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change_id",
+        "type",
+        "target_path",
+        "encoding",
+        "preserve_unlisted_fields",
+        "source_projection",
+        "patch",
+        "target_projection"
+      ],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1 },
+        "type": { "const": "manifest_patch" },
+        "target_path": { "const": ".evozeus-wrapper/wrapper.json" },
+        "encoding": { "const": "utf-8-json-indent-2-lf" },
+        "preserve_unlisted_fields": { "const": true },
+        "source_projection": { "type": "object" },
+        "patch": { "type": "array", "minItems": 1 },
+        "target_projection": { "type": "object" }
+      }
+    },
+    "supervisedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change_id",
+        "type",
+        "target_path",
+        "source_envelope",
+        "adapter",
+        "plan_contract"
+      ],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1 },
+        "type": { "const": "supervised_transform" },
+        "target_path": { "const": "SKILL.md" },
+        "source_envelope": { "$ref": "#/$defs/binding" },
+        "adapter": { "$ref": "#/$defs/binding" },
+        "plan_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision", "writes", "approval", "compare_and_swap", "runtime_apply"],
+          "properties": {
+            "decision": { "const": "supervised_migration_available" },
+            "writes": { "const": false },
+            "approval": { "const": "one_time_exact_proof_sha256" },
+            "compare_and_swap": { "const": "full_file_preimage" },
+            "runtime_apply": { "const": "not_implemented" }
+          }
+        }
+      }
+    }
+  }
+}

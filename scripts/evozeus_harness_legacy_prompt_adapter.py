@@ -322,9 +322,14 @@ def _visible_headings(text: str) -> tuple[list[_Heading], str]:
             continue
         if fence_match:
             run = fence_match.group(1)
-            fence = (run[0], len(run))
-            visible_parts.append(" " * len(content) + ending)
-            continue
+            info = fence_match.group(2)
+            # CommonMark does not recognize a backtick fence when its info
+            # string itself contains a backtick.  Treating it as a fence would
+            # hide real headings and turn an ambiguous target into authority.
+            if run[0] != "`" or "`" not in info:
+                fence = (run[0], len(run))
+                visible_parts.append(" " * len(content) + ending)
+                continue
         visible_parts.append(content + ending)
         heading_match = re.match(r"^[ ]{0,3}(#{1,6})(?:[ \t]+(.*?))[ \t]*$", content)
         if not heading_match:
@@ -399,6 +404,8 @@ def _manifest_projection(
     applied_at = manifest.get("applied_at")
     if not isinstance(repo, str) or REPO_RE.fullmatch(repo) is None:
         raise TargetMismatch("legacy manifest canonical_repo is invalid")
+    if any(component in {".", ".."} for component in repo.split("/")):
+        raise TargetMismatch("legacy manifest canonical_repo is invalid")
     if not isinstance(applied_at, str) or DATE_RE.fullmatch(applied_at) is None:
         raise TargetMismatch("legacy manifest applied_at is invalid")
     installation = (
@@ -419,7 +426,11 @@ def _manifest_projection(
     if match is None:
         raise TargetMismatch("legacy manifest Skill name binding is invalid")
     skill_name = match.group(1)
-    if SKILL_NAME_RE.fullmatch(skill_name) is None or repo.rsplit("/", 1)[1] != skill_name:
+    if (
+        SKILL_NAME_RE.fullmatch(skill_name) is None
+        or skill_name in {".", ".."}
+        or repo.rsplit("/", 1)[1] != skill_name
+    ):
         raise TargetMismatch("legacy manifest Skill name differs from canonical_repo")
     projection = bundle.envelope["manifest_projection"]
     required_absent = projection.get("required_absent_fields")
@@ -558,7 +569,7 @@ def _legacy_sections(
     ):
         if visible.count(phrase) != 1:
             raise TargetMismatch(f"legacy {kind} ownership signature is missing or ambiguous")
-    if CANONICAL_BEGIN in visible or CANONICAL_END in visible:
+    if CANONICAL_BEGIN in text or CANONICAL_END in text:
         raise TargetMismatch("canonical Harness marker already coexists with legacy sections")
 
     spans = {

@@ -72,7 +72,10 @@
         "properties": {
           "target_path": { "$ref": "#/$defs/relativePath" },
           "kind": { "enum": ["absent", "exact", "rendered_template", "manifest_state"] },
-          "mode": { "enum": ["absent", "100644", "100755", "virtual"] },
+          "mode": {
+            "description": "Declared target Git mode. For exact files it must equal both artifact and construction-source Git mode unless the single notice materialization exception is declared.",
+            "enum": ["absent", "100644", "100755", "virtual"]
+          },
           "ownership": { "const": "wrapper_managed" },
           "artifact_path": { "$ref": "#/$defs/relativePath" },
           "source_path": { "$ref": "#/$defs/relativePath" },
@@ -96,11 +99,50 @@
                   "render_at_fresh_attach",
                   "manifest_owned_state"
                 ]
+              },
+              "mode_policy": {
+                "description": "Narrow exception that copies the reviewed 100644 notice source/artifact and declares the installed target executable.",
+                "const": "set_declared_executable"
               }
             }
           },
           "owned_state": { "type": "object" }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["target_path"],
+              "properties": {
+                "target_path": {
+                  "const": ".evozeus-wrapper/scripts/evozeus_notice.py"
+                }
+              }
+            },
+            "then": {
+              "required": ["artifact_path", "source_path", "source_binding"],
+              "properties": {
+                "kind": { "const": "exact" },
+                "mode": { "const": "100755" },
+                "artifact_path": { "const": "artifacts/scripts/evozeus_notice.py" },
+                "source_path": { "const": "scripts/evozeus_notice.py" },
+                "materialization": {
+                  "required": ["policy", "mode_policy"],
+                  "properties": {
+                    "policy": { "const": "copy_exact" },
+                    "mode_policy": { "const": "set_declared_executable" }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "materialization": {
+                  "not": { "required": ["mode_policy"] }
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "protected_business_surfaces": {

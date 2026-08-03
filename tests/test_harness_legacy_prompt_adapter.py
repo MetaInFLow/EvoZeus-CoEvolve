@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from scripts import evozeus_harness_legacy_prompt_adapter as adapter
 
@@ -352,6 +353,47 @@ def test_code_fenced_lookalikes_are_business_bytes_not_wrapper_ambiguity(
     ]
 
 
+def test_backtick_in_backtick_fence_info_does_not_hide_visible_duplicate_heading(
+    bundle: adapter.FrozenLegacyPromptBundle,
+) -> None:
+    surface = SURFACE_PATH.read_bytes()
+    anchor = "把简短的企业描述转化为紧凑、可决策、可验证的 AI 场景诊断。默认使用中文；用户明确使用其他语言时跟随用户语言。\n"
+    invalid_fence = """
+```markdown`not-a-fence
+## EvoZeus-CoEvolve 状态检查
+```
+"""
+    surface = surface.replace(
+        anchor.encode("utf-8"),
+        (anchor + invalid_fence).encode("utf-8"),
+        1,
+    )
+
+    result = _plan(surface, bundle=bundle)
+    _assert_manual(result, "legacy status heading is missing or ambiguous")
+
+
+def test_canonical_marker_inside_valid_fence_is_manual_zero_write(
+    bundle: adapter.FrozenLegacyPromptBundle,
+) -> None:
+    surface = SURFACE_PATH.read_bytes()
+    anchor = "把简短的企业描述转化为紧凑、可决策、可验证的 AI 场景诊断。默认使用中文；用户明确使用其他语言时跟随用户语言。\n"
+    fenced_marker = """
+```markdown
+<!-- evozeus-harness-entry:v1 -->
+<!-- /evozeus-harness-entry -->
+```
+"""
+    surface = surface.replace(
+        anchor.encode("utf-8"),
+        (anchor + fenced_marker).encode("utf-8"),
+        1,
+    )
+
+    result = _plan(surface, bundle=bundle)
+    _assert_manual(result, "canonical Harness marker already coexists")
+
+
 @pytest.mark.parametrize(
     ("mutate", "reason"),
     [
@@ -534,6 +576,26 @@ def test_manifest_projection_drift_fails_closed(
 
 
 @pytest.mark.parametrize(
+    ("repo", "skill_name"),
+    [
+        ("./skill", "skill"),
+        ("../skill", "skill"),
+        ("owner/.", "."),
+        ("owner/..", ".."),
+    ],
+)
+def test_manifest_rejects_dot_repository_components(
+    bundle: adapter.FrozenLegacyPromptBundle,
+    repo: str,
+    skill_name: str,
+) -> None:
+    surface = SURFACE_PATH.read_bytes()
+    manifest = _render_manifest(repo=repo, skill_name=skill_name)
+    result = _plan(surface, bundle=bundle, manifest=manifest)
+    _assert_manual(result, "legacy manifest canonical_repo is invalid")
+
+
+@pytest.mark.parametrize(
     ("path", "state", "reason"),
     [
         (
@@ -637,12 +699,75 @@ def test_manual_proof_is_deterministic_and_zero_write(
     )
 
 
-def test_contract_documents_are_strict_json_objects() -> None:
-    for path in (
-        ROOT / "contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json",
-        ROOT / "contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json",
-        ROOT / "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",
-        ROOT / "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-    ):
-        value = json.loads(path.read_text(encoding="utf-8"))
-        assert isinstance(value, dict)
+def test_published_schemas_validate_the_frozen_documents() -> None:
+    pairs = (
+        (
+            ROOT / "contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json",
+            ROOT / "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",
+        ),
+        (
+            ROOT / "contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json",
+            ROOT / "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
+        ),
+    )
+    for schema_path, document_path in pairs:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        document = json.loads(document_path.read_text(encoding="utf-8"))
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(document)
+
+
+@pytest.mark.parametrize(
+    ("document_name", "mutate"),
+    [
+        (
+            "envelope",
+            lambda value: {key: item for key, item in value.items() if key != "files"},
+        ),
+        (
+            "envelope",
+            lambda value: {**value, "unknown": True},
+        ),
+        (
+            "envelope",
+            lambda value: {**value, "envelope_version": 1},
+        ),
+        (
+            "adapter",
+            lambda value: {**value, "adapter_version": "1.0.0"},
+        ),
+        (
+            "adapter",
+            lambda value: {
+                **value,
+                "templates": [value["templates"][0], value["templates"][0], value["templates"][2]],
+            },
+        ),
+        (
+            "adapter",
+            lambda value: {
+                **value,
+                "implementation": {**value["implementation"], "unknown": True},
+            },
+        ),
+    ],
+    ids=[
+        "missing-required-envelope-field",
+        "unknown-envelope-field",
+        "non-string-envelope-version",
+        "non-semver-adapter-version",
+        "duplicate-template-kind",
+        "unknown-implementation-field",
+    ],
+)
+def test_published_schemas_reject_contract_drift(document_name: str, mutate) -> None:
+    if document_name == "envelope":
+        schema_path = ROOT / "contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json"
+        document_path = ROOT / "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json"
+    else:
+        schema_path = ROOT / "contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json"
+        document_path = ROOT / "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    document = json.loads(document_path.read_text(encoding="utf-8"))
+
+    assert list(Draft202012Validator(schema).iter_errors(mutate(document)))

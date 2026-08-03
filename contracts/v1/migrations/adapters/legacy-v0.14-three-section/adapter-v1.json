@@ -4,7 +4,7 @@
   "adapter_version": "v1.0.0",
   "implementation": {
     "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
-    "sha256": "81e14a519485042a5a1a5c38693f1ce1117706d1060a02d0f86abb43fb82728d",
+    "sha256": "403143476b38b0fe721c86f8b2937844606aa01bf409e141d22ffd8604d9c85d",
     "entrypoint": "plan_supervised_legacy_prompt_transform"
   },
   "source_envelope": {

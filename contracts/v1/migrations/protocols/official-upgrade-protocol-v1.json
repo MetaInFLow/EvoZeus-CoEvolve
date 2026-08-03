@@ -5,7 +5,8 @@
   "allowed_operation_types": [
     "create_exact",
     "replace_exact",
-    "manifest_patch"
+    "manifest_patch",
+    "supervised_transform"
   ],
   "authority": {
     "discovery_is_authority": false,
@@ -21,7 +22,10 @@
       "contracts/v1/migrations/schemas/",
       "contracts/v1/migrations/history/*/v*/",
       "contracts/v1/migrations/profiles/*-v*.json",
+      "contracts/v1/migrations/adapters/legacy-v0.14-three-section/",
+      "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/",
       "scripts/evozeus_official_upgrade_verify.py",
+      "scripts/evozeus_harness_legacy_prompt_adapter.py",
       "scripts/evozeus_harness_migration.py",
       "scripts/evozeus_wrapper.py",
       "scripts/evozeus_wrapper_global_hook.py",
@@ -36,6 +40,10 @@
         "scripts/evozeus_wrapper_preflight.py"
       ]
     },
+    "protected_legacy_data_prefixes": [
+      "contracts/v1/migrations/adapters/legacy-v0.14-three-section/",
+      "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/"
+    ],
     "pull_request_classification": {
       "authority_rotation_prefixes": [
         ".github/workflows/",
@@ -44,6 +52,7 @@
       ],
       "authority_rotation_paths": [
         "scripts/evozeus_official_upgrade_verify.py",
+        "scripts/evozeus_harness_legacy_prompt_adapter.py",
         "scripts/evozeus_harness_migration.py",
         "scripts/evozeus_wrapper.py",
         "scripts/evozeus_wrapper_global_hook.py",
@@ -65,6 +74,7 @@
     "rendered_without_receipt": "preserve_byte_exact",
     "ledger": "deterministic_no_date_no_self_reference",
     "ledger_history": "one_current_hop_plus_zero_or_more_prior_records",
-    "unknown_or_scattered": "manual_migration_required_zero_write"
+    "unknown_or_scattered": "manual_migration_required_zero_write",
+    "supervised_legacy": "exact_envelope_exact_plan_one_time_approval_no_runtime_apply"
   }
 }

@@ -25,14 +25,15 @@
     },
     "allowed_operation_types": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 4,
+      "maxItems": 4,
       "uniqueItems": true,
       "items": {
         "enum": [
           "create_exact",
           "replace_exact",
-          "manifest_patch"
+          "manifest_patch",
+          "supervised_transform"
         ]
       }
     },
@@ -58,6 +59,9 @@
       "required": [
         "execution_model",
         "protected_base_paths",
+        "construction_source_allowlist",
+        "protected_legacy_data_prefixes",
+        "pull_request_classification",
         "reject_symlinks",
         "reject_submodules",
         "reject_unknown_operations"
@@ -68,6 +72,62 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
+        },
+        "construction_source_allowlist": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prefixes", "paths"],
+          "properties": {
+            "prefixes": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          }
+        },
+        "protected_legacy_data_prefixes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "pull_request_classification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "authority_rotation_prefixes",
+            "authority_rotation_paths",
+            "data_candidate_prefixes",
+            "data_candidate_paths"
+          ],
+          "properties": {
+            "authority_rotation_prefixes": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "authority_rotation_paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "data_candidate_prefixes": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "data_candidate_paths": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          }
         },
         "reject_symlinks": { "const": true },
         "reject_submodules": { "const": true },
@@ -82,14 +142,18 @@
         "rendered_without_receipt",
         "ledger",
         "ledger_history",
-        "unknown_or_scattered"
+        "unknown_or_scattered",
+        "supervised_legacy"
       ],
       "properties": {
         "protected_business_surfaces": { "const": "byte_exact" },
         "rendered_without_receipt": { "const": "preserve_byte_exact" },
         "ledger": { "const": "deterministic_no_date_no_self_reference" },
         "ledger_history": { "const": "one_current_hop_plus_zero_or_more_prior_records" },
-        "unknown_or_scattered": { "const": "manual_migration_required_zero_write" }
+        "unknown_or_scattered": { "const": "manual_migration_required_zero_write" },
+        "supervised_legacy": {
+          "const": "exact_envelope_exact_plan_one_time_approval_no_runtime_apply"
+        }
       }
     }
   }
