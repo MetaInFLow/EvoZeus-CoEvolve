@@ -16,6 +16,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
 PROTOCOL_SHA256 = "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce"
+CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 
 
 def _sha256(value: bytes) -> str:
@@ -82,6 +83,64 @@ def _protocol_v1_base(tmp_path: Path) -> Path:
     return root
 
 
+def _candidate_contract_role(relative: str) -> str:
+    if relative.startswith("migrations/history/"):
+        return (
+            "immutable-target-closure"
+            if relative.endswith("/closure.json")
+            else "immutable-target-closure-artifact"
+        )
+    if relative.startswith("migrations/profiles/"):
+        return "official-upgrade-profile"
+    raise AssertionError(f"test candidate adds an unknown contract path: {relative}")
+
+
+def _bind_candidate_manifest(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+    *,
+    new_roles: dict[str, str] | None = None,
+) -> None:
+    manifest = json.loads((root / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    entries = {entry["path"]: dict(entry) for entry in manifest["files"]}
+    for relative, entry in list(entries.items()):
+        repository_path = "contracts/v1/" + relative
+        change = changes.get(repository_path)
+        if change is not None and change.status == "deleted":
+            del entries[relative]
+            continue
+        if change is not None:
+            assert change.loader is not None
+            data = change.loader()
+        else:
+            data = (root / repository_path).read_bytes()
+        entry["sha256"] = _sha256(data)
+    for repository_path, change in changes.items():
+        if (
+            not repository_path.startswith("contracts/v1/")
+            or repository_path == CONTRACT_MANIFEST_REL
+            or change.status == "deleted"
+        ):
+            continue
+        relative = repository_path.removeprefix("contracts/v1/")
+        if relative in entries:
+            continue
+        assert change.loader is not None
+        role = (new_roles or {}).get(relative)
+        if role is None:
+            role = _candidate_contract_role(relative)
+        entries[relative] = {
+            "path": relative,
+            "sha256": _sha256(change.loader()),
+            "role": role,
+        }
+    manifest["files"] = [entries[path] for path in sorted(entries)]
+    changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+        CONTRACT_MANIFEST_REL,
+        _json_bytes(manifest),
+    )
+
+
 def _candidate_star(
     root: Path,
 ) -> tuple[
@@ -132,11 +191,16 @@ def _candidate_star(
         source_path = item.get("source_path")
         if source_path is not None and item.get("source_binding") == "construction_revision":
             source_data = data if source_path == skill_source else (root / source_path).read_bytes()
-            source_mode = (
-                "100755"
-                if (root / source_path).stat().st_mode & 0o100
-                else "100644"
+            source_mode = item["mode"]
+            base_mode = (
+                "100755" if (root / source_path).stat().st_mode & 0o100 else "100644"
             )
+            if source_path in changes or source_mode != base_mode:
+                changes[source_path] = _candidate_blob(
+                    source_path,
+                    source_data,
+                    mode=source_mode,
+                )
             construction_files[source_path] = verifier.ConstructionBlob(
                 path=source_path,
                 mode=source_mode,
@@ -270,6 +334,7 @@ def _candidate_star(
         verifier.PROFILES_CURRENT_REL,
         _json_bytes(profile_pointer),
     )
+    _bind_candidate_manifest(root, changes)
 
     def resolver(
         repository: str,
@@ -286,6 +351,77 @@ def _candidate_star(
         )
 
     return changes, resolver, head_sha
+
+
+def _relocate_candidate_closure(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+    destination: str,
+) -> None:
+    source = "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    source_parent = str(Path(source).parent)
+    destination_parent = str(Path(destination).parent)
+    new_roles: dict[str, str] = {}
+    for path in [item for item in changes if item.startswith(source_parent + "/")]:
+        blob = changes.pop(path)
+        assert blob.loader is not None
+        relocated = destination_parent + path.removeprefix(source_parent)
+        changes[relocated] = _candidate_blob(
+            relocated,
+            blob.loader(),
+            status=blob.status,
+            mode=blob.mode,
+            object_type=blob.object_type,
+        )
+        new_roles[relocated.removeprefix("contracts/v1/")] = (
+            "immutable-target-closure"
+            if path == source
+            else "immutable-target-closure-artifact"
+        )
+
+    destination_relative = destination.removeprefix("contracts/v1/")
+    source_relative = source.removeprefix("contracts/v1/")
+    history_pointer = json.loads(
+        changes[verifier.HISTORY_CURRENT_REL].loader().decode("utf-8")
+    )
+    history_pointer["entries"][0]["path"] = destination_relative
+    changes[verifier.HISTORY_CURRENT_REL] = _candidate_blob(
+        verifier.HISTORY_CURRENT_REL,
+        _json_bytes(history_pointer),
+    )
+
+    profile_pointer = json.loads(
+        changes[verifier.PROFILES_CURRENT_REL].loader().decode("utf-8")
+    )
+    for entry in profile_pointer["entries"]:
+        profile_path = "contracts/v1/" + entry["path"]
+        profile_blob = changes[profile_path]
+        assert profile_blob.loader is not None
+        profile = json.loads(profile_blob.loader().decode("utf-8"))
+        profile["to_closure"]["path"] = destination_relative
+        for operation in profile["operations"]:
+            postimage = operation.get("postimage")
+            if isinstance(postimage, dict) and isinstance(
+                postimage.get("artifact_path"), str
+            ):
+                postimage["artifact_path"] = postimage["artifact_path"].replace(
+                    str(Path(source_relative).parent),
+                    str(Path(destination_relative).parent),
+                    1,
+                )
+        profile_data = _json_bytes(profile)
+        changes[profile_path] = _candidate_blob(
+            profile_path,
+            profile_data,
+            status=profile_blob.status,
+            mode=profile_blob.mode,
+        )
+        entry["sha256"] = _sha256(profile_data)
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(profile_pointer),
+    )
+    _bind_candidate_manifest(root, changes, new_roles=new_roles)
 
 
 def _profile() -> tuple[str, dict[str, object]]:
@@ -810,17 +946,233 @@ def test_candidate_rotates_to_a_direct_to_current_profile_star(
     assert report["candidate_closure_version"] == "v1.2.0"
 
 
+def test_candidate_construction_source_mode_must_equal_closure_mode(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, valid_resolver, head_sha = _candidate_star(root)
+    source_path = "scripts/evozeus_notice.py"
+    source = changes[source_path]
+    assert source.loader is not None
+    changes[source_path] = _candidate_blob(
+        source_path,
+        source.loader(),
+        mode="100644",
+    )
+
+    def mismatched_mode_resolver(
+        repository: str,
+        revision: str,
+        resolved_head: str,
+        source_paths: frozenset[str],
+    ) -> verifier.ConstructionRevisionEvidence:
+        evidence = valid_resolver(repository, revision, resolved_head, source_paths)
+        files = dict(evidence.files)
+        historical = files[source_path]
+        files[source_path] = verifier.ConstructionBlob(
+            path=source_path,
+            mode="100644",
+            data=historical.data,
+        )
+        return verifier.ConstructionRevisionEvidence(
+            repository=evidence.repository,
+            revision=evidence.revision,
+            head_sha=evidence.head_sha,
+            is_ancestor=evidence.is_ancestor,
+            files=files,
+        )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="construction source mode differs from target closure",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=mismatched_mode_resolver,
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "contracts/v1/migrations/history/harness-skill/v1.2.0/artifacts/unbound.json",
+        "contracts/v1/migrations/profiles/unbound-v1.json",
+    ],
+)
+def test_candidate_rejects_manifest_bound_but_inactive_migration_files(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    changes[path] = _candidate_blob(path, b"{}\n", status="added")
+    _bind_candidate_manifest(root, changes)
+
+    with pytest.raises(verifier.VerificationError, match="migration file is not bound"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize("fault", ["incomplete", "wrong_hash"])
+def test_candidate_contract_manifest_is_complete_and_hash_bound(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    if fault == "incomplete":
+        changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+            CONTRACT_MANIFEST_REL,
+            (root / CONTRACT_MANIFEST_REL).read_bytes(),
+        )
+    else:
+        manifest_blob = changes[CONTRACT_MANIFEST_REL]
+        assert manifest_blob.loader is not None
+        manifest = json.loads(manifest_blob.loader().decode("utf-8"))
+        entry = next(
+            item
+            for item in manifest["files"]
+            if item["path"]
+            == "migrations/history/harness-skill/v1.2.0/closure.json"
+        )
+        entry["sha256"] = "0" * 64
+        changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+            CONTRACT_MANIFEST_REL,
+            _json_bytes(manifest),
+        )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="manifest (does not exactly enumerate|digest mismatch)",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "migrations/history/harness-skill/current.json",
+        "migrations/history/harness-skill/v1.2.0/closure.json",
+        (
+            "migrations/history/harness-skill/v1.2.0/"
+            "artifacts/scripts/evozeus_notice.py"
+        ),
+        "migrations/profiles/canonical-v1.1-to-v1.2-v1.json",
+    ],
+)
+def test_candidate_contract_manifest_roles_are_not_candidate_defined(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    manifest_blob = changes[CONTRACT_MANIFEST_REL]
+    assert manifest_blob.loader is not None
+    manifest = json.loads(manifest_blob.loader().decode("utf-8"))
+    entry = next(item for item in manifest["files"] if item["path"] == relative)
+    entry["role"] = "candidate-defined-role"
+    changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+        CONTRACT_MANIFEST_REL,
+        _json_bytes(manifest),
+    )
+
+    with pytest.raises(verifier.VerificationError, match="manifest role mismatch"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "contracts/v1/relocated/closure.json",
+        "contracts/v1/migrations/history/harness-skill/v9.9.9/closure.json",
+    ],
+)
+def test_candidate_current_closure_path_is_version_canonical(
+    tmp_path: Path,
+    destination: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    _relocate_candidate_closure(root, changes, destination)
+
+    with pytest.raises(verifier.VerificationError, match="closure path is not canonical"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_active_profile_must_remain_in_profiles_directory(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    pointer = json.loads(changes[verifier.PROFILES_CURRENT_REL].loader().decode("utf-8"))
+    entry = pointer["entries"][0]
+    source = "contracts/v1/" + entry["path"]
+    destination = "contracts/v1/relocated/active-profile.json"
+    profile_blob = changes.pop(source)
+    assert profile_blob.loader is not None
+    changes[destination] = _candidate_blob(
+        destination,
+        profile_blob.loader(),
+        status=profile_blob.status,
+        mode=profile_blob.mode,
+    )
+    entry["path"] = destination.removeprefix("contracts/v1/")
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(pointer),
+    )
+    _bind_candidate_manifest(
+        root,
+        changes,
+        new_roles={
+            destination.removeprefix("contracts/v1/"): "official-upgrade-profile"
+        },
+    )
+
+    with pytest.raises(verifier.VerificationError, match="profile path is not canonical"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
 def test_candidate_star_must_cover_base_current_and_prior_active_from_closures(
     tmp_path: Path,
 ) -> None:
     root = _protocol_v1_base(tmp_path)
     changes, resolver, head_sha = _candidate_star(root)
     pointer = json.loads(changes[verifier.PROFILES_CURRENT_REL].loader().decode("utf-8"))
+    removed_profile = pointer["entries"][0]
     pointer["entries"] = pointer["entries"][1:]
+    changes.pop("contracts/v1/" + removed_profile["path"])
     changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
         verifier.PROFILES_CURRENT_REL,
         _json_bytes(pointer),
     )
+    _bind_candidate_manifest(root, changes)
 
     with pytest.raises(verifier.VerificationError, match="historical coverage"):
         verifier.verify_candidate(
@@ -867,7 +1219,7 @@ def test_candidate_construction_revision_requires_ancestor_tree_bytes_and_mode(
 
     with pytest.raises(
         verifier.VerificationError,
-        match="ancestor|differs from construction revision",
+        match="ancestor|differs from (construction revision|target closure)",
     ):
         verifier.verify_candidate(
             verifier.FilesystemStore(root),

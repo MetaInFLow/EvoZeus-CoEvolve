@@ -23,6 +23,7 @@ from typing import Any, Callable, Protocol
 PROTOCOL_REL = "contracts/v1/migrations/protocols/official-upgrade-protocol-v1.json"
 HISTORY_CURRENT_REL = "contracts/v1/migrations/history/harness-skill/current.json"
 PROFILES_CURRENT_REL = "contracts/v1/migrations/profiles/current.json"
+CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
 BUNDLE_PREFIX = "contracts/v1/"
@@ -876,6 +877,92 @@ def _protected_candidate_change(
     return False
 
 
+def _contract_manifest_files(
+    store: BlobStore,
+    label: str,
+) -> dict[str, dict[str, str]]:
+    manifest = _json_file(store, CONTRACT_MANIFEST_REL, label)
+    if manifest.get("schema_version") != "evozeus.coevolve.contract-manifest.v1":
+        raise VerificationError(f"{label} schema identity is invalid")
+    if manifest.get("bundle_id") != "evozeus-coevolve":
+        raise VerificationError(f"{label} bundle identity is invalid")
+    if manifest.get("source_repository") != "MetaInFLow/EvoZeus-CoEvolve":
+        raise VerificationError(f"{label} source repository is invalid")
+    raw_files = manifest.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise VerificationError(f"{label} files are missing")
+    files: dict[str, dict[str, str]] = {}
+    for item in raw_files:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256", "role"}:
+            raise VerificationError(f"{label} contains an invalid file entry")
+        path = _safe_relative(item.get("path"), f"{label} file path")
+        if path == "manifest.json" or path in files:
+            raise VerificationError(f"{label} contains a duplicate or recursive path: {path}")
+        role = item.get("role")
+        if not isinstance(role, str) or not role:
+            raise VerificationError(f"{label} file role is invalid: {path}")
+        files[path] = {
+            "sha256": _require_sha256(item.get("sha256"), f"{label} file digest"),
+            "role": role,
+        }
+    return files
+
+
+def _verify_candidate_contract_manifest(
+    base: FilesystemStore,
+    candidate: CandidateStore,
+    changes: dict[str, CandidateBlob],
+) -> dict[str, dict[str, str]]:
+    base_files = _contract_manifest_files(base, "trusted base contract manifest")
+    candidate_files = _contract_manifest_files(candidate, "candidate contract manifest")
+    expected_paths = set(base_files)
+    for path, change in changes.items():
+        if not path.startswith(BUNDLE_PREFIX) or path == CONTRACT_MANIFEST_REL:
+            continue
+        relative = path.removeprefix(BUNDLE_PREFIX)
+        if change.status == "deleted":
+            expected_paths.discard(relative)
+        else:
+            expected_paths.add(relative)
+    if set(candidate_files) != expected_paths:
+        raise VerificationError(
+            "candidate contract manifest does not exactly enumerate the candidate bundle"
+        )
+    for relative, item in candidate_files.items():
+        base_item = base_files.get(relative)
+        if base_item is not None and item["role"] != base_item["role"]:
+            raise VerificationError(
+                f"candidate contract manifest role mismatch: {relative}: "
+                f"expected={base_item['role']}; actual={item['role']}"
+            )
+        actual = _sha256(candidate.read_bytes(BUNDLE_PREFIX + relative))
+        if actual != item["sha256"]:
+            raise VerificationError(
+                f"candidate contract manifest digest mismatch: {relative}: "
+                f"expected={item['sha256']}; actual={actual}"
+            )
+    return candidate_files
+
+
+def _require_candidate_manifest_role(
+    manifest_files: dict[str, dict[str, str]],
+    repository_path: str,
+    expected_role: str,
+) -> None:
+    if not repository_path.startswith(BUNDLE_PREFIX):
+        raise VerificationError(
+            f"candidate contract path is outside its manifest: {repository_path}"
+        )
+    relative = repository_path.removeprefix(BUNDLE_PREFIX)
+    item = manifest_files.get(relative)
+    if item is None or item["role"] != expected_role:
+        actual_role = None if item is None else item["role"]
+        raise VerificationError(
+            f"candidate contract manifest role mismatch: {relative}: "
+            f"expected={expected_role}; actual={actual_role}"
+        )
+
+
 def verify_candidate(
     base: FilesystemStore,
     changes: dict[str, CandidateBlob],
@@ -901,6 +988,7 @@ def verify_candidate(
                 f"candidate adds a symlink, submodule or unsupported object: {path}"
             )
     candidate = CandidateStore(base, changes)
+    candidate_manifest_files = _verify_candidate_contract_manifest(base, candidate, changes)
     report = verify_catalog(candidate)
 
     base_history = load_pointer(
@@ -921,6 +1009,15 @@ def verify_candidate(
         candidate_history["path"],
         "candidate current closure path",
     )
+    expected_closure_path = (
+        "contracts/v1/migrations/history/harness-skill/"
+        f"{candidate_history['version']}/closure.json"
+    )
+    if candidate_closure_path != expected_closure_path:
+        raise VerificationError(
+            "candidate current closure path is not canonical for its version: "
+            f"expected={expected_closure_path}; actual={candidate_closure_path}"
+        )
     if base.exists(candidate_closure_path):
         raise VerificationError("candidate current closure must use a new immutable version path")
     candidate_closure, candidate_entries = load_closure(
@@ -928,6 +1025,31 @@ def verify_candidate(
         candidate_closure_path,
         expected_sha256=candidate_history["sha256"],
     )
+    _require_candidate_manifest_role(
+        candidate_manifest_files,
+        HISTORY_CURRENT_REL,
+        "current-target-closure-pointer",
+    )
+    _require_candidate_manifest_role(
+        candidate_manifest_files,
+        candidate_closure_path,
+        "immutable-target-closure",
+    )
+    bound_history_paths = {HISTORY_CURRENT_REL, candidate_closure_path}
+    for item in candidate_entries.values():
+        artifact_relative = item.get("artifact_path")
+        if artifact_relative is not None:
+            artifact_path = _relative_to_document(
+                candidate_closure_path,
+                artifact_relative,
+                "candidate closure artifact path",
+            )
+            _require_candidate_manifest_role(
+                candidate_manifest_files,
+                artifact_path,
+                "immutable-target-closure-artifact",
+            )
+            bound_history_paths.add(artifact_path)
     base_profiles = load_pointer(
         base,
         PROFILES_CURRENT_REL,
@@ -937,6 +1059,11 @@ def verify_candidate(
         candidate,
         PROFILES_CURRENT_REL,
         "official-upgrade-current-profiles",
+    )
+    _require_candidate_manifest_role(
+        candidate_manifest_files,
+        PROFILES_CURRENT_REL,
+        "current-official-upgrade-profile-pointer",
     )
     base_closure_path = _bundle_relative(base_history["path"], "base current closure path")
     base_from_paths: set[str] = set()
@@ -951,8 +1078,19 @@ def verify_candidate(
         base_from_paths.add(base_profile["_verified_from_path"])
     required_from_paths = {base_closure_path, *base_from_paths}
     candidate_from_paths: set[str] = set()
+    bound_profile_paths = {PROFILES_CURRENT_REL}
     for entry in candidate_profiles:
         profile_path = _bundle_relative(entry["path"], "candidate profile path")
+        if not profile_path.startswith("contracts/v1/migrations/profiles/"):
+            raise VerificationError(
+                f"candidate active profile path is not canonical: {profile_path}"
+            )
+        bound_profile_paths.add(profile_path)
+        _require_candidate_manifest_role(
+            candidate_manifest_files,
+            profile_path,
+            "official-upgrade-profile",
+        )
         if base.exists(profile_path):
             raise VerificationError(
                 f"candidate active profile must use a new immutable path: {profile_path}"
@@ -971,6 +1109,19 @@ def verify_candidate(
                 "candidate direct-to-current profile must start at immutable base history"
             )
         candidate_from_paths.add(from_path)
+    for path, change in changes.items():
+        if change.status == "deleted":
+            continue
+        if (
+            path.startswith("contracts/v1/migrations/history/")
+            and path not in bound_history_paths
+        ) or (
+            path.startswith("contracts/v1/migrations/profiles/")
+            and path not in bound_profile_paths
+        ):
+            raise VerificationError(
+                f"candidate migration file is not bound by current closure/profile pointers: {path}"
+            )
     missing_history = sorted(required_from_paths - candidate_from_paths)
     if missing_history:
         raise VerificationError(
@@ -979,7 +1130,7 @@ def verify_candidate(
         )
 
     bound_sources: set[str] = set()
-    construction_sources: set[str] = set()
+    construction_source_modes: dict[str, str] = {}
     for target_path, item in candidate_entries.items():
         source_path = item.get("source_path")
         artifact_relative = item.get("artifact_path")
@@ -1001,7 +1152,13 @@ def verify_candidate(
             )
         bound_sources.add(source_path)
         if item.get("source_binding") == "construction_revision":
-            construction_sources.add(source_path)
+            expected_mode = item["mode"]
+            prior_mode = construction_source_modes.get(source_path)
+            if prior_mode is not None and prior_mode != expected_mode:
+                raise VerificationError(
+                    f"candidate construction source has conflicting closure modes: {source_path}"
+                )
+            construction_source_modes[source_path] = expected_mode
     revision = candidate_closure["source"]["construction_revision"]
     if construction_resolver is None:
         raise VerificationError("candidate construction revision evidence is unavailable")
@@ -1009,7 +1166,7 @@ def verify_candidate(
         repository,
         revision,
         head_sha,
-        frozenset(construction_sources),
+        frozenset(construction_source_modes),
     )
     if (
         evidence.repository != repository
@@ -1020,16 +1177,20 @@ def verify_candidate(
         raise VerificationError(
             "candidate construction revision is not a verified same-repository ancestor"
         )
-    if set(evidence.files) != construction_sources:
+    if set(evidence.files) != set(construction_source_modes):
         raise VerificationError("candidate construction revision source evidence is incomplete")
     total_construction_bytes = 0
-    for source_path in sorted(construction_sources):
+    for source_path in sorted(construction_source_modes):
         historical = evidence.files[source_path]
         if historical.path != source_path:
             raise VerificationError("candidate construction source path identity is invalid")
         if historical.mode not in ALLOWED_BLOB_MODES:
             raise VerificationError(
                 f"candidate construction source mode is invalid: {source_path}"
+            )
+        if historical.mode != construction_source_modes[source_path]:
+            raise VerificationError(
+                f"candidate construction source mode differs from target closure: {source_path}"
             )
         total_construction_bytes += len(historical.data)
         if len(historical.data) > MAX_BLOB_BYTES or total_construction_bytes > MAX_TOTAL_BLOB_BYTES:
