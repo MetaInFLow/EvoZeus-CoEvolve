@@ -1,0 +1,182 @@
+name: EvoZeus Wrapper Preflight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".evozeus-wrapper/**"
+      - ".codex/hooks.json"
+      - ".github/workflows/evozeus-wrapper-preflight.yml"
+  workflow_dispatch:
+  issues:
+    types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "evozeus-wrapper-pages"
+  cancel-in-progress: false
+
+jobs:
+  validation:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Verify pinned contributor branch snapshot
+        run: |
+          python3 .evozeus-wrapper/scripts/evozeus_branch_consumer.py verify-snapshot --json
+          node --check .evozeus-wrapper/scripts/evozeus-branch-preflight.mjs
+      - name: Validate wrapper maintainer structure
+        run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py maintainer
+      - name: Report Pages deployment mode
+        env:
+          PAGES_ENABLED: ${{ vars.EVOZEUS_PAGES_ENABLED }}
+        run: |
+          if [ "$PAGES_ENABLED" = "true" ]; then
+            echo "GitHub Pages deployment is enabled for this repository."
+          else
+            echo "::notice::GitHub Pages deployment is disabled; wrapper validation passed in repository-only mode."
+          fi
+
+  issue:
+    if: github.event_name == 'issues'
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Write issue body
+        if: github.event.action == 'opened' || github.event.action == 'edited'
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path("/tmp/skill-feedback-issue.md").write_text(os.environ.get("ISSUE_BODY", ""), encoding="utf-8")
+          PY
+      - name: Validate issue template content
+        if: github.event.action == 'opened' || github.event.action == 'edited'
+        run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py issue --file /tmp/skill-feedback-issue.md
+      - name: Re-run linked Pull Request gates
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: >-
+          python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py issue-pr-revalidate
+          --github-repository "$GH_REPOSITORY"
+          --github-issue-number "$GH_ISSUE_NUMBER"
+          --json
+
+  pull-request:
+    name: EvoZeus Contributor Gate
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted base validator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Checkout candidate as untrusted data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ github.repository }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: candidate
+          persist-credentials: false
+      - name: Write pull request body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path("/tmp/skill-evolution-pr.md").write_text(os.environ.get("PR_BODY", ""), encoding="utf-8")
+          PY
+      - name: Validate Skill evolution PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_HEAD_REF: ${{ github.head_ref }}
+          GH_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          GH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_PR_ACTOR: ${{ github.event.pull_request.user.login }}
+          GH_PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_BASE_REF: ${{ github.base_ref }}
+          GH_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          python3 trusted-base/.evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr
+          --target candidate
+          --trusted-root trusted-base
+          --pr-body /tmp/skill-evolution-pr.md
+          --github-repository "$GH_REPOSITORY"
+          --github-head-ref "$GH_HEAD_REF"
+          --github-head-repo "$GH_HEAD_REPO"
+          --github-head-sha "$GH_HEAD_SHA"
+          --github-actor "$GH_PR_ACTOR"
+          --github-pr-number "$GH_PR_NUMBER"
+          --github-base-ref "$GH_BASE_REF"
+          --github-base-sha "$GH_BASE_SHA"
+
+  release:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Write release body
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path("/tmp/release-notes.md").write_text(os.environ.get("RELEASE_BODY", ""), encoding="utf-8")
+          PY
+      - name: Validate release notes
+        run: python3 .evozeus-wrapper/scripts/evozeus_wrapper_preflight.py release --tag "${{ github.event.release.tag_name }}" --release-notes /tmp/release-notes.md --skip-gh
+
+  pages:
+    needs: validation
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.EVOZEUS_PAGES_ENABLED == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1
+        with:
+          source: ./.evozeus-wrapper/docs
+          destination: ./_site
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ./_site
+      - name: Deploy dashboard
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

@@ -13,8 +13,9 @@ import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 try:
     from .evozeus_wrapper_global_hook import read_global_hook_status
@@ -25,6 +26,13 @@ except ImportError:
     from evozeus_notice import load_notice_policy, render_notice
     import evozeus_harness_migration as migration_kernel
 
+try:
+    from .evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from .evozeus_branch_consumer import verify_managed_snapshot
+except ImportError:
+    from evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from evozeus_branch_consumer import verify_managed_snapshot
+
 
 STAGE_LABELS = {
     "environment": "[1/5] Environment Diagnosis",
@@ -33,6 +41,8 @@ STAGE_LABELS = {
     "publish": "[4/5] Publish & Reinstall",
     "loop": "[5/5] Continuous Evolution Loop",
 }
+CONTRIBUTOR_GATE_REQUIRED_CHECK = "EvoZeus Contributor Gate"
+GITHUB_ACTIONS_APP_ID = 15368
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"
 GLOBAL_EVOZEUS_PROJECTS_DIR = ".projects"
@@ -63,12 +73,30 @@ TARGET_MIGRATIONS_README = f"{TARGET_EVOINFRA_DIR}/docs/migrations/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
 TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
 TARGET_MIGRATION_CONTRACT = migration_kernel.TARGET_MIGRATION_CONTRACT
 CURRENT_WRAPPER_VERSION = "v0.15.0"
 HARNESS_SKILL_VERSION = "v1.1.0"
 HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
 HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+PR_TEMPLATE_PATH = ".github/pull_request_template.md"
+PR_PLAN_BEGIN = "<!-- evozeus-contributor-branch-plan:v1 -->"
+PR_PLAN_END = "<!-- /evozeus-contributor-branch-plan -->"
+PR_PLAN_HEADING = "## Contributor Branch Plan"
+PR_TEMPLATE_MANAGED_BASELINE_SHA256 = frozenset(
+    {
+        "665b9f164a9174aef97a2a664de1a1f5bb8616069833e86f6fe7a4d62fbd8926",
+        "1b236cfb74c7c02d66aefa301f0a6ca264120587dd8f0a5e22efb152e6973de4",
+        "b0764492f1d39035f7cb4ec8f82b3e66f42b032a5607f14390011d9a0fbc6bd0",
+        "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+        "639527014104f356b03d6dc659a692113e33dfd2662728e05f0c9c0030e8c52f",
+        "82abdbe67712bf623c128184f94f0f43eeee7c35e1a9e7051e0ec9b3b13344e5",
+    }
+)
 HARNESS_SKILL_REQUIRED_TERMS = (
     TARGET_WRAPPER_MANIFEST,
     TARGET_NOTICE_POLICY,
@@ -87,6 +115,152 @@ HARNESS_SKILL_REQUIRED_TERMS = (
     "rollback",
     "普通 Skill 调用不授权",
 )
+CONTRIBUTOR_HARNESS_SKILL_REQUIRED_TERMS = (
+    "evozeus_branch_consumer.py",
+    "--approve-save-plan",
+    "issue_evidence",
+    "permission_evidence",
+    "pull_request_target",
+    "EvoZeus Contributor Gate",
+    "evozeus/harness-vX-to-vY",
+    "隔离 worktree",
+)
+CONTRIBUTOR_BRANCH_TARGETS = frozenset(
+    {
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+        TARGET_PREFLIGHT_SCRIPT,
+        TARGET_HARNESS_SKILL,
+        TARGET_ONBOARDING_GUIDE,
+        PR_TEMPLATE_PATH,
+        ".github/workflows/evozeus-wrapper-preflight.yml",
+    }
+)
+CONTRIBUTOR_BRANCH_ACTIVATION_TARGETS = frozenset(
+    {
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    }
+)
+
+
+def active_harness_state(migration_bundle: dict[str, Any]) -> dict[str, str]:
+    current = migration_bundle.get("current_closure") or {}
+    closure = current.get("closure") if isinstance(current, dict) else None
+    state = closure.get("state") if isinstance(closure, dict) else None
+    required = {
+        "target_wrapper_version",
+        "contract_bundle_version",
+        "harness_skill_version",
+    }
+    if (
+        not isinstance(state, dict)
+        or any(not isinstance(state.get(field), str) for field in required)
+    ):
+        raise ValueError("active Harness closure state is incomplete")
+    return {field: state[field] for field in required}
+
+
+def contributor_branch_gate_active(migration_bundle: dict[str, Any]) -> bool:
+    state = active_harness_state(migration_bundle)
+    current = migration_bundle.get("current_closure") or {}
+    closure = current.get("closure") if isinstance(current, dict) else None
+    files = closure.get("files") if isinstance(closure, dict) else None
+    if not isinstance(files, list):
+        raise ValueError("active Harness closure files are unavailable")
+    target_paths = {
+        item.get("target_path")
+        for item in files
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
+    }
+    version_axis = (
+        state["target_wrapper_version"],
+        state["harness_skill_version"],
+        state["contract_bundle_version"],
+    )
+    if version_axis == ("v0.15.0", "v1.1.0", "v1.2.0"):
+        if target_paths.intersection(CONTRIBUTOR_BRANCH_ACTIVATION_TARGETS):
+            raise ValueError("v1.1 closure cannot partially activate Contributor Branch Gate")
+        return False
+    if version_axis != ("v0.16.0", "v1.2.0", "v1.3.0"):
+        raise ValueError("active Harness closure version axis is unsupported")
+    missing = sorted(CONTRIBUTOR_BRANCH_TARGETS - target_paths)
+    if missing:
+        raise ValueError(
+            "v1.2 closure is missing Contributor Branch Gate targets: "
+            + ", ".join(missing)
+        )
+    return True
+
+
+def active_closure_artifact(
+    migration_bundle: dict[str, Any],
+    target_path: str,
+) -> tuple[bytes, int]:
+    current = migration_bundle.get("current_closure") or {}
+    closure = current.get("closure") if isinstance(current, dict) else None
+    closure_path = current.get("path") if isinstance(current, dict) else None
+    wrapper_root = migration_bundle.get("wrapper_root")
+    if (
+        not isinstance(closure, dict)
+        or not isinstance(closure_path, str)
+        or not isinstance(wrapper_root, Path)
+    ):
+        raise ValueError("active Harness closure artifact authority is unavailable")
+    matches = [
+        item
+        for item in closure.get("files", [])
+        if isinstance(item, dict) and item.get("target_path") == target_path
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"active Harness closure target is not unique: {target_path}")
+    item = matches[0]
+    artifact_relative = item.get("artifact_path")
+    mode_text = item.get("mode")
+    expected_sha256 = item.get("sha256")
+    if (
+        not isinstance(artifact_relative, str)
+        or mode_text not in {"100644", "100755"}
+        or not isinstance(expected_sha256, str)
+    ):
+        raise ValueError(f"active Harness closure artifact is incomplete: {target_path}")
+    artifact = (
+        wrapper_root
+        / PurePosixPath(closure_path).parent
+        / PurePosixPath(artifact_relative)
+    )
+    cursor = artifact
+    while cursor != wrapper_root:
+        if cursor.is_symlink():
+            raise ValueError(
+                f"active Harness closure artifact is unsafe: {target_path}"
+            )
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    try:
+        resolved_root = wrapper_root.resolve(strict=True)
+        resolved = artifact.resolve(strict=True)
+        resolved.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"active Harness closure artifact escapes its bundle: {target_path}"
+        ) from exc
+    if not resolved.is_file():
+        raise ValueError(f"active Harness closure artifact is unsafe: {target_path}")
+    payload = resolved.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise ValueError(f"active Harness closure artifact digest changed: {target_path}")
+    actual_mode = stat.S_IMODE(resolved.stat().st_mode)
+    expected_mode = 0o755 if mode_text == "100755" else 0o644
+    if actual_mode != expected_mode:
+        raise ValueError(f"active Harness closure artifact mode changed: {target_path}")
+    return payload, expected_mode
 
 REQUIRED_WRAPPER_FILES = [
     TARGET_CHANGELOG,
@@ -325,37 +499,54 @@ import hashlib
 import sys
 
 max_source_bytes = 8 * 1024 * 1024
-header = sys.stdin.buffer.read(16)
-if len(header) < 16:
+header = sys.stdin.buffer.read(24)
+if len(header) < 24:
     raise SystemExit("trusted structure payload header is incomplete")
 preflight_size = int.from_bytes(header[:8], "big")
 notice_size = int.from_bytes(header[8:16], "big")
+consumer_size = int.from_bytes(header[16:24], "big")
 if (
     preflight_size < 1
     or preflight_size > max_source_bytes
     or notice_size < 1
     or notice_size > max_source_bytes
+    or consumer_size < 0
+    or consumer_size > max_source_bytes
 ):
     raise SystemExit("trusted structure payload source size is invalid")
-body_size = preflight_size + notice_size
+body_size = preflight_size + notice_size + consumer_size
 body = sys.stdin.buffer.read(body_size)
 if len(body) != body_size or sys.stdin.buffer.read(1):
     raise SystemExit("trusted structure payload length is invalid")
 preflight_source = body[:preflight_size]
-notice_source = body[preflight_size:]
+notice_end = preflight_size + notice_size
+notice_source = body[preflight_size:notice_end]
+consumer_source = body[notice_end:]
 if hashlib.sha256(preflight_source).hexdigest() != sys.argv[1]:
     raise SystemExit("trusted preflight source digest changed")
 if hashlib.sha256(notice_source).hexdigest() != sys.argv[2]:
     raise SystemExit("trusted notice source digest changed")
 notice_sha256 = sys.argv[2]
+consumer_sha256 = sys.argv[3]
+if consumer_size == 0:
+    if consumer_sha256 != "-":
+        raise SystemExit("trusted branch consumer source identity is incomplete")
+elif (
+    consumer_sha256 == "-"
+    or hashlib.sha256(consumer_source).hexdigest() != consumer_sha256
+):
+    raise SystemExit("trusted branch consumer source digest changed")
 label = "/__evozeus_trusted__/evozeus_wrapper_preflight.py"
-sys.argv = [label, *sys.argv[3:]]
+sys.argv = [label, *sys.argv[4:]]
 namespace = {
     "__file__": label,
     "__name__": "__main__",
     "_EVOZEUS_TRUSTED_NOTICE_SOURCE": notice_source,
     "_EVOZEUS_TRUSTED_NOTICE_SHA256": notice_sha256,
 }
+if consumer_size:
+    namespace["_EVOZEUS_TRUSTED_CONTRIBUTOR_SOURCE"] = consumer_source
+    namespace["_EVOZEUS_TRUSTED_CONTRIBUTOR_SHA256"] = consumer_sha256
 exec(compile(preflight_source, label, "exec", dont_inherit=True), namespace)
 """
 
@@ -368,11 +559,15 @@ class _TrustedStructureSnapshot:
         notice_source: bytes,
         preflight_sha256: str,
         notice_sha256: str,
+        consumer_source: bytes | None = None,
+        consumer_sha256: str | None = None,
     ) -> None:
         self.preflight_source = preflight_source
         self.notice_source = notice_source
         self.preflight_sha256 = preflight_sha256
         self.notice_sha256 = notice_sha256
+        self.consumer_source = consumer_source
+        self.consumer_sha256 = consumer_sha256
 
     def verify(self) -> None:
         if (
@@ -392,6 +587,20 @@ class _TrustedStructureSnapshot:
             )
             or hashlib.sha256(self.notice_source).hexdigest()
             != self.notice_sha256
+            or (self.consumer_source is None) != (self.consumer_sha256 is None)
+            or (
+                self.consumer_source is not None
+                and (
+                    not isinstance(self.consumer_source, bytes)
+                    or not (
+                        1
+                        <= len(self.consumer_source)
+                        <= _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+                    )
+                    or hashlib.sha256(self.consumer_source).hexdigest()
+                    != self.consumer_sha256
+                )
+            )
         ):
             raise ValueError("trusted structure source bytes changed")
 
@@ -524,11 +733,22 @@ def _trusted_structure_preflight(
         "100755",
         "100644",
     )
+    consumer = None
+    if contributor_branch_gate_active(migration_bundle):
+        consumer = verified_closure_source(
+            TARGET_BRANCH_CONSUMER_SCRIPT,
+            "100755",
+            "100644",
+        )
     return _TrustedStructureSnapshot(
         preflight_source=preflight,
         notice_source=notice,
         preflight_sha256=hashlib.sha256(preflight).hexdigest(),
         notice_sha256=hashlib.sha256(notice).hexdigest(),
+        consumer_source=consumer,
+        consumer_sha256=(
+            hashlib.sha256(consumer).hexdigest() if consumer is not None else None
+        ),
     )
 
 
@@ -547,12 +767,16 @@ def _run_harness_structure_check(
     environment.pop("EVOZEUS_TRUSTED_NOTICE_SHA256", None)
     preflight_size = len(trusted_preflight.preflight_source).to_bytes(8, "big")
     notice_size = len(trusted_preflight.notice_source).to_bytes(8, "big")
+    consumer_source = trusted_preflight.consumer_source or b""
+    consumer_size = len(consumer_source).to_bytes(8, "big")
     payload = b"".join(
         (
             preflight_size,
             notice_size,
+            consumer_size,
             trusted_preflight.preflight_source,
             trusted_preflight.notice_source,
+            consumer_source,
         )
     )
     try:
@@ -564,6 +788,7 @@ def _run_harness_structure_check(
                 _TRUSTED_STRUCTURE_RUNNER,
                 trusted_preflight.preflight_sha256,
                 trusted_preflight.notice_sha256,
+                trusted_preflight.consumer_sha256 or "-",
                 "structure",
                 "--target",
                 str(target),
@@ -914,7 +1139,7 @@ def require_repo_admin(
             "view",
             origin_repo,
             "--json",
-            "nameWithOwner,viewerPermission,url,visibility",
+            "nameWithOwner,viewerPermission,url,visibility,defaultBranchRef",
         ]
     )
     if result["returncode"] != 0:
@@ -932,8 +1157,62 @@ def require_repo_admin(
         "repository": data.get("nameWithOwner") or origin_repo,
         "url": data.get("url"),
         "visibility": data.get("visibility"),
+        "default_branch": (data.get("defaultBranchRef") or {}).get("name"),
         "viewer_permission": permission,
         "verified": True,
+    }
+
+
+def require_contributor_gate_protection(
+    repository: str,
+    default_branch: str | None,
+    runner=run_command,
+) -> dict[str, Any]:
+    """Fail closed unless the default branch requires the trusted PR gate context."""
+    if not default_branch:
+        raise ValueError("cannot verify Contributor Gate protection without a GitHub default branch")
+    endpoint = (
+        f"repos/{repository}/branches/{quote(default_branch, safe='')}/"
+        "protection/required_status_checks"
+    )
+    result = runner(["gh", "api", endpoint, "--hostname", "github.com"])
+    if result["returncode"] != 0:
+        raise ValueError(
+            "cannot verify default-branch required status checks; configure "
+            f"{CONTRIBUTOR_GATE_REQUIRED_CHECK!r} on {default_branch} before attaching the Harness"
+        )
+    try:
+        data = json.loads(result.get("stdout") or "")
+    except json.JSONDecodeError as exc:
+        raise ValueError("default-branch required status check evidence is invalid") from exc
+    if not isinstance(data, dict):
+        raise ValueError("default-branch required status check evidence is invalid")
+    checks = data.get("checks", [])
+    trusted_check = next(
+        (
+            item
+            for item in checks
+            if isinstance(item, dict)
+            and item.get("context") == CONTRIBUTOR_GATE_REQUIRED_CHECK
+            and item.get("app_id") == GITHUB_ACTIONS_APP_ID
+        ),
+        None,
+    ) if isinstance(checks, list) else None
+    if trusted_check is None:
+        raise ValueError(
+            f"default branch {default_branch} does not require {CONTRIBUTOR_GATE_REQUIRED_CHECK!r} "
+            f"from GitHub Actions app_id={GITHUB_ACTIONS_APP_ID}; configure the exact bound check "
+            "before attaching the Harness"
+        )
+    return {
+        "schema_version": "evozeus.coevolve.required-check-evidence.v1",
+        "repository": repository,
+        "branch": default_branch,
+        "context": CONTRIBUTOR_GATE_REQUIRED_CHECK,
+        "app_id": GITHUB_ACTIONS_APP_ID,
+        "source": "github_branch_protection_api",
+        "verified": True,
+        "writes": False,
     }
 
 
@@ -2040,10 +2319,16 @@ def build_wrapper_manifest(
     migration_bundle = migration_bundle or migration_kernel.load_migration_contract()
     migration_identity = migration_bundle["identity"]
     activation_contract = migration_bundle["contract"]["canonical_activation_block"]
+    harness_state = active_harness_state(migration_bundle)
+    gate_active = contributor_branch_gate_active(migration_bundle)
     effective_managed_files = list(dict.fromkeys([*managed_files, TARGET_HARNESS_SKILL]))
     effective_managed_files = list(
         dict.fromkeys([*effective_managed_files, TARGET_MIGRATION_CONTRACT])
     )
+    if gate_active:
+        effective_managed_files = list(
+            dict.fromkeys([*effective_managed_files, *sorted(CONTRIBUTOR_BRANCH_TARGETS)])
+        )
     default_hook_files = []
     if CODEX_HOOKS_CONFIG in effective_managed_files and CODEX_START_HOOK_SCRIPT in effective_managed_files:
         default_hook_files = [CODEX_HOOKS_CONFIG, CODEX_START_HOOK_SCRIPT]
@@ -2071,7 +2356,7 @@ def build_wrapper_manifest(
         "canonical_repo": repo,
         "instruction_surface": instruction_surface or "SKILL.md",
         "harness_skill_path": TARGET_HARNESS_SKILL,
-        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_version": harness_state["harness_skill_version"],
         "harness_skill_managed": True,
         "migration_contract": {
             "migration_protocol_version": migration_identity["migration_protocol_version"],
@@ -2116,6 +2401,17 @@ def build_wrapper_manifest(
         },
         "integration": effective_integration,
     }
+    if gate_active:
+        manifest["contributor_branch"] = {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        }
     return manifest
 
 
@@ -2358,6 +2654,116 @@ def plan_feedback_audit(target: Path, user_input: str, context: str | None = Non
 
 def _same_file_contents(left: Path, right: Path) -> bool:
     return left.is_file() and right.is_file() and file_sha256(left) == file_sha256(right)
+
+
+def _pr_template_newline(text: str) -> str:
+    return "\r\n" if "\r\n" in text and text.count("\r\n") == text.count("\n") else "\n"
+
+
+def _canonical_pr_plan_block(official_text: str) -> tuple[str, str]:
+    if official_text.count(PR_PLAN_BEGIN) != 1 or official_text.count(PR_PLAN_END) != 1:
+        raise ValueError("official Pull Request template must contain one managed Contributor Branch Plan block")
+    start = official_text.index(PR_PLAN_BEGIN)
+    end_marker = official_text.index(PR_PLAN_END)
+    if end_marker <= start:
+        raise ValueError("official Pull Request template managed block markers are out of order")
+    end = end_marker + len(PR_PLAN_END)
+    block = official_text[start:end]
+    inner = official_text[start + len(PR_PLAN_BEGIN) : end_marker].strip("\r\n")
+    if len(re.findall(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", inner)) != 1:
+        raise ValueError("official Pull Request template managed block has an invalid heading")
+    return block, inner
+
+
+def merge_pull_request_template(current_text: str, official_text: str) -> tuple[str, str]:
+    """Refresh only proven wrapper-owned PR-template bytes and preserve target-owned bytes."""
+    official_block, official_inner = _canonical_pr_plan_block(official_text)
+    digest = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+    if current_text == official_text or digest in PR_TEMPLATE_MANAGED_BASELINE_SHA256:
+        return official_text, "refresh_managed_baseline"
+
+    newline = _pr_template_newline(current_text)
+    block = official_block.replace("\r\n", "\n").replace("\n", newline)
+    begin_count = current_text.count(PR_PLAN_BEGIN)
+    end_count = current_text.count(PR_PLAN_END)
+    if begin_count or end_count:
+        if begin_count != 1 or end_count != 1:
+            raise ValueError("target Pull Request template has ambiguous managed block markers")
+        start = current_text.index(PR_PLAN_BEGIN)
+        end_marker = current_text.index(PR_PLAN_END)
+        if end_marker <= start:
+            raise ValueError("target Pull Request template managed block markers are out of order")
+        end = end_marker + len(PR_PLAN_END)
+        return current_text[:start] + block + current_text[end:], "refresh_managed_block"
+
+    headings = list(re.finditer(rf"(?m)^{re.escape(PR_PLAN_HEADING)}[ \t]*\r?$", current_text))
+    if len(headings) > 1:
+        raise ValueError("target Pull Request template has multiple Contributor Branch Plan headings")
+    if headings:
+        start = headings[0].start()
+        following = re.search(r"(?m)^#{1,2}[ \t]+", current_text[headings[0].end() :])
+        end = headings[0].end() + following.start() if following else len(current_text)
+        section = current_text[start:end].strip(" \t\r\n").replace("\r\n", "\n")
+        if section != official_inner.replace("\r\n", "\n"):
+            raise ValueError("target Pull Request template has an unowned Contributor Branch Plan section")
+        suffix = current_text[end:].lstrip("\r\n")
+        separator = newline * (2 if suffix else 1)
+        return current_text[:start] + block + separator + suffix, "adopt_legacy_managed_block"
+
+    anchors = list(re.finditer(r"(?m)^## What Changed[ \t]*\r?$", current_text))
+    offset = anchors[0].start() if len(anchors) == 1 else len(current_text)
+    prefix = current_text[:offset]
+    suffix = current_text[offset:]
+    if not prefix:
+        before = ""
+    elif prefix.endswith(newline * 2):
+        before = ""
+    elif prefix.endswith(newline):
+        before = newline
+    else:
+        before = newline * 2
+    after = newline * (2 if suffix else 1)
+    return prefix + before + block + after + suffix, "inject_managed_block"
+
+
+def plan_pull_request_template_update(
+    target: Path,
+    wrapper_root: Path,
+    *,
+    official_bytes: bytes | None = None,
+) -> dict[str, Any]:
+    source = wrapper_root / "templates" / "target" / PR_TEMPLATE_PATH
+    destination = target / PR_TEMPLATE_PATH
+    if official_bytes is None and not source.is_file():
+        raise ValueError(f"wrapper Pull Request template source is missing: {source}")
+    if destination.is_symlink():
+        raise ValueError(f"migration write path contains a symlink: {PR_TEMPLATE_PATH}")
+    try:
+        official_text = (
+            source.read_text(encoding="utf-8")
+            if official_bytes is None
+            else official_bytes.decode("utf-8")
+        )
+    except UnicodeError as exc:
+        raise ValueError("official Pull Request template must be UTF-8") from exc
+    if not destination.exists():
+        _canonical_pr_plan_block(official_text)
+        return {
+            "path": PR_TEMPLATE_PATH,
+            "mode": "create_managed_template",
+            "changed": True,
+            "target_owned_bytes_preserved": True,
+        }
+    if not destination.is_file():
+        raise ValueError(f"target Pull Request template is not a regular file: {PR_TEMPLATE_PATH}")
+    current_text = _read_text_preserving_newlines(destination)
+    merged, mode = merge_pull_request_template(current_text, official_text)
+    return {
+        "path": PR_TEMPLATE_PATH,
+        "mode": mode,
+        "changed": merged != current_text,
+        "target_owned_bytes_preserved": mode not in {"refresh_managed_baseline"},
+    }
 
 
 def _codex_hook_template_data() -> dict[str, Any]:
@@ -3294,12 +3700,14 @@ def _harness_contract_needs_migration(
     instruction_surface: object,
     migration_identity: dict[str, Any],
     activation_contract: dict[str, Any],
+    migration_bundle: dict[str, Any],
 ) -> bool:
     manifest = manifest or {}
     if not _manifest_proves_canonical_harness_ownership(
         manifest,
         migration_identity,
         activation_contract,
+        migration_bundle,
     ):
         return True
     target_contract = safe_target_relative_file(target, TARGET_MIGRATION_CONTRACT)
@@ -3308,11 +3716,42 @@ def _harness_contract_needs_migration(
         or f"sha256:{file_sha256(target_contract)}" != migration_identity.get("sha256")
     ):
         return True
+    gate_active = contributor_branch_gate_active(migration_bundle)
+    if gate_active:
+        managed_files = manifest.get("managed_files")
+        expected_branch_contract = {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        }
+        if (
+            not isinstance(managed_files, list)
+            or any(path not in managed_files for path in CONTRIBUTOR_BRANCH_TARGETS)
+            or manifest.get("contributor_branch") != expected_branch_contract
+        ):
+            return True
+        try:
+            verify_managed_snapshot(target / TARGET_EVOINFRA_DIR)
+        except BranchConsumerError:
+            return True
+    elif manifest.get("contributor_branch") is not None:
+        return True
     harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
     if harness is None:
         return True
     harness_text = _read_text_preserving_newlines(harness)
-    if not canonical_harness_skill_text_valid(harness_text):
+    if not canonical_harness_skill_text_valid(
+        harness_text,
+        harness_skill_version=active_harness_state(migration_bundle)[
+            "harness_skill_version"
+        ],
+        require_contributor_gate=gate_active,
+    ):
         return True
     if not isinstance(instruction_surface, str):
         return True
@@ -3326,7 +3765,9 @@ def _manifest_proves_canonical_harness_ownership(
     manifest: dict[str, Any],
     migration_identity: dict[str, Any],
     activation_contract: dict[str, Any],
+    migration_bundle: dict[str, Any],
 ) -> bool:
+    harness_state = active_harness_state(migration_bundle)
     managed_files = manifest.get("managed_files")
     contract_identity = manifest.get("migration_contract")
     expected_contract = {
@@ -3349,11 +3790,11 @@ def _manifest_proves_canonical_harness_ownership(
         }
     ]
     return (
-        manifest.get("wrapper_version") == CURRENT_WRAPPER_VERSION
+        manifest.get("wrapper_version") == harness_state["target_wrapper_version"]
         and manifest.get("layout_version") == 2
         and isinstance(manifest.get("instruction_surface"), str)
         and manifest.get("harness_skill_path") == TARGET_HARNESS_SKILL
-        and manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION
+        and manifest.get("harness_skill_version") == harness_state["harness_skill_version"]
         and manifest.get("harness_skill_managed") is True
         and isinstance(managed_files, list)
         and TARGET_HARNESS_SKILL in managed_files
@@ -3363,7 +3804,12 @@ def _manifest_proves_canonical_harness_ownership(
     )
 
 
-def canonical_harness_skill_text_valid(harness_text: str) -> bool:
+def canonical_harness_skill_text_valid(
+    harness_text: str,
+    *,
+    harness_skill_version: str = HARNESS_SKILL_VERSION,
+    require_contributor_gate: bool = False,
+) -> bool:
     """Validate the canonical Harness Skill using the same bounded frontmatter contract as preflight."""
     frontmatter = re.match(
         r"\A---\r?\n(?P<body>.*?)\r?\n(?:---|\.\.\.)\r?\n",
@@ -3383,11 +3829,15 @@ def canonical_harness_skill_text_valid(harness_text: str) -> bool:
         body,
     )
     if not metadata or not re.search(
-        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
+        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(harness_skill_version)}[\"']?[ \t]*\r?$",
         metadata.group("values"),
     ):
         return False
     if any(term not in harness_text for term in HARNESS_SKILL_REQUIRED_TERMS):
+        return False
+    if require_contributor_gate and any(
+        term not in harness_text for term in CONTRIBUTOR_HARNESS_SKILL_REQUIRED_TERMS
+    ):
         return False
     return True
 
@@ -5236,6 +5686,7 @@ def plan_target_layout_migration(
         instruction_surface,
         migration_bundle["identity"],
         activation_contract,
+        migration_bundle,
     )
     requires_migration = (
         layout_migration_required
@@ -5418,6 +5869,20 @@ def plan_target_layout_migration(
         canonical_evidence["blockers"].append(
             "target wrapper/artifact provenance axis does not match the automatic migration profile"
         )
+    pull_request_template_update = None
+    if requires_migration and contributor_branch_gate_active(migration_bundle):
+        try:
+            official_pr_template, _ = active_closure_artifact(
+                migration_bundle,
+                PR_TEMPLATE_PATH,
+            )
+            pull_request_template_update = plan_pull_request_template_update(
+                target,
+                Path(migration_bundle["wrapper_root"]),
+                official_bytes=official_pr_template,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            conflicts.append(str(exc))
     surface_file = None
     surface_text = None
     protected_business_surfaces: list[dict[str, Any]] = []
@@ -5508,6 +5973,7 @@ def plan_target_layout_migration(
             current_manifest,
             migration_bundle["identity"],
             activation_contract,
+            migration_bundle,
         )
     )
     authority_rules = migration_contract.get("authority_rules") or {}
@@ -5654,6 +6120,7 @@ def plan_target_layout_migration(
             ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
             "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
             f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
+            f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_branch_consumer.*.pyc",
         )
         for path in target.glob(pattern)
         if path.is_file()
@@ -5711,6 +6178,15 @@ def plan_target_layout_migration(
             for item in write_set
             if item.get("operation") in {"create_exact", "replace_exact"}
             and item["path"] not in set(migration_records)
+        )
+
+    if (
+        pull_request_template_update
+        and pull_request_template_update.get("changed") is True
+        and PR_TEMPLATE_PATH not in {item.get("path") for item in write_set}
+    ):
+        conflicts.append(
+            "verified v1.2 profile does not authorize the planned Pull Request template update"
         )
 
     explicit_paths = {
@@ -5888,6 +6364,7 @@ def plan_target_layout_migration(
         "move_set": move_set,
         "protected_business_surfaces": protected_business_surfaces,
         "managed_file_refreshes": managed_file_refreshes,
+        "pull_request_template_update": pull_request_template_update,
         "codex_hooks_update": codex_hooks_update,
         "instruction_surface": instruction_surface,
         "preserved_host_entrypoints": [
@@ -7369,8 +7846,8 @@ def plan_harness_upgrade(
         "integration_policy": (
             "repo_maintenance_hook covers only the canonical repository; global_session_dispatcher checks all "
             "registered wrapped Skills at SessionStart; skill_entry_preflight is prompt-compliance fallback; "
-            "none is a native per-Skill invocation hook without a SkillInvoke event; the contributor branch "
-            "contract remains tracked by #36 and is consumed after that contract lands"
+            "none is a native per-Skill invocation hook without a SkillInvoke event; Issue-to-PR must consume "
+            "the pinned EvoZeus Core contributor branch contract and live permission evidence before target writes"
         ),
         "skill_md_policy": (
             "single Skill targets use SKILL.md; AGENTS.md-root targets use AGENTS.md; hook-controlled bundles use the hook-loaded control Skill"
@@ -7388,6 +7865,7 @@ def plan_harness_upgrade(
             "Inspect the versioned migration contract and select one exact profile.",
             "Treat scattered legacy paths and instruction signatures as read-only discovery candidates; require manual migration with zero writes.",
             "Allow automatic apply only for release-bound exact preimages, one exact stable activation block, and a clean target Git worktree.",
+            "When the active closure is v1.2, materialize Contributor Branch Gate bytes only from its verified closure artifacts and current pointer.",
             "Approve the exact plan SHA-256 after reviewing the explicit write, delete, move, and protected-surface sets.",
             "Create and validate a complete snapshot outside the target repository before the first write.",
             "Verify every postimage, protected business byte, structure check, and rollback receipt before reporting success.",

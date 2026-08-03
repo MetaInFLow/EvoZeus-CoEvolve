@@ -247,6 +247,7 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     assert manifest["harness_skill_managed"] is True
     assert manifest["wrapper_version"] == "v0.15.0"
     assert json.loads((ROOT / "contracts/v1/manifest.json").read_text())["bundle_version"] == "v1.2.0"
+    assert "contributor_branch" not in manifest
     assert "MetaInFLow/example-skill" not in harness
     assert "prompt_runtime_check" in harness
     assert "SkillInvoke" in harness
@@ -1845,7 +1846,7 @@ def test_upgrade_plan_reports_one_entry_and_canonical_harness_skill_write(tmp_pa
     assert "SKILL.md canonical Harness Skill activation block" in plan["planned_files"]
     assert all("migration note" not in item.lower() for item in plan["planned_files"])
     assert plan["append_only"] is False
-    assert "#36" in plan["integration_policy"]
+    assert "pinned EvoZeus Core contributor branch contract" in plan["integration_policy"]
 
 
 def test_transform_dry_run_reports_only_the_canonical_instruction_write_set(

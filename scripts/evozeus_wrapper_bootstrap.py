@@ -188,13 +188,17 @@ from scripts.evozeus_wrapper_lifecycle import (
         TARGET_HARNESS_SKILL,
         TARGET_MIGRATION_CONTRACT,
         WRAPPER_MANAGED_FILES,
+        active_harness_state,
         add_fresh_harness_entry,
         build_onboarding_contract,
         build_status_section,  # noqa: F401 - public bootstrap compatibility export
         build_wrapper_manifest,
+        contributor_branch_gate_active,
         independent_repo_root,
         latest_changelog_tag,
         load_wrapper_manifest,
+        migrate_instruction_surface_to_harness_entry,
+        require_contributor_gate_protection,
         require_repo_admin,
         render_fresh_harness_entry,
         validate_instruction_surface_for_harness_entry,
@@ -212,6 +216,7 @@ MIGRATION_CONTRACT_SOURCE = (
     ROOT / "contracts" / "v1" / "migrations" / "harness-migration-contract-v1.json"
 )
 TARGET_TEMPLATE_INVENTORY_SOURCE = ROOT / "contracts" / "v1" / "target-template-inventory.json"
+BRANCH_CONSUMER_SCRIPT = ROOT / "scripts" / "evozeus_branch_consumer.py"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
@@ -226,6 +231,20 @@ TARGET_DESIGNS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/designs"
 TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
+EXACT_SNAPSHOT_TEMPLATE_PATHS = {
+    Path("contracts/v1/contributor-branch-contract.json"),
+    Path("contracts/v1/contributor-branch-provenance.json"),
+    Path("scripts/evozeus-branch-preflight.mjs"),
+}
+BYTE_EXACT_GATE_TEMPLATE_PATHS = {
+    *EXACT_SNAPSHOT_TEMPLATE_PATHS,
+    Path(".codex/hooks/evozeus_wrapper_start_check.py"),
+    Path(".github/workflows/evozeus-wrapper-preflight.yml"),
+}
 
 
 def fail(message: str) -> None:
@@ -385,25 +404,49 @@ def validate_existing_manifest_for_attach(
     migration_bundle = validate_migration_contract_source()
     migration_identity = migration_bundle["identity"]
     activation_contract = migration_bundle["contract"]["canonical_activation_block"]
+    harness_state = active_harness_state(migration_bundle)
+    gate_active = contributor_branch_gate_active(migration_bundle)
     expected = {
-        "wrapper_version": WRAPPER_VERSION,
+        "wrapper_version": harness_state["target_wrapper_version"],
         "layout_version": 2,
         "canonical_repo": repo,
         "instruction_surface": instruction_surface,
         "harness_skill_path": TARGET_HARNESS_SKILL,
-        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_version": harness_state["harness_skill_version"],
         "harness_skill_managed": True,
     }
+    if gate_active:
+        expected["contributor_branch"] = {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        }
     mismatches = [
         field
         for field, value in expected.items()
         if not isinstance(manifest, dict) or manifest.get(field) != value
     ]
     managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
+    required_managed_files = (
+        TARGET_HARNESS_SKILL,
+        TARGET_MIGRATION_CONTRACT,
+    )
+    if gate_active:
+        required_managed_files = (
+            *required_managed_files,
+            TARGET_BRANCH_CONSUMER_SCRIPT,
+            TARGET_BRANCH_CONTRACT,
+            TARGET_BRANCH_PROVENANCE,
+            TARGET_BRANCH_PLANNER,
+        )
     if (
         not isinstance(managed_files, list)
-        or TARGET_HARNESS_SKILL not in managed_files
-        or TARGET_MIGRATION_CONTRACT not in managed_files
+        or any(path not in managed_files for path in required_managed_files)
     ):
         mismatches.append("managed_files")
     expected_contract = {
@@ -689,6 +732,8 @@ def _attachment_template_artifacts(
         (src, target / target_template_path(src.relative_to(TARGET_TEMPLATE_DIR)))
         for src in template_files
     ]
+    closure_artifacts = current_release_lineage_artifacts(bundle, target)
+    closure_destinations = {destination for destination, _, _ in closure_artifacts}
     expected_artifacts: list[tuple[Path, bytes, bool]] = [
         (
             destination,
@@ -696,17 +741,22 @@ def _attachment_template_artifacts(
             False,
         )
         for source, destination in template_destinations
+        if destination not in closure_destinations
     ]
     for entry in governed["external_sources"]:
         source = _safe_source_file(ROOT, entry["source"], "external source")
-        expected_artifacts.append(
-            (target / entry["target"], source.read_bytes(), entry.get("executable") is True)
-        )
+        destination = target / entry["target"]
+        if destination not in closure_destinations:
+            expected_artifacts.append(
+                (destination, source.read_bytes(), entry.get("executable") is True)
+            )
     bundle_root = Path(bundle["bundle_root"])
     for entry in governed["contract_files"]:
         source = _safe_source_file(bundle_root, entry["source"], "contract source")
-        expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
-    expected_artifacts.extend(current_release_lineage_artifacts(bundle, target))
+        destination = target / entry["target"]
+        if destination not in closure_destinations:
+            expected_artifacts.append((destination, source.read_bytes(), False))
+    expected_artifacts.extend(closure_artifacts)
     relative_artifacts: list[dict[str, object]] = []
     seen_destinations: set[str] = set()
     for destination, expected, executable in expected_artifacts:
@@ -724,7 +774,6 @@ def _attachment_template_artifacts(
             }
         )
     return relative_artifacts
-
 
 def _apply_attachment_artifact_batch(
     target: Path,
@@ -1157,9 +1206,27 @@ def main() -> int:
         fail(f"preflight script missing: {PREFLIGHT_SCRIPT}")
     if not NOTICE_SCRIPT.exists():
         fail(f"notice script missing: {NOTICE_SCRIPT}")
+    try:
+        attachment_bundle = validate_migration_contract_source(
+            require_trusted_release=True
+        )
+        harness_state = active_harness_state(attachment_bundle)
+        gate_active = contributor_branch_gate_active(attachment_bundle)
+    except ValueError as exc:
+        fail(str(exc))
+    if gate_active and not BRANCH_CONSUMER_SCRIPT.exists():
+        fail(f"contributor branch consumer missing: {BRANCH_CONSUMER_SCRIPT}")
     require_github_cli()
     try:
         authority = require_repo_admin(target, args.repo)
+        protection = (
+            require_contributor_gate_protection(
+                authority["repository"],
+                authority.get("default_branch"),
+            )
+            if gate_active
+            else None
+        )
     except ValueError as exc:
         fail(str(exc))
 
@@ -1190,20 +1257,22 @@ def main() -> int:
         "REPO_URL": f"https://github.com/{args.repo}",
         "SKILL_NAME": skill_name,
         "VISIBILITY": visibility,
-        "WRAPPER_VERSION": WRAPPER_VERSION,
+        "WRAPPER_VERSION": harness_state["target_wrapper_version"],
     }
 
     actions = [
         f"verified independent Git repository root: {target}",
         f"verified GitHub ADMIN authority: {authority['repository']}",
     ]
-    try:
-        attachment_bundle = validate_migration_contract_source(
-            require_trusted_release=True
+    if protection is not None:
+        actions.append(
+            "verified protected required check "
+            f"{protection['context']} on {protection['branch']}"
         )
+    try:
         manifest = build_wrapper_manifest(
             args.repo,
-            WRAPPER_VERSION,
+            harness_state["target_wrapper_version"],
             WRAPPER_MANAGED_FILES,
             [],
             instruction_surface="SKILL.md",

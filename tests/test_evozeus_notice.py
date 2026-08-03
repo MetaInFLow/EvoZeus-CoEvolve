@@ -1,4 +1,7 @@
 import copy
+import hashlib
+import importlib._bootstrap_external
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -129,12 +132,35 @@ def test_notice_cli_loads_target_policy_and_returns_json_without_writes() -> Non
         assert load_notice_policy(policy_path)["show_signal_id"] is True
 
 
-def test_target_preflight_import_does_not_create_notice_bytecode_cache() -> None:
+def test_staged_target_preflight_ignores_consumer_pyc_and_creates_no_bytecode() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         scripts_dir = Path(tmp) / ".evozeus-wrapper" / "scripts"
         scripts_dir.mkdir(parents=True)
-        shutil.copy2(ROOT / "scripts" / "evozeus_wrapper_preflight.py", scripts_dir)
+        shutil.copy2(
+            ROOT
+            / "construction/harness-skill/v1.2.0/target/.evozeus-wrapper/"
+            "scripts/evozeus_wrapper_preflight.py",
+            scripts_dir,
+        )
+        consumer = scripts_dir / "evozeus_branch_consumer.py"
+        shutil.copy2(ROOT / "scripts" / "evozeus_branch_consumer.py", consumer)
         shutil.copy2(NOTICE_SCRIPT, scripts_dir)
+        marker = Path(tmp) / "consumer-pyc-executed"
+        code = compile(
+            f"open({str(marker)!r}, 'w').write('executed')\n",
+            str(consumer),
+            "exec",
+        )
+        metadata = consumer.stat()
+        cache = Path(importlib.util.cache_from_source(str(consumer)))
+        cache.parent.mkdir(parents=True)
+        cache.write_bytes(
+            importlib._bootstrap_external._code_to_timestamp_pyc(  # type: ignore[attr-defined]
+                code,
+                int(metadata.st_mtime),
+                metadata.st_size,
+            )
+        )
 
         result = subprocess.run(
             [sys.executable, str(scripts_dir / "evozeus_wrapper_preflight.py"), "--help"],
@@ -144,7 +170,90 @@ def test_target_preflight_import_does_not_create_notice_bytecode_cache() -> None
         )
 
         assert result.returncode == 0, result.stderr
+        assert not marker.exists()
         assert not list(scripts_dir.glob("__pycache__/evozeus_notice.*.pyc"))
+        assert not list(scripts_dir.glob("__pycache__/evozeus_wrapper_preflight.*.pyc"))
+
+
+def test_staged_target_preflight_rejects_scripts_directory_exchange() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / ".evozeus-wrapper"
+        scripts_dir = root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        preflight = scripts_dir / "evozeus_wrapper_preflight.py"
+        shutil.copy2(
+            ROOT
+            / "construction/harness-skill/v1.2.0/target/.evozeus-wrapper/"
+            "scripts/evozeus_wrapper_preflight.py",
+            preflight,
+        )
+        shutil.copy2(ROOT / "scripts/evozeus_branch_consumer.py", scripts_dir)
+        retained = root / "scripts-retained"
+        replacement = root / "scripts-replacement"
+        replacement.mkdir()
+        marker = Path(tmp) / "replacement-consumer-executed"
+        (replacement / "evozeus_branch_consumer.py").write_text(
+            f"open({str(marker)!r}, 'w').write('executed')\n",
+            encoding="utf-8",
+        )
+        notice_source = NOTICE_SCRIPT.read_text(encoding="utf-8")
+        exchange = (
+            "\nimport os as _exchange_os\n"
+            f"_exchange_os.rename({str(scripts_dir)!r}, {str(retained)!r})\n"
+            f"_exchange_os.rename({str(replacement)!r}, {str(scripts_dir)!r})\n"
+        )
+        notice_source = notice_source.replace(
+            "from __future__ import annotations\n",
+            "from __future__ import annotations\n" + exchange,
+            1,
+        )
+        (scripts_dir / "evozeus_notice.py").write_text(
+            notice_source,
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(preflight), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "trusted scripts directory identity changed" in result.stderr
+        assert not marker.exists()
+
+
+def test_staged_target_preflight_accepts_fully_injected_trusted_sources() -> None:
+    preflight = (
+        ROOT
+        / "construction/harness-skill/v1.2.0/target/.evozeus-wrapper/"
+        "scripts/evozeus_wrapper_preflight.py"
+    ).read_bytes()
+    notice = NOTICE_SCRIPT.read_bytes()
+    consumer = (ROOT / "scripts/evozeus_branch_consumer.py").read_bytes()
+    namespace = {
+        "__file__": "/__evozeus_trusted__/evozeus_wrapper_preflight.py",
+        "__name__": "_evozeus_preflight_test",
+        "_EVOZEUS_TRUSTED_NOTICE_SOURCE": notice,
+        "_EVOZEUS_TRUSTED_NOTICE_SHA256": hashlib.sha256(notice).hexdigest(),
+        "_EVOZEUS_TRUSTED_CONTRIBUTOR_SOURCE": consumer,
+        "_EVOZEUS_TRUSTED_CONTRIBUTOR_SHA256": hashlib.sha256(consumer).hexdigest(),
+    }
+
+    exec(
+        compile(
+            preflight,
+            namespace["__file__"],
+            "exec",
+            dont_inherit=True,
+        ),
+        namespace,
+    )
+
+    assert namespace["_TRUSTED_SOURCE_RUNTIME"]["scripts_dir"] == (
+        "/__evozeus_trusted__"
+    )
 
 
 @pytest.mark.parametrize(
