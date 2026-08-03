@@ -15,7 +15,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "97e255b1fff2afd33e2d5b4254ea1220504b510221b17e26d0912f6e8646b783"
+PROTOCOL_SHA256 = "e53ba69f9d8071cc7187fb44f7284d74416cf9f8d4c96d35f2d85f66dc2cfaad"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 
 
@@ -54,6 +54,29 @@ def _write_json(path: Path, value: object) -> None:
     path.write_bytes(_json_bytes(value))
 
 
+def _rebind_filesystem_manifest(
+    root: Path,
+    *,
+    new_roles: dict[str, str] | None = None,
+) -> None:
+    manifest_path = root / CONTRACT_MANIFEST_REL
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = {item["path"]: dict(item) for item in manifest["files"]}
+    for relative, item in entries.items():
+        item["sha256"] = _sha256(
+            (root / "contracts/v1" / relative).read_bytes()
+        )
+    for relative, role in (new_roles or {}).items():
+        path = root / "contracts/v1" / relative
+        entries[relative] = {
+            "path": relative,
+            "sha256": _sha256(path.read_bytes()),
+            "role": role,
+        }
+    manifest["files"] = [entries[path] for path in sorted(entries)]
+    _write_json(manifest_path, manifest)
+
+
 def _protocol_v1_base(tmp_path: Path) -> Path:
     root = tmp_path / "trusted-base"
     shutil.copytree(
@@ -61,25 +84,6 @@ def _protocol_v1_base(tmp_path: Path) -> Path:
         root,
         ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
     )
-    protocol_path = root / verifier.PROTOCOL_REL
-    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    protocol["allowed_operation_types"] = [
-        "create_exact",
-        "replace_exact",
-        "manifest_patch",
-    ]
-    _write_json(protocol_path, protocol)
-    protocol_sha256 = _sha256(protocol_path.read_bytes())
-    profile_path = (
-        root / "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
-    )
-    profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    profile["protocol"]["sha256"] = protocol_sha256
-    _write_json(profile_path, profile)
-    pointer_path = root / verifier.PROFILES_CURRENT_REL
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    pointer["entries"][0]["sha256"] = _sha256(profile_path.read_bytes())
-    _write_json(pointer_path, pointer)
     return root
 
 
@@ -188,6 +192,7 @@ def _candidate_star(
     )
     migration_contract["current_harness_skill_version"] = "v1.2.0"
     migration_contract_data = _json_bytes(migration_contract)
+    migration_contract_sha256 = _sha256(migration_contract_data)
     changes[verifier.MIGRATION_CONTRACT_REL] = _candidate_blob(
         verifier.MIGRATION_CONTRACT_REL,
         migration_contract_data,
@@ -203,6 +208,10 @@ def _candidate_star(
                 **item["owned_state"],
                 "wrapper_version": "v0.16.0",
                 "harness_skill_version": "v1.2.0",
+                "migration_contract": {
+                    **item["owned_state"]["migration_contract"],
+                    "sha256": f"sha256:{migration_contract_sha256}",
+                },
             }
         artifact = item.get("artifact_path")
         if artifact is None:
@@ -339,6 +348,13 @@ def _candidate_star(
                     action["value"] = "v0.16.0"
                 if action["field"] == "harness_skill_version":
                     action["value"] = "v1.2.0"
+                if action["field"] == "migration_contract":
+                    action["value"] = next(
+                        item["owned_state"]["migration_contract"]
+                        for item in v12["files"]
+                        if item["target_path"]
+                        == ".evozeus-wrapper/wrapper.json"
+                    )
     current_ledger_operation = {
         "change_id": "create:" + current_ledger_target,
         "type": "create_exact",
@@ -448,6 +464,16 @@ def _candidate_star(
                         "action": "replace",
                         "field": "harness_skill_version",
                         "value": "v1.2.0",
+                    },
+                    {
+                        "action": "replace",
+                        "field": "migration_contract",
+                        "value": next(
+                            item["owned_state"]["migration_contract"]
+                            for item in v12["files"]
+                            if item["target_path"]
+                            == ".evozeus-wrapper/wrapper.json"
+                        ),
                     },
                 ],
             },
@@ -851,6 +877,39 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
         ),
         "current_closure_version": "v1.1.0",
         "profiles": ["canonical-v1.0-to-v1.1@v1.0.0"],
+        "supervised_legacy_profiles": [
+            {
+                "identity": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
+                "active_for_current": True,
+                "runtime_apply": "not_implemented",
+                "static_write_set": [
+                    {
+                        "target_path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+                        "type": "create_exact",
+                    },
+                    {
+                        "target_path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+                        "type": "create_exact",
+                    },
+                    {
+                        "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+                        "type": "replace_exact",
+                    },
+                    {
+                        "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+                        "type": "create_exact",
+                    },
+                    {
+                        "target_path": ".evozeus-wrapper/wrapper.json",
+                        "type": "manifest_patch",
+                    },
+                    {
+                        "target_path": "SKILL.md",
+                        "type": "supervised_transform",
+                    },
+                ],
+            }
+        ],
     }
     assert _sha256((ROOT / verifier.PROTOCOL_REL).read_bytes()) == PROTOCOL_SHA256
 
@@ -865,6 +924,124 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
         "harness-skill-v1.0.0-to-v1.1.0.md"
     ]
     assert profile["current_migration_record"] == profile["migration_records"][0]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        verifier.LEGACY_ENVELOPE_REL,
+        verifier.LEGACY_ADAPTER_REL,
+        verifier.LEGACY_ENVELOPE_SCHEMA_REL,
+        verifier.LEGACY_ADAPTER_SCHEMA_REL,
+        verifier.LEGACY_PROFILE_SCHEMA_REL,
+        (
+            "contracts/v1/migrations/profiles/"
+            "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+        ),
+        verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+    ],
+)
+def test_supervised_legacy_trust_assets_are_digest_closed(path: str) -> None:
+    store = verifier.CandidateStore(
+        _base_store(),
+        {path: _candidate_blob(path, b"tampered legacy trust asset\n")},
+    )
+
+    with pytest.raises(verifier.VerificationError, match="digest mismatch"):
+        verifier.verify_catalog(store)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        verifier.LEGACY_ENVELOPE_REL,
+        verifier.LEGACY_ADAPTER_REL,
+        verifier.LEGACY_ENVELOPE_SCHEMA_REL,
+        verifier.LEGACY_ADAPTER_SCHEMA_REL,
+        verifier.LEGACY_PROFILE_SCHEMA_REL,
+        verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+    ],
+)
+def test_legacy_trust_rotation_requires_a_protected_source_pr(path: str) -> None:
+    changes = {path: _candidate_blob(path, b"candidate rotation\n")}
+    protocol = verifier.load_protocol(_base_store())
+
+    assert verifier.classify_candidate_changes(protocol, changes) == "rotation_required"
+    with pytest.raises(
+        verifier.VerificationError,
+        match="trusted base authority|migration consumer",
+    ):
+        verifier.verify_candidate(_base_store(), changes, head_sha="6" * 40)
+
+
+def test_candidate_protocol_cannot_reclassify_a_legacy_trust_rotation_as_data() -> None:
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("rotation classification must not resolve candidate history")
+
+    candidate_protocol = json.loads(
+        (ROOT / verifier.PROTOCOL_REL).read_text(encoding="utf-8")
+    )
+    candidate_protocol["candidate_policy"]["protected_legacy_data_prefixes"] = []
+    changes = {
+        verifier.PROTOCOL_REL: _candidate_blob(
+            verifier.PROTOCOL_REL,
+            _json_bytes(candidate_protocol),
+        ),
+        verifier.LEGACY_ENVELOPE_REL: _candidate_blob(
+            verifier.LEGACY_ENVELOPE_REL,
+            b"candidate trust-anchor rotation\n",
+        ),
+    }
+
+    report = verifier.verify_classified_pull_request(
+        _base_store(),
+        changes,
+        head_sha="8" * 40,
+        repository="MetaInFLow/EvoZeus-CoEvolve",
+        construction_resolver=must_not_resolve,
+    )
+
+    assert report["status"] == "rotation_required"
+    assert report["candidate_files_executed"] is False
+
+
+def test_candidate_data_cannot_rotate_the_bound_legacy_trust_anchor() -> None:
+    contract = json.loads(
+        (ROOT / verifier.MIGRATION_CONTRACT_REL).read_text(encoding="utf-8")
+    )
+    contract["reviewed_legacy_migrations"][0]["adapter"]["sha256"] = "0" * 64
+    changes = {
+        verifier.MIGRATION_CONTRACT_REL: _candidate_blob(
+            verifier.MIGRATION_CONTRACT_REL,
+            _json_bytes(contract),
+        )
+    }
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="cannot rotate a trusted legacy envelope or adapter",
+    ):
+        verifier.verify_candidate(_base_store(), changes, head_sha="7" * 40)
+
+
+def test_broad_scattered_legacy_discovery_remains_manual_and_zero_authority() -> None:
+    contract = json.loads(
+        (ROOT / verifier.MIGRATION_CONTRACT_REL).read_text(encoding="utf-8")
+    )
+    profile = next(
+        item
+        for item in contract["discovery_profiles"]
+        if item["profile_id"] == "legacy-scattered-to-canonical-v1.0"
+    )
+
+    assert profile["automatic"] is False
+    assert profile["default_decision"] == "manual_migration_required"
+    assert profile["adapter_payload"] == {
+        "type": "manual-review-gate",
+        "discovery_candidates_are_authority": False,
+        "destructive_authority": False,
+        "trusted_preimages": [],
+    }
 
 
 def test_protocol_declares_the_exact_protected_code_and_cumulative_ledger_policy() -> None:
@@ -1655,6 +1832,14 @@ def test_catalog_requires_a_unique_direct_profile_from_each_historical_closure(
         }
     )
     _write_json(pointer_path, pointer)
+    _rebind_filesystem_manifest(
+        root,
+        new_roles={
+            duplicate_relative.removeprefix("contracts/v1/"): (
+                "official-upgrade-profile"
+            )
+        },
+    )
 
     with pytest.raises(verifier.VerificationError, match="duplicate from closure"):
         verifier.verify_catalog(verifier.FilesystemStore(root))
@@ -1674,6 +1859,7 @@ def test_catalog_rejects_an_active_profile_that_does_not_end_at_current(
         "sha256": _sha256((root / v10_relative).read_bytes()),
     }
     _write_json(current_path, current)
+    _rebind_filesystem_manifest(root)
 
     with pytest.raises(
         verifier.VerificationError,

@@ -26,16 +26,39 @@ HISTORY_CURRENT_REL = "contracts/v1/migrations/history/harness-skill/current.jso
 PROFILES_CURRENT_REL = "contracts/v1/migrations/profiles/current.json"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 MIGRATION_CONTRACT_REL = "contracts/v1/migrations/harness-migration-contract-v1.json"
+LEGACY_ADAPTER_REL = (
+    "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json"
+)
+LEGACY_ENVELOPE_REL = (
+    "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json"
+)
+LEGACY_PROFILE_SCHEMA_REL = (
+    "contracts/v1/migrations/schemas/supervised-legacy-profile-v1.schema.json"
+)
+LEGACY_ADAPTER_SCHEMA_REL = (
+    "contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json"
+)
+LEGACY_ENVELOPE_SCHEMA_REL = (
+    "contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json"
+)
+LEGACY_ADAPTER_IMPLEMENTATION_REL = (
+    "scripts/evozeus_harness_legacy_prompt_adapter.py"
+)
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
 BUNDLE_PREFIX = "contracts/v1/"
 PROTECTED_MIGRATION_CONSUMER_PATHS = frozenset(
     {
+        LEGACY_ADAPTER_IMPLEMENTATION_REL,
         "scripts/evozeus_harness_migration.py",
         "scripts/evozeus_wrapper.py",
         "scripts/evozeus_wrapper_global_hook.py",
         "scripts/evozeus_wrapper_lifecycle.py",
     }
+)
+PROTECTED_LEGACY_DATA_PREFIXES = (
+    "contracts/v1/migrations/adapters/legacy-v0.14-three-section/",
+    "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/",
 )
 PROTECTED_BASE_PATH_DECLARATIONS = (
     WORKFLOW_REL,
@@ -43,6 +66,7 @@ PROTECTED_BASE_PATH_DECLARATIONS = (
     "contracts/v1/migrations/schemas/",
     "contracts/v1/migrations/history/*/v*/",
     "contracts/v1/migrations/profiles/*-v*.json",
+    *PROTECTED_LEGACY_DATA_PREFIXES,
     VERIFIER_REL,
     *sorted(PROTECTED_MIGRATION_CONSUMER_PATHS),
 )
@@ -68,6 +92,7 @@ ALLOWED_OPERATION_TYPES = {
     "create_exact",
     "replace_exact",
     "manifest_patch",
+    "supervised_transform",
 }
 ALLOWED_BLOB_MODES = {"100644", "100755"}
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -365,6 +390,12 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError(
             "candidate construction source allowlist disagrees with the verifier"
         )
+    if candidate.get("protected_legacy_data_prefixes") != list(
+        PROTECTED_LEGACY_DATA_PREFIXES
+    ):
+        raise VerificationError(
+            "candidate protected legacy data declaration disagrees with the verifier"
+        )
     if candidate.get("pull_request_classification") != {
         "authority_rotation_prefixes": list(AUTHORITY_ROTATION_PREFIXES),
         "authority_rotation_paths": list(AUTHORITY_ROTATION_PATHS),
@@ -394,6 +425,11 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError("migration ledger history policy is invalid")
     if target.get("unknown_or_scattered") != "manual_migration_required_zero_write":
         raise VerificationError("unknown/scattered fallback policy is invalid")
+    if (
+        target.get("supervised_legacy")
+        != "exact_envelope_exact_plan_one_time_approval_no_runtime_apply"
+    ):
+        raise VerificationError("supervised legacy target policy is invalid")
     return protocol
 
 
@@ -412,12 +448,17 @@ def classify_candidate_changes(
     if not isinstance(candidate_policy, dict):
         raise VerificationError("official upgrade candidate policy is missing")
     # load_protocol has already required exact agreement with these constants.
+    protected_legacy_prefixes = tuple(
+        candidate_policy["protected_legacy_data_prefixes"]
+    )
     has_authority = False
     has_data = False
     for path in changes:
         _safe_relative(path, "candidate changed path")
-        is_authority = path in AUTHORITY_ROTATION_PATHS or path.startswith(
-            AUTHORITY_ROTATION_PREFIXES
+        is_authority = (
+            path in AUTHORITY_ROTATION_PATHS
+            or path.startswith(AUTHORITY_ROTATION_PREFIXES)
+            or path.startswith(protected_legacy_prefixes)
         )
         has_authority = has_authority or is_authority
         # Protocols and schemas live below the migration root but are authority,
@@ -1028,6 +1069,752 @@ def load_profile(
     return profile
 
 
+def _manifest_bound_bundle_binding(
+    store: BlobStore,
+    manifest_files: dict[str, dict[str, str]],
+    binding: object,
+    label: str,
+    role: str,
+) -> str:
+    path, digest = _binding_path(binding, label)
+    relative = path.removeprefix(BUNDLE_PREFIX)
+    manifest_item = manifest_files.get(relative)
+    if manifest_item != {"sha256": digest, "role": role}:
+        raise VerificationError(
+            f"{label} is not exactly bound by the contract manifest: {relative}"
+        )
+    actual = _sha256(store.read_bytes(path))
+    if actual != digest:
+        raise VerificationError(
+            f"{label} digest mismatch: {path}: expected={digest}; actual={actual}"
+        )
+    return path
+
+
+def _manifest_bound_repository_file(
+    store: BlobStore,
+    repository_files: dict[str, dict[str, str]],
+    binding: object,
+    label: str,
+    role: str,
+) -> str:
+    if not isinstance(binding, dict) or set(binding) != {
+        "root",
+        "path",
+        "sha256",
+        "entrypoint",
+    }:
+        raise VerificationError(f"{label} binding is invalid")
+    if binding.get("root") != "repository_path":
+        raise VerificationError(f"{label} root is invalid")
+    path = _safe_relative(binding.get("path"), f"{label} path")
+    digest = _require_sha256(binding.get("sha256"), f"{label} digest")
+    manifest_item = repository_files.get(path)
+    if manifest_item != {"sha256": digest, "role": role}:
+        raise VerificationError(
+            f"{label} is not exactly bound by the contract manifest: {path}"
+        )
+    actual = _sha256(store.read_bytes(path))
+    if actual != digest:
+        raise VerificationError(
+            f"{label} digest mismatch: {path}: expected={digest}; actual={actual}"
+        )
+    return path
+
+
+def _verify_bound_schema(
+    store: BlobStore,
+    manifest_files: dict[str, dict[str, str]],
+    binding: object,
+    *,
+    expected_path: str,
+    expected_schema_version: str,
+    label: str,
+) -> str:
+    path = _manifest_bound_bundle_binding(
+        store,
+        manifest_files,
+        binding,
+        label,
+        "official-upgrade-json-schema",
+    )
+    if path != expected_path:
+        raise VerificationError(f"{label} path is not canonical")
+    schema = _json_file(store, path, label)
+    schema_identity = (
+        schema.get("properties", {}).get("schema_version", {}).get("const")
+        if isinstance(schema.get("properties"), dict)
+        else None
+    )
+    if (
+        schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema"
+        or schema_identity != expected_schema_version
+        or schema.get("additionalProperties") is not False
+    ):
+        raise VerificationError(f"{label} published contract is invalid")
+    return path
+
+
+def _legacy_envelope_entries(
+    envelope: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    raw_files = envelope.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise VerificationError("reviewed legacy source envelope files are missing")
+    entries: dict[str, dict[str, Any]] = {}
+    for item in raw_files:
+        if not isinstance(item, dict):
+            raise VerificationError("reviewed legacy source envelope file is invalid")
+        path = _safe_relative(item.get("path"), "reviewed legacy envelope path")
+        if path in entries:
+            raise VerificationError(
+                f"reviewed legacy source envelope repeats a path: {path}"
+            )
+        kind = item.get("kind")
+        if kind == "exact":
+            _require_sha256(item.get("sha256"), f"legacy exact file digest: {path}")
+            if item.get("mode") not in ALLOWED_BLOB_MODES:
+                raise VerificationError(f"legacy exact file mode is invalid: {path}")
+        elif kind == "rendered_preserve":
+            if item.get("mode") not in ALLOWED_BLOB_MODES or "sha256" in item:
+                raise VerificationError(
+                    f"legacy rendered-preserve file is invalid: {path}"
+                )
+        elif kind == "absent":
+            if "sha256" in item or "mode" in item:
+                raise VerificationError(f"legacy absent file has byte state: {path}")
+        else:
+            raise VerificationError(f"legacy source envelope kind is invalid: {path}")
+        entries[path] = item
+    return entries
+
+
+def _derive_legacy_static_write_set(
+    envelope: dict[str, Any],
+    legacy_entries: dict[str, dict[str, Any]],
+    target_entries: dict[str, dict[str, Any]],
+) -> tuple[dict[str, tuple[str, dict[str, Any] | None, dict[str, Any] | None]], set[str]]:
+    changes: dict[
+        str,
+        tuple[str, dict[str, Any] | None, dict[str, Any] | None],
+    ] = {}
+    rendered_preserve: set[str] = set()
+    for path, after in target_entries.items():
+        kind = after.get("kind")
+        before = legacy_entries.get(path)
+        if kind == "manifest_state":
+            projection = envelope.get("manifest_projection")
+            if not isinstance(projection, dict) or projection.get("path") != path:
+                raise VerificationError(
+                    "legacy manifest projection does not select the target closure manifest"
+                )
+            changes[path] = ("manifest_patch", None, after)
+            continue
+        if kind == "rendered_template":
+            if before is None or before.get("kind") != "rendered_preserve":
+                raise VerificationError(
+                    f"legacy rendered surface lacks preserve evidence: {path}"
+                )
+            if before.get("mode") != after.get("mode"):
+                raise VerificationError(
+                    f"legacy rendered surface mode differs from target closure: {path}"
+                )
+            rendered_preserve.add(path)
+            continue
+        if kind != "exact" or before is None:
+            raise VerificationError(
+                f"legacy envelope cannot derive target closure path: {path}"
+            )
+        before_kind = before.get("kind")
+        if before_kind == "absent":
+            changes[path] = ("create_exact", None, after)
+        elif before_kind == "exact":
+            if before.get("mode") == after.get("mode") and before.get(
+                "sha256"
+            ) == after.get("sha256"):
+                continue
+            changes[path] = ("replace_exact", before, after)
+        else:
+            raise VerificationError(
+                f"legacy envelope target transition is unsupported: {path}"
+            )
+    for path, before in legacy_entries.items():
+        if before.get("kind") in {"exact", "rendered_preserve"} and path not in target_entries:
+            raise VerificationError(
+                f"current closure drops a reviewed legacy file: {path}"
+            )
+    instruction = envelope.get("instruction_surface")
+    if not isinstance(instruction, dict):
+        raise VerificationError("legacy instruction surface contract is missing")
+    instruction_path = _safe_relative(
+        instruction.get("path"), "legacy instruction surface path"
+    )
+    if instruction_path in changes or instruction_path in target_entries:
+        raise VerificationError("legacy instruction surface collides with closure ownership")
+    changes[instruction_path] = ("supervised_transform", None, None)
+    return changes, rendered_preserve
+
+
+def _verify_legacy_manifest_operation(
+    operation: dict[str, Any],
+    envelope_binding: dict[str, Any],
+    envelope: dict[str, Any],
+    target_closure_path: str,
+    target_manifest: dict[str, Any],
+) -> None:
+    if (
+        operation.get("encoding") != "utf-8-json-indent-2-lf"
+        or operation.get("preserve_unlisted_fields") is not True
+    ):
+        raise VerificationError("legacy manifest patch encoding/preservation is invalid")
+    projection = envelope.get("manifest_projection")
+    instruction = envelope.get("instruction_surface")
+    if not isinstance(projection, dict) or not isinstance(instruction, dict):
+        raise VerificationError("legacy manifest/instruction projection is missing")
+    expected_source = {
+        "envelope_path": envelope_binding["path"],
+        "manifest_path": projection["path"],
+        "projection": "frozen-template-byte-exact",
+    }
+    if operation.get("source_projection") != expected_source:
+        raise VerificationError("legacy manifest source projection is not envelope-bound")
+    owned_state = target_manifest.get("owned_state")
+    if not isinstance(owned_state, dict):
+        raise VerificationError("target closure manifest state is missing")
+    managed_blocks = owned_state.get("managed_blocks")
+    if not isinstance(managed_blocks, list) or len(managed_blocks) != 1:
+        raise VerificationError("target closure managed block state is invalid")
+    block = dict(managed_blocks[0])
+    if block.pop("path_selector", None) != "manifest.instruction_surface":
+        raise VerificationError("target closure managed block selector is invalid")
+    expected_patch = [
+        {
+            "action": "replace",
+            "field": "wrapper_version",
+            "value": owned_state["wrapper_version"],
+        },
+        {
+            "action": "add",
+            "field": "instruction_surface",
+            "value": instruction["path"],
+        },
+        {
+            "action": "add",
+            "field": "harness_skill_path",
+            "value": owned_state["harness_skill_path"],
+        },
+        {
+            "action": "add",
+            "field": "harness_skill_version",
+            "value": owned_state["harness_skill_version"],
+        },
+        {
+            "action": "add",
+            "field": "harness_skill_managed",
+            "value": owned_state["harness_skill_managed"],
+        },
+        {
+            "action": "add",
+            "field": "migration_contract",
+            "value": owned_state["migration_contract"],
+        },
+        {
+            "action": "add_managed_block",
+            "field": "managed_blocks",
+            "path_from": "instruction_surface",
+            "value": block,
+        },
+        {
+            "action": "append_unique",
+            "field": "managed_files",
+            "values": owned_state["managed_files_require"],
+        },
+    ]
+    if operation.get("patch") != expected_patch:
+        raise VerificationError("legacy manifest patch is not the exact target projection")
+    expected_target = {
+        "closure_path": target_closure_path.removeprefix(BUNDLE_PREFIX),
+        "closure_target_path": ".evozeus-wrapper/wrapper.json",
+        "additional_exact": {"instruction_surface": instruction["path"]},
+    }
+    if operation.get("target_projection") != expected_target:
+        raise VerificationError("legacy manifest target projection is not closure-bound")
+
+
+def load_supervised_legacy_profile(
+    store: BlobStore,
+    contract_binding: dict[str, Any],
+    protocol: dict[str, Any],
+    manifest_files: dict[str, dict[str, str]],
+    repository_files: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    if not isinstance(contract_binding, dict):
+        raise VerificationError("reviewed legacy migration binding is invalid")
+    expected_contract_keys = {
+        "profile_id",
+        "profile_version",
+        "profile_path",
+        "profile_schema",
+        "source_envelope",
+        "adapter",
+        "target_closure_pointer",
+        "release_lineage",
+        "execution",
+    }
+    if set(contract_binding) != expected_contract_keys:
+        raise VerificationError("reviewed legacy migration binding fields are invalid")
+    profile_id = contract_binding.get("profile_id")
+    profile_version = contract_binding.get("profile_version")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise VerificationError("reviewed legacy profile id is invalid")
+    major, _, _ = _semver(profile_version, "reviewed legacy profile version")
+    profile_relative = _safe_relative(
+        contract_binding.get("profile_path"), "reviewed legacy profile path"
+    )
+    expected_profile_relative = f"migrations/profiles/{profile_id}-v{major}.json"
+    if profile_relative != expected_profile_relative:
+        raise VerificationError("reviewed legacy profile path is not canonical")
+    profile_manifest_item = manifest_files.get(profile_relative)
+    if (
+        profile_manifest_item is None
+        or profile_manifest_item.get("role") != "supervised-legacy-profile"
+    ):
+        raise VerificationError("reviewed legacy profile is not manifest-bound")
+    profile_path = BUNDLE_PREFIX + profile_relative
+    profile_bytes = store.read_bytes(profile_path)
+    if _sha256(profile_bytes) != profile_manifest_item["sha256"]:
+        raise VerificationError("reviewed legacy profile manifest digest mismatch")
+    profile = _strict_json(profile_bytes, f"reviewed legacy profile {profile_path}")
+    if (
+        profile.get("schema_version")
+        != "evozeus.coevolve.supervised-legacy-profile.v1"
+        or profile.get("profile_id") != profile_id
+        or profile.get("profile_version") != profile_version
+    ):
+        raise VerificationError("reviewed legacy profile identity is invalid")
+
+    profile_schema_path = _verify_bound_schema(
+        store,
+        manifest_files,
+        contract_binding.get("profile_schema"),
+        expected_path=LEGACY_PROFILE_SCHEMA_REL,
+        expected_schema_version="evozeus.coevolve.supervised-legacy-profile.v1",
+        label="supervised legacy profile schema",
+    )
+    if profile.get("profile_schema") != contract_binding.get("profile_schema"):
+        raise VerificationError("reviewed legacy profile schema binding differs from contract")
+    if _verify_binding(store, profile.get("profile_schema"), "legacy profile schema") != profile_schema_path:
+        raise VerificationError("reviewed legacy profile schema path is invalid")
+    protocol_path = _verify_binding(store, profile.get("protocol"), "legacy profile protocol")
+    if protocol_path != PROTOCOL_REL or profile["protocol"]["sha256"] != _sha256(
+        store.read_bytes(PROTOCOL_REL)
+    ):
+        raise VerificationError("reviewed legacy profile protocol binding is invalid")
+
+    source_binding = contract_binding.get("source_envelope")
+    if not isinstance(source_binding, dict) or set(source_binding) != {
+        "path",
+        "sha256",
+        "schema",
+    }:
+        raise VerificationError("reviewed legacy source binding is invalid")
+    envelope_path = _manifest_bound_bundle_binding(
+        store,
+        manifest_files,
+        {"path": source_binding["path"], "sha256": source_binding["sha256"]},
+        "reviewed legacy source envelope",
+        "trusted-legacy-source-envelope",
+    )
+    if envelope_path != LEGACY_ENVELOPE_REL:
+        raise VerificationError("reviewed legacy source envelope path is not canonical")
+    _verify_bound_schema(
+        store,
+        manifest_files,
+        source_binding["schema"],
+        expected_path=LEGACY_ENVELOPE_SCHEMA_REL,
+        expected_schema_version="evozeus.coevolve.legacy-source-envelope.v1",
+        label="reviewed legacy source envelope schema",
+    )
+    envelope = _json_file(store, envelope_path, "reviewed legacy source envelope")
+    if (
+        envelope.get("schema_version")
+        != "evozeus.coevolve.legacy-source-envelope.v1"
+        or envelope.get("envelope_id") != "legacy-wrapper-v0.14-three-section"
+        or envelope.get("envelope_version") != "v1.0.0"
+    ):
+        raise VerificationError("reviewed legacy source envelope identity is invalid")
+    evidence = envelope.get("source_evidence")
+    lineage = contract_binding.get("release_lineage")
+    if not isinstance(evidence, dict) or not isinstance(lineage, dict):
+        raise VerificationError("reviewed legacy source lineage is missing")
+    if (
+        evidence.get("repository") != lineage.get("source_repository")
+        or evidence.get("commit") != lineage.get("source_commit")
+        or evidence.get("tree") != lineage.get("source_tree")
+    ):
+        raise VerificationError("reviewed legacy source evidence differs from release lineage")
+    if (
+        evidence.get("repository_url")
+        != "https://github.com/MetaInFLow/diagnose-enterprise-ai-scenarios"
+        or evidence.get("instruction_surface_sha256")
+        != "22b519a18fa4ec9b5ed1a892cd1895c1b68b84366c1286af8f8a403f35d79a04"
+        or evidence.get("manifest_sha256")
+        != "c05dbb63db5deb391a13e7093948324e6018f7c6bcb318c537b936dd1e173b52"
+        or evidence.get("legacy_preflight_sha256")
+        != "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1"
+    ):
+        raise VerificationError("reviewed legacy source evidence is not the audited fixture")
+    legacy_entries = _legacy_envelope_entries(envelope)
+    host_entrypoints = envelope.get("host_entrypoints_must_match")
+    if not isinstance(host_entrypoints, list) or not host_entrypoints:
+        raise VerificationError("reviewed legacy host entrypoint evidence is missing")
+    if any(
+        path not in legacy_entries or legacy_entries[path].get("kind") != "exact"
+        for path in host_entrypoints
+    ):
+        raise VerificationError("reviewed legacy host entrypoint is not exact")
+    projection = envelope.get("manifest_projection")
+    if not isinstance(projection, dict):
+        raise VerificationError("reviewed legacy manifest projection is missing")
+    manifest_template_path = _safe_relative(
+        projection.get("template_path"), "reviewed legacy manifest template"
+    )
+    template_manifest_item = manifest_files.get(
+        manifest_template_path.removeprefix(BUNDLE_PREFIX)
+    )
+    if (
+        not manifest_template_path.startswith(BUNDLE_PREFIX)
+        or template_manifest_item
+        != {
+            "sha256": projection.get("template_sha256"),
+            "role": "trusted-legacy-source-artifact",
+        }
+        or _sha256(store.read_bytes(manifest_template_path))
+        != projection.get("template_sha256")
+    ):
+        raise VerificationError("reviewed legacy manifest template is not exactly bound")
+
+    adapter_binding = contract_binding.get("adapter")
+    if not isinstance(adapter_binding, dict) or set(adapter_binding) != {
+        "path",
+        "sha256",
+        "schema",
+        "implementation",
+    }:
+        raise VerificationError("reviewed legacy adapter binding is invalid")
+    adapter_path = _manifest_bound_bundle_binding(
+        store,
+        manifest_files,
+        {"path": adapter_binding["path"], "sha256": adapter_binding["sha256"]},
+        "reviewed legacy adapter",
+        "trusted-legacy-adapter",
+    )
+    if adapter_path != LEGACY_ADAPTER_REL:
+        raise VerificationError("reviewed legacy adapter path is not canonical")
+    _verify_bound_schema(
+        store,
+        manifest_files,
+        adapter_binding["schema"],
+        expected_path=LEGACY_ADAPTER_SCHEMA_REL,
+        expected_schema_version="evozeus.coevolve.legacy-prompt-adapter.v1",
+        label="reviewed legacy adapter schema",
+    )
+    implementation_path = _manifest_bound_repository_file(
+        store,
+        repository_files,
+        adapter_binding["implementation"],
+        "reviewed legacy adapter implementation",
+        "trusted-legacy-adapter-implementation",
+    )
+    if implementation_path != LEGACY_ADAPTER_IMPLEMENTATION_REL:
+        raise VerificationError("reviewed legacy adapter implementation path is not canonical")
+    adapter_document = _json_file(store, adapter_path, "reviewed legacy adapter")
+    if (
+        adapter_document.get("schema_version")
+        != "evozeus.coevolve.legacy-prompt-adapter.v1"
+        or adapter_document.get("adapter_id")
+        != "legacy-v0.14-three-section-exact-transform"
+        or adapter_document.get("adapter_version") != "v1.0.0"
+    ):
+        raise VerificationError("reviewed legacy adapter identity is invalid")
+    internal_envelope = adapter_document.get("source_envelope")
+    if internal_envelope != {
+        "path": envelope_path,
+        "sha256": source_binding["sha256"],
+    }:
+        raise VerificationError("reviewed legacy adapter source binding is invalid")
+    implementation = adapter_document.get("implementation")
+    expected_implementation = dict(adapter_binding["implementation"])
+    expected_implementation.pop("root")
+    if implementation != expected_implementation:
+        raise VerificationError("reviewed legacy adapter implementation binding differs")
+    template_kinds: list[str] = []
+    for template in adapter_document.get("templates", []):
+        if not isinstance(template, dict):
+            raise VerificationError("reviewed legacy adapter template is invalid")
+        kind = template.get("kind")
+        path = _safe_relative(template.get("path"), "legacy adapter template path")
+        digest = _require_sha256(template.get("sha256"), "legacy adapter template digest")
+        manifest_item = manifest_files.get(path.removeprefix(BUNDLE_PREFIX))
+        if (
+            not path.startswith(BUNDLE_PREFIX)
+            or manifest_item
+            != {"sha256": digest, "role": "trusted-legacy-adapter-template"}
+            or _sha256(store.read_bytes(path)) != digest
+        ):
+            raise VerificationError(f"reviewed legacy adapter template is unbound: {path}")
+        template_kinds.append(kind)
+    if template_kinds != ["status", "evolution", "wrapper"]:
+        raise VerificationError("reviewed legacy adapter template order is invalid")
+    activation = adapter_document.get("canonical_activation_block_lf")
+    if (
+        not isinstance(activation, str)
+        or _sha256(activation.encode("utf-8"))
+        != adapter_document.get("canonical_activation_sha256_lf")
+    ):
+        raise VerificationError("reviewed legacy adapter activation block is invalid")
+    if profile.get("source_envelope") != {
+        "path": source_binding["path"],
+        "sha256": source_binding["sha256"],
+    } or profile.get("adapter") != {
+        "path": adapter_binding["path"],
+        "sha256": adapter_binding["sha256"],
+    }:
+        raise VerificationError("reviewed legacy profile data bindings differ from contract")
+
+    target_pointer = contract_binding.get("target_closure_pointer")
+    profile_pointer = profile.get("target_closure_pointer")
+    if not isinstance(target_pointer, dict) or not isinstance(profile_pointer, dict):
+        raise VerificationError("reviewed legacy target closure pointer is missing")
+    expected_profile_pointer = {
+        "path": target_pointer.get("path"),
+        "pointer_id": target_pointer.get("pointer_id"),
+        "selected": {
+            "id": target_pointer.get("selected_id"),
+            "version": target_pointer.get("selected_version"),
+            "path": target_pointer.get("selected_path"),
+        },
+    }
+    if profile_pointer != expected_profile_pointer:
+        raise VerificationError("reviewed legacy profile target pointer differs from contract")
+    pointer_path = _bundle_relative(target_pointer.get("path"), "legacy target pointer path")
+    if pointer_path != HISTORY_CURRENT_REL:
+        raise VerificationError("reviewed legacy target pointer path is not canonical")
+    pointer_manifest_item = manifest_files.get(target_pointer["path"])
+    if (
+        pointer_manifest_item is None
+        or pointer_manifest_item.get("role") != "current-target-closure-pointer"
+        or _sha256(store.read_bytes(pointer_path)) != pointer_manifest_item["sha256"]
+    ):
+        raise VerificationError("reviewed legacy target pointer is not manifest-bound")
+    pointer_entries = load_pointer(store, pointer_path, target_pointer["pointer_id"])
+    selected = expected_profile_pointer["selected"]
+    active_for_current = any(
+        entry["id"] == selected["id"]
+        and entry["version"] == selected["version"]
+        and entry["path"] == selected["path"]
+        for entry in pointer_entries
+    )
+    target_relative = _safe_relative(selected["path"], "legacy selected closure path")
+    target_manifest_item = manifest_files.get(target_relative)
+    if (
+        target_manifest_item is None
+        or target_manifest_item.get("role") != "immutable-target-closure"
+    ):
+        raise VerificationError("reviewed legacy target closure is not manifest-bound")
+    target_path = BUNDLE_PREFIX + target_relative
+    target_closure, target_entries = load_closure(
+        store,
+        target_path,
+        expected_sha256=target_manifest_item["sha256"],
+    )
+    if (
+        target_closure.get("closure_id") != selected["id"]
+        or target_closure.get("closure_version") != selected["version"]
+    ):
+        raise VerificationError("reviewed legacy target closure identity differs")
+    release_axis = profile.get("release_axis")
+    expected_release_axis = {
+        "target_wrapper_from": envelope["state"]["target_wrapper_version"],
+        "target_wrapper_to": target_closure["state"]["target_wrapper_version"],
+        "artifact_source_from": {
+            "kind": "reviewed_source_commit",
+            "repository": evidence["repository"],
+            "revision": evidence["commit"],
+            "tree": evidence["tree"],
+            "release": None,
+        },
+        "artifact_source_to": {
+            "kind": "required_release",
+            "release": target_closure["source"]["required_release"],
+            "binding": "contract_bundle.source_revision",
+        },
+    }
+    if release_axis != expected_release_axis or lineage.get(
+        "target_release"
+    ) != target_closure["source"]["required_release"]:
+        raise VerificationError("reviewed legacy profile release lineage is invalid")
+    expected_execution = {
+        "mode": "supervised_exact_plan",
+        "discovery_authority": False,
+        "adapter_write_authority": False,
+        "approval": "one_time_exact_plan_digest",
+        "approval_scope": "one_target_one_preimage_one_postimage",
+        "compare_and_swap": "full_file_preimage",
+        "snapshot": "required_before_any_write",
+        "post_verify": "adapter_proof_and_current_closure",
+        "rollback": "restore_snapshot_on_any_failure",
+        "runtime_apply": "not_implemented",
+    }
+    if profile.get("execution") != expected_execution or profile.get("automatic") is not False:
+        raise VerificationError("reviewed legacy profile execution authority is invalid")
+    if contract_binding.get("execution") != {
+        key: expected_execution[key]
+        for key in (
+            "mode",
+            "discovery_authority",
+            "adapter_write_authority",
+            "approval",
+            "runtime_apply",
+        )
+    }:
+        raise VerificationError("reviewed legacy contract execution authority is invalid")
+
+    changes, rendered_preserve = _derive_legacy_static_write_set(
+        envelope,
+        legacy_entries,
+        target_entries,
+    )
+    operations = profile.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise VerificationError("reviewed legacy profile operations are missing")
+    if [item.get("target_path") for item in operations if isinstance(item, dict)] != sorted(
+        changes
+    ):
+        raise VerificationError("reviewed legacy profile write set is not deterministic")
+    operation_ids: set[str] = set()
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise VerificationError("reviewed legacy profile operation is invalid")
+        target = _safe_relative(operation.get("target_path"), "legacy operation target")
+        operation_type = operation.get("type")
+        if target not in changes or operation_type != changes[target][0]:
+            raise VerificationError(
+                f"reviewed legacy operation differs from derived write set: {target}"
+            )
+        expected_change_id = {
+            "create_exact": "create:",
+            "replace_exact": "replace:",
+            "manifest_patch": "manifest:",
+            "supervised_transform": "supervised-transform:",
+        }[operation_type] + target
+        change_id = operation.get("change_id")
+        if change_id != expected_change_id or change_id in operation_ids:
+            raise VerificationError(f"reviewed legacy change_id is invalid: {target}")
+        operation_ids.add(change_id)
+        _, before, after = changes[target]
+        if operation_type in {"create_exact", "replace_exact"}:
+            assert after is not None
+            _verify_exact_operation(store, operation, operation_type, before, after)
+        elif operation_type == "manifest_patch":
+            assert after is not None
+            _verify_legacy_manifest_operation(
+                operation,
+                {"path": source_binding["path"], "sha256": source_binding["sha256"]},
+                envelope,
+                target_path,
+                after,
+            )
+        else:
+            if operation != {
+                "change_id": "supervised-transform:" + target,
+                "type": "supervised_transform",
+                "target_path": envelope["instruction_surface"]["path"],
+                "source_envelope": {
+                    "path": source_binding["path"],
+                    "sha256": source_binding["sha256"],
+                },
+                "adapter": {
+                    "path": adapter_binding["path"],
+                    "sha256": adapter_binding["sha256"],
+                },
+                "plan_contract": {
+                    "decision": "supervised_migration_available",
+                    "writes": False,
+                    "approval": "one_time_exact_proof_sha256",
+                    "compare_and_swap": "full_file_preimage",
+                    "runtime_apply": "not_implemented",
+                },
+            }:
+                raise VerificationError("reviewed legacy supervised transform is invalid")
+    if set(item["target_path"] for item in operations) != set(changes):
+        raise VerificationError("reviewed legacy write set is incomplete")
+    deferred = profile.get("deferred_rendered_surfaces")
+    expected_deferred = [
+        {
+            "target_path": path,
+            "policy": "preserve_byte_exact_no_write",
+            "version_fact_source": ".evozeus-wrapper/wrapper.json",
+        }
+        for path in sorted(rendered_preserve)
+    ]
+    if deferred != expected_deferred:
+        raise VerificationError("reviewed legacy preserve set differs from envelope")
+    if profile.get("protected_business_surfaces") != [
+        {
+            "selector": "manifest.instruction_surface",
+            "rule": "adapter_proven_complement_bytes_exact",
+        }
+    ]:
+        raise VerificationError("reviewed legacy business preservation is invalid")
+    if profile.get("fallback") != {
+        "unknown_layout": "manual_migration_required_zero_write",
+        "scattered_layout": "manual_migration_required_zero_write",
+        "missing_evidence": "manual_migration_required_zero_write",
+        "ambiguous_prompt": "manual_migration_required_zero_write",
+    }:
+        raise VerificationError("reviewed legacy fallback is invalid")
+    profile["_verified_target_path"] = target_path
+    profile["_active_for_current"] = active_for_current
+    profile["static_write_set"] = [
+        {"target_path": path, "type": changes[path][0]} for path in sorted(changes)
+    ]
+    return profile
+
+
+def load_reviewed_legacy_profiles(
+    store: BlobStore,
+    migration_contract: dict[str, Any],
+    protocol: dict[str, Any],
+) -> list[dict[str, Any]]:
+    path_roots = migration_contract.get("path_roots")
+    if path_roots != {
+        "artifact_path": "contracts/v1",
+        "repository_path": "repository_root",
+        "target_path": "target_repository_root",
+    }:
+        raise VerificationError("Harness migration contract path roots are invalid")
+    raw_bindings = migration_contract.get("reviewed_legacy_migrations")
+    if not isinstance(raw_bindings, list) or len(raw_bindings) != 1:
+        raise VerificationError(
+            "Harness migration contract must bind one reviewed legacy profile"
+        )
+    manifest_files = _contract_manifest_files(store, "contract manifest")
+    repository_files = _contract_manifest_repository_files(store, "contract manifest")
+    profiles = [
+        load_supervised_legacy_profile(
+            store,
+            raw_bindings[0],
+            protocol,
+            manifest_files,
+            repository_files,
+        )
+    ]
+    if len({profile["profile_id"] for profile in profiles}) != len(profiles):
+        raise VerificationError("reviewed legacy profile identities are duplicated")
+    return profiles
+
+
 def verify_catalog(store: BlobStore) -> dict[str, Any]:
     protocol = load_protocol(store)
     history_entries = load_pointer(
@@ -1046,7 +1833,12 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
     )
     if current_closure.get("closure_version") != current["version"]:
         raise VerificationError("Harness closure current pointer version disagrees with closure")
-    _verify_current_release_bindings(store, current_closure)
+    migration_contract = _verify_current_release_bindings(store, current_closure)
+    legacy_profiles = load_reviewed_legacy_profiles(
+        store,
+        migration_contract,
+        protocol,
+    )
     profile_entries = load_pointer(
         store,
         PROFILES_CURRENT_REL,
@@ -1115,6 +1907,15 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
         "profiles": [
             f"{profile['profile_id']}@{profile['profile_version']}" for profile in profiles
         ],
+        "supervised_legacy_profiles": [
+            {
+                "identity": f"{profile['profile_id']}@{profile['profile_version']}",
+                "active_for_current": profile["_active_for_current"],
+                "runtime_apply": profile["execution"]["runtime_apply"],
+                "static_write_set": profile["static_write_set"],
+            }
+            for profile in legacy_profiles
+        ],
     }
 
 
@@ -1144,6 +1945,8 @@ def _protected_candidate_change(
         return True
     if path.startswith("contracts/v1/migrations/schemas/"):
         return True
+    if base.exists(path) and path.startswith(PROTECTED_LEGACY_DATA_PREFIXES):
+        return True
     if any(path.startswith(prefix) for prefix in immutable_history_prefixes):
         return True
     if (
@@ -1166,6 +1969,17 @@ def _contract_manifest_document(
         raise VerificationError(f"{label} bundle identity is invalid")
     if manifest.get("source_repository") != "MetaInFLow/EvoZeus-CoEvolve":
         raise VerificationError(f"{label} source repository is invalid")
+    if set(manifest) != {
+        "schema_version",
+        "bundle_id",
+        "bundle_version",
+        "source_repository",
+        "source_revision",
+        "runtime_compatibility",
+        "files",
+        "trusted_repository_files",
+    }:
+        raise VerificationError(f"{label} top-level contract is invalid")
     _semver(manifest.get("bundle_version"), f"{label} bundle version")
     _semver(manifest.get("source_revision"), f"{label} source revision")
     return manifest
@@ -1196,6 +2010,37 @@ def _contract_manifest_files(
     return files
 
 
+def _contract_manifest_repository_files(
+    store: BlobStore,
+    label: str,
+) -> dict[str, dict[str, str]]:
+    manifest = _contract_manifest_document(store, label)
+    raw_files = manifest.get("trusted_repository_files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise VerificationError(f"{label} trusted repository files are missing")
+    files: dict[str, dict[str, str]] = {}
+    for item in raw_files:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256", "role"}:
+            raise VerificationError(
+                f"{label} contains an invalid trusted repository file entry"
+            )
+        path = _safe_relative(item.get("path"), f"{label} repository file path")
+        if path.startswith(BUNDLE_PREFIX) or path in files:
+            raise VerificationError(
+                f"{label} contains a duplicate or bundle-relative repository path: {path}"
+            )
+        role = item.get("role")
+        if not isinstance(role, str) or not role:
+            raise VerificationError(f"{label} repository file role is invalid: {path}")
+        files[path] = {
+            "sha256": _require_sha256(
+                item.get("sha256"), f"{label} repository file digest"
+            ),
+            "role": role,
+        }
+    return files
+
+
 def _verify_contract_manifest_digests(
     store: BlobStore,
     files: dict[str, dict[str, str]],
@@ -1210,12 +2055,33 @@ def _verify_contract_manifest_digests(
             )
 
 
+def _verify_contract_manifest_repository_digests(
+    store: BlobStore,
+    files: dict[str, dict[str, str]],
+    label: str,
+) -> None:
+    for relative, item in files.items():
+        actual = _sha256(store.read_bytes(relative))
+        if actual != item["sha256"]:
+            raise VerificationError(
+                f"{label} trusted repository digest mismatch: {relative}: "
+                f"expected={item['sha256']}; actual={actual}"
+            )
+
+
 def _verify_current_release_bindings(
     store: BlobStore,
     current_closure: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     manifest = _contract_manifest_document(store, "contract manifest")
     manifest_files = _contract_manifest_files(store, "contract manifest")
+    _verify_contract_manifest_digests(store, manifest_files, "contract manifest")
+    repository_files = _contract_manifest_repository_files(store, "contract manifest")
+    _verify_contract_manifest_repository_digests(
+        store,
+        repository_files,
+        "contract manifest",
+    )
     migration_relative = MIGRATION_CONTRACT_REL.removeprefix(BUNDLE_PREFIX)
     migration_entry = manifest_files.get(migration_relative)
     if migration_entry is None or migration_entry.get("role") != "harness-migration-contract":
@@ -1261,6 +2127,39 @@ def _verify_current_release_bindings(
         raise VerificationError(
             "Harness migration current_harness_skill_version disagrees with current closure"
         )
+    closure_contract_entries = [
+        item
+        for item in current_closure.get("files", [])
+        if isinstance(item, dict) and item.get("target_path") == (
+            ".evozeus-wrapper/contracts/harness-migration-contract-v1.json"
+        )
+    ]
+    if (
+        len(closure_contract_entries) != 1
+        or closure_contract_entries[0].get("sha256") != migration_digest
+        or closure_contract_entries[0].get("source_path") != MIGRATION_CONTRACT_REL
+    ):
+        raise VerificationError(
+            "current closure does not exactly bind the Harness migration contract"
+        )
+    manifest_states = [
+        item
+        for item in current_closure.get("files", [])
+        if isinstance(item, dict) and item.get("kind") == "manifest_state"
+    ]
+    manifest_contract = (
+        manifest_states[0].get("owned_state", {}).get("migration_contract")
+        if len(manifest_states) == 1
+        and isinstance(manifest_states[0].get("owned_state"), dict)
+        else None
+    )
+    if not isinstance(manifest_contract, dict) or manifest_contract.get(
+        "sha256"
+    ) != "sha256:" + migration_digest:
+        raise VerificationError(
+            "current closure manifest state does not bind the migration contract"
+        )
+    return migration_contract
 
 
 def verify_repository_history(
@@ -1276,6 +2175,14 @@ def verify_repository_history(
     _verify_contract_manifest_digests(
         store,
         manifest_files,
+        "repository history manifest",
+    )
+    repository_files = _contract_manifest_repository_files(
+        store, "repository history manifest"
+    )
+    _verify_contract_manifest_repository_digests(
+        store,
+        repository_files,
         "repository history manifest",
     )
     closure_paths = sorted(
@@ -1439,6 +2346,21 @@ def _verify_candidate_contract_manifest(
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     base_files = _contract_manifest_files(base, "trusted base contract manifest")
     candidate_files = _contract_manifest_files(candidate, "candidate contract manifest")
+    base_repository_files = _contract_manifest_repository_files(
+        base, "trusted base contract manifest"
+    )
+    candidate_repository_files = _contract_manifest_repository_files(
+        candidate, "candidate contract manifest"
+    )
+    if candidate_repository_files != base_repository_files:
+        raise VerificationError(
+            "candidate cannot rotate trusted repository files as migration data"
+        )
+    _verify_contract_manifest_repository_digests(
+        candidate,
+        candidate_repository_files,
+        "candidate contract manifest",
+    )
     expected_paths = set(base_files)
     for path, change in changes.items():
         if not path.startswith(BUNDLE_PREFIX) or path == CONTRACT_MANIFEST_REL:
@@ -1560,6 +2482,33 @@ def _canonical_active_profile_path(profile_id: object, profile_version: object) 
     return f"{BUNDLE_PREFIX}migrations/profiles/{profile_id}-v{major}.json"
 
 
+def _legacy_trust_anchor_projection(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    bindings = contract.get("reviewed_legacy_migrations")
+    if not isinstance(bindings, list):
+        raise VerificationError("Harness migration contract legacy bindings are missing")
+    projection: list[dict[str, Any]] = []
+    for item in bindings:
+        if not isinstance(item, dict):
+            raise VerificationError("Harness migration contract legacy binding is invalid")
+        adapter = item.get("adapter")
+        lineage = item.get("release_lineage")
+        if not isinstance(adapter, dict) or not isinstance(lineage, dict):
+            raise VerificationError("Harness migration contract legacy trust anchor is invalid")
+        projection.append(
+            {
+                "source_envelope": item.get("source_envelope"),
+                "adapter": {
+                    key: adapter.get(key)
+                    for key in ("path", "sha256", "schema", "implementation")
+                },
+                "source_repository": lineage.get("source_repository"),
+                "source_commit": lineage.get("source_commit"),
+                "source_tree": lineage.get("source_tree"),
+            }
+        )
+    return projection
+
+
 def verify_candidate(
     base: FilesystemStore,
     changes: dict[str, CandidateBlob],
@@ -1590,6 +2539,22 @@ def verify_candidate(
                 f"candidate adds a symlink, submodule or unsupported object: {path}"
             )
     candidate = CandidateStore(base, changes)
+    base_contract = _json_file(
+        base,
+        MIGRATION_CONTRACT_REL,
+        "trusted base Harness migration contract",
+    )
+    candidate_contract = _json_file(
+        candidate,
+        MIGRATION_CONTRACT_REL,
+        "candidate Harness migration contract",
+    )
+    if _legacy_trust_anchor_projection(candidate_contract) != (
+        _legacy_trust_anchor_projection(base_contract)
+    ):
+        raise VerificationError(
+            "candidate data cannot rotate a trusted legacy envelope or adapter"
+        )
     base_manifest_files, candidate_manifest_files = _verify_candidate_contract_manifest(
         base,
         candidate,
