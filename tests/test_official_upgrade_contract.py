@@ -3564,6 +3564,10 @@ def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> N
         assert checkout["with"]["fetch-depth"] == "1"
         assert checkout["with"]["persist-credentials"] == "false"
     test_commands = _job_commands(test_job)
+    assert "python -m pip install --require-hashes -r requirements-commonmark.lock" in test_commands
+    assert test_commands.index("--require-hashes -r requirements-commonmark.lock") < test_commands.index(
+        "python -m pytest -q"
+    )
     assert "python -m pytest -q" in test_commands
     assert "verify-base" not in test_commands
     assert "verify-release" not in test_commands
