@@ -12,15 +12,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Historical closure tests compare frozen artifacts with their exact
           # construction revisions, so the verifier needs those commits locally.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade pip pytest pydantic pyyaml
+      - run: python -m pip install --upgrade pip
+      - name: Install hash-locked CommonMark parser
+        run: python -m pip install --require-hashes -r requirements-commonmark.lock
+      - run: python -m pip install --upgrade pytest pydantic pyyaml
       - run: python -m pytest -q
       - name: Verify immutable Harness history and release bindings
         run: python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .

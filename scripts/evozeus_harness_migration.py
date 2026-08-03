@@ -465,6 +465,7 @@ def target_git_state(target: Path) -> dict[str, Any]:
         "target_binding": binding,
         "head_commit": head.stdout.strip(),
         "head_tree_oid": tree.stdout.strip(),
+        "git_index_file": git_index_state(target),
         "index_sha256": f"sha256:{sha256_bytes(index.stdout)}",
         "status_sha256": f"sha256:{sha256_bytes(status_result.stdout)}",
         "status_clean": status_result.stdout == b"",
@@ -687,20 +688,122 @@ def _read_owned_snapshot_file(
 
 
 def _git(wrapper_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
         ["git", "-C", str(wrapper_root), *args],
         text=True,
         capture_output=True,
         check=False,
+        env=environment,
     )
 
 
 def _git_bytes(wrapper_root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
         ["git", "-C", str(wrapper_root), *args],
         capture_output=True,
         check=False,
+        env=environment,
     )
+
+
+def git_index_state(repository_root: Path) -> dict[str, Any]:
+    """Capture the exact Git index file identity without optional Git writes."""
+    resolved = _git(
+        repository_root,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "index",
+    )
+    if resolved.returncode != 0 or not resolved.stdout.strip():
+        raise ValueError("Git index path cannot be resolved")
+    index_path = Path(resolved.stdout.strip())
+    if not index_path.is_absolute():
+        index_path = repository_root / index_path
+    index_path = Path(os.path.abspath(os.fspath(index_path)))
+    try:
+        named = os.lstat(index_path)
+    except FileNotFoundError:
+        return {
+            "kind": "absent",
+            "path": str(index_path),
+        }
+    if stat.S_ISLNK(named.st_mode) or not stat.S_ISREG(named.st_mode):
+        raise ValueError("Git index is not a regular no-follow file")
+    descriptor = os.open(
+        index_path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise ValueError("Git index identity changed while reading")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        rebound = os.lstat(index_path)
+        if (
+            stat.S_ISLNK(rebound.st_mode)
+            or not stat.S_ISREG(rebound.st_mode)
+            or (rebound.st_dev, rebound.st_ino) != (opened.st_dev, opened.st_ino)
+            or rebound.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise ValueError("Git index identity changed after reading")
+        return {
+            "kind": "file",
+            "path": str(index_path),
+            "sha256": f"sha256:{sha256_bytes(data)}",
+            "byte_length": len(data),
+            "mode": stat.S_IMODE(opened.st_mode),
+            "st_dev": opened.st_dev,
+            "st_ino": opened.st_ino,
+            "mtime_ns": opened.st_mtime_ns,
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _filesystem_git_mode(path: Path) -> str:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"trusted source is not a regular file: {path}")
+    return "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+
+
+def _git_tree_blob_mode(
+    repository_root: Path,
+    revision: str,
+    relative: str,
+) -> str | None:
+    listing = _git_bytes(
+        repository_root,
+        "ls-tree",
+        "-z",
+        revision,
+        "--",
+        relative,
+    )
+    if listing.returncode != 0 or not listing.stdout.endswith(b"\0"):
+        return None
+    metadata, separator, listed = listing.stdout[:-1].partition(b"\t")
+    fields = metadata.split()
+    if (
+        separator != b"\t"
+        or listed.decode("utf-8", errors="strict") != relative
+        or len(fields) != 3
+        or fields[1] != b"blob"
+    ):
+        return None
+    mode = fields[0].decode("ascii", errors="strict")
+    return mode if mode in {"100644", "100755"} else None
 
 
 def _repo_from_remote(remote: str) -> str | None:
@@ -902,9 +1005,21 @@ def _release_source_trust(
                 working_manifest_bytes = (
                     wrapper_root / MIGRATION_CONTRACT_BUNDLE_ROOT / "manifest.json"
                 ).read_bytes()
+                working_manifest_mode = _filesystem_git_mode(
+                    wrapper_root / MIGRATION_CONTRACT_BUNDLE_ROOT / "manifest.json"
+                )
+                tagged_manifest_mode = _git_tree_blob_mode(
+                    wrapper_root,
+                    revision,
+                    f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/manifest.json",
+                )
                 if tagged_manifest_bytes != working_manifest_bytes:
                     reasons.append(
                         "working contract bundle manifest differs from the declared release artifact"
+                    )
+                if working_manifest_mode != "100644" or tagged_manifest_mode != "100644":
+                    reasons.append(
+                        "contract bundle manifest mode differs across working tree and release tag"
                     )
                 try:
                     tagged_manifest = _strict_json_loads(
@@ -921,9 +1036,10 @@ def _release_source_trust(
                         continue
                     entry_path = entry.get("path")
                     expected_entry_sha256 = entry.get("sha256")
+                    expected_entry_mode = entry.get("mode")
                     if not isinstance(entry_path, str) or not _is_plain_sha256(
                         expected_entry_sha256
-                    ):
+                    ) or expected_entry_mode not in {"100644", "100755"}:
                         reasons.append("contract bundle file identity is incomplete")
                         continue
                     try:
@@ -940,6 +1056,15 @@ def _release_source_trust(
                         reasons.append(str(exc))
                         continue
                     working_entry_bytes = working_entry.read_bytes()
+                    working_entry_mode = _filesystem_git_mode(working_entry)
+                    tagged_entry_mode = _git_tree_blob_mode(
+                        wrapper_root,
+                        revision,
+                        (
+                            f"{MIGRATION_CONTRACT_BUNDLE_ROOT}/"
+                            f"{entry_relative.as_posix()}"
+                        ),
+                    )
                     tagged_entry_result = _git_bytes(
                         wrapper_root,
                         "show",
@@ -949,6 +1074,10 @@ def _release_source_trust(
                         reasons.append(
                             f"working contract bundle file digest mismatch: {entry_path}"
                         )
+                    if working_entry_mode != expected_entry_mode:
+                        reasons.append(
+                            f"working contract bundle file mode mismatch: {entry_path}"
+                        )
                     if tagged_entry_result.returncode != 0:
                         reasons.append(
                             f"contract bundle file is absent from release tag: {entry_path}"
@@ -956,6 +1085,7 @@ def _release_source_trust(
                     elif (
                         tagged_entry_result.stdout != working_entry_bytes
                         or sha256_bytes(tagged_entry_result.stdout) != expected_entry_sha256
+                        or tagged_entry_mode != expected_entry_mode
                     ):
                         reasons.append(
                             f"contract bundle file is not release-bound: {entry_path}"
@@ -1046,9 +1176,10 @@ def _release_source_trust(
                         continue
                     source_path = repository_file.get("path")
                     expected_sha256 = repository_file.get("sha256")
+                    expected_mode = repository_file.get("mode")
                     if not isinstance(source_path, str) or not _is_plain_sha256(
                         expected_sha256
-                    ):
+                    ) or expected_mode not in {"100644", "100755"}:
                         reasons.append("trusted repository file identity is incomplete")
                         continue
                     try:
@@ -1065,6 +1196,12 @@ def _release_source_trust(
                         reasons.append(str(exc))
                         continue
                     working_bytes = working_path.read_bytes()
+                    working_mode = _filesystem_git_mode(working_path)
+                    tagged_mode = _git_tree_blob_mode(
+                        wrapper_root,
+                        revision,
+                        relative.as_posix(),
+                    )
                     tagged_source = _git_bytes(
                         wrapper_root,
                         "show",
@@ -1082,12 +1219,20 @@ def _release_source_trust(
                             "declared_sha256": expected_sha256,
                             "working_sha256": working_sha256,
                             "tagged_sha256": tagged_sha256,
+                            "declared_mode": expected_mode,
+                            "working_mode": working_mode,
+                            "tagged_mode": tagged_mode,
                             "role": repository_file.get("role"),
                         }
                     )
                     if working_sha256 != expected_sha256:
                         reasons.append(
                             "working trusted repository file digest mismatch: "
+                            + source_path
+                        )
+                    if working_mode != expected_mode:
+                        reasons.append(
+                            "working trusted repository file mode mismatch: "
                             + source_path
                         )
                     if tagged_source.returncode != 0:
@@ -1098,6 +1243,7 @@ def _release_source_trust(
                     elif (
                         tagged_sha256 != expected_sha256
                         or tagged_source.stdout != working_bytes
+                        or tagged_mode != expected_mode
                     ):
                         reasons.append(
                             "trusted repository file is not release-bound: "
@@ -1494,6 +1640,13 @@ def load_migration_contract(
         if wrapper_root is None
         else wrapper_root.expanduser().resolve()
     )
+    git_repository = _git(wrapper_root, "rev-parse", "--is-inside-work-tree")
+    if git_repository.returncode == 0:
+        if git_repository.stdout.strip() != "true":
+            raise ValueError("migration authority source is not a Git worktree")
+        source_git_index: dict[str, Any] | None = git_index_state(wrapper_root)
+    else:
+        source_git_index = None
     bundle_root = wrapper_root / MIGRATION_CONTRACT_BUNDLE_ROOT
     bundle_manifest_path = _safe_file_below(
         wrapper_root,
@@ -1761,6 +1914,10 @@ def load_migration_contract(
         contract,
         remote_tag_resolver,
     )
+    if source_git_index is not None:
+        source_git_index_after = git_index_state(wrapper_root)
+        if source_git_index_after != source_git_index:
+            raise ValueError("source Git index changed while loading migration authority")
     return {
         "contract": contract,
         "contract_source": contract_source,
@@ -1776,6 +1933,7 @@ def load_migration_contract(
         "path": contract_path,
         "wrapper_root": wrapper_root,
         "source_trust": source_trust,
+        "source_git_index": source_git_index,
         "official_upgrade": official_upgrade,
         "current_closure": copy.deepcopy(official_upgrade["current_closure"]),
     }
@@ -1842,7 +2000,91 @@ def supervised_legacy_profile_identity(profile: dict[str, Any]) -> dict[str, Any
         "release_axis": copy.deepcopy(profile.get("release_axis")),
         "execution": copy.deepcopy(profile.get("execution")),
         "automatic": profile.get("automatic"),
+        "trusted_source_assets": copy.deepcopy(
+            profile.get("_verified_trusted_source_assets")
+        ),
     }
+
+
+def verify_supervised_legacy_source_assets(
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Revalidate every verifier-approved planning asset by bytes and Git mode."""
+    identity = supervised_legacy_profile_identity(profile)
+    assets = identity.get("trusted_source_assets")
+    if not isinstance(assets, dict) or set(assets) != {
+        "schema_version",
+        "proof_identity",
+        "profile",
+        "target_closure_pointer",
+        "target_closure",
+        "source_envelope",
+        "adapter",
+        "implementation",
+        "templates",
+        "commonmark_dependency_lock",
+    } or assets.get("schema_version") != (
+        "evozeus.coevolve.supervised-source-assets.v1"
+    ):
+        raise ValueError("verifier-approved supervised source assets are incomplete")
+    proof_identity = assets.get("proof_identity")
+    if not isinstance(proof_identity, dict) or set(proof_identity) != {
+        "adapter",
+        "source_envelope",
+    }:
+        raise ValueError("verifier-approved supervised proof identity is incomplete")
+    templates = assets.get("templates")
+    if not isinstance(templates, list) or len(templates) != 3:
+        raise ValueError("verifier-approved supervised templates are incomplete")
+    records = [
+        assets["profile"],
+        assets["target_closure_pointer"],
+        assets["target_closure"],
+        assets["source_envelope"],
+        assets["adapter"],
+        assets["implementation"],
+        *templates,
+        assets["commonmark_dependency_lock"],
+    ]
+    wrapper_root = migration_bundle.get("wrapper_root")
+    if not isinstance(wrapper_root, Path):
+        raise ValueError("supervised source repository root is missing")
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {
+            "path",
+            "sha256",
+            "mode",
+            "role",
+        }:
+            raise ValueError("verifier-approved supervised source identity is invalid")
+        relative = _safe_relative_path(
+            record.get("path"),
+            "supervised trusted source path",
+        )
+        path_text = relative.as_posix()
+        if path_text in seen:
+            raise ValueError("verifier-approved supervised source path is duplicated")
+        seen.add(path_text)
+        if not _is_plain_sha256(record.get("sha256")) or record.get("mode") not in {
+            "100644",
+            "100755",
+        }:
+            raise ValueError("verifier-approved supervised source bytes/mode are invalid")
+        source = _safe_file_below(
+            wrapper_root,
+            relative,
+            "supervised trusted source asset",
+        )
+        if (
+            sha256_file(source) != record["sha256"]
+            or _filesystem_git_mode(source) != record["mode"]
+        ):
+            raise ValueError(
+                "supervised trusted source asset bytes/mode changed: " + path_text
+            )
+    return copy.deepcopy(assets)
 
 
 def _safe_relative_path(raw: object, label: str = "migration path") -> Path:
@@ -3463,7 +3705,31 @@ def collect_supervised_legacy_evidence(
     wrapper_root = migration_bundle.get("wrapper_root")
     if not isinstance(wrapper_root, Path):
         raise ValueError("supervised legacy adapter repository root is missing")
+    trusted_source_assets = verify_supervised_legacy_source_assets(
+        migration_bundle,
+        profile,
+    )
     frozen = legacy_adapter.load_frozen_bundle(wrapper_root)
+    expected_proof_assets = {
+        key: copy.deepcopy(trusted_source_assets[key])
+        for key in (
+            "adapter",
+            "source_envelope",
+            "implementation",
+            "templates",
+            "commonmark_dependency_lock",
+        )
+    }
+    if (
+        frozen.trusted_source_assets != expected_proof_assets
+        or frozen.adapter_identity
+        != trusted_source_assets["proof_identity"]["adapter"]
+        or frozen.envelope_identity
+        != trusted_source_assets["proof_identity"]["source_envelope"]
+    ):
+        raise ValueError(
+            "executing supervised legacy adapter assets differ from verifier approval"
+        )
     implementation = frozen.adapter.get("implementation")
     implementation_module = getattr(legacy_adapter, "__file__", None)
     entrypoint = getattr(
@@ -3543,12 +3809,25 @@ def collect_supervised_legacy_evidence(
         file_states=adapter_states,
         bundle=frozen,
     )
+    proof = result.proof
+    if (
+        not isinstance(proof, dict)
+        or proof.get("trusted_source_assets") != expected_proof_assets
+        or proof.get("adapter")
+        != trusted_source_assets["proof_identity"]["adapter"]
+        or proof.get("source_envelope")
+        != trusted_source_assets["proof_identity"]["source_envelope"]
+    ):
+        raise ValueError(
+            "supervised legacy proof source assets differ from verifier approval"
+        )
     return {
         "decision": result.decision,
         "proof": copy.deepcopy(result.proof),
         "postimage": result.postimage,
         "target_file_states": raw_states,
         "profile_identity": planned_identity,
+        "trusted_source_assets": trusted_source_assets,
         "_manifest_bytes": manifest_bytes,
         "_surface_bytes": surface_bytes,
     }

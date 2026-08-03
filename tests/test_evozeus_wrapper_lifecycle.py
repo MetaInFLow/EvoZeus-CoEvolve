@@ -3792,6 +3792,10 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             encoding="utf-8",
         )
         shutil.copytree(Path("contracts"), wrapper_root / "contracts")
+        shutil.copy2(
+            Path("requirements-commonmark.lock"),
+            wrapper_root / "requirements-commonmark.lock",
+        )
         for relative in (
             "scripts/evozeus_wrapper_preflight.py",
             "scripts/evozeus_harness_legacy_prompt_adapter.py",

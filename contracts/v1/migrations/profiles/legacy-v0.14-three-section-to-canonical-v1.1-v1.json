@@ -8,7 +8,7 @@
   },
   "protocol": {
     "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-    "sha256": "e53ba69f9d8071cc7187fb44f7284d74416cf9f8d4c96d35f2d85f66dc2cfaad"
+    "sha256": "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360"
   },
   "source_envelope": {
     "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
@@ -16,7 +16,7 @@
   },
   "adapter": {
     "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-    "sha256": "ea82bfb8fbeae9e1f5e89302ca0c6f4ea718ee3577bddc0bedc352682d4da9ca"
+    "sha256": "04d410940e61a088cea5fd4d2dac926e5cc4ce63ab11adda000d254544be839f"
   },
   "target_closure_pointer": {
     "path": "migrations/history/harness-skill/current.json",
@@ -66,7 +66,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e",
+        "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
         "mode": "100644"
       }
     },
@@ -161,7 +161,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e"
+            "sha256": "sha256:8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e"
           }
         },
         {
@@ -204,7 +204,7 @@
       },
       "adapter": {
         "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-        "sha256": "ea82bfb8fbeae9e1f5e89302ca0c6f4ea718ee3577bddc0bedc352682d4da9ca"
+        "sha256": "04d410940e61a088cea5fd4d2dac926e5cc4ce63ab11adda000d254544be839f"
       },
       "plan_contract": {
         "decision": "supervised_migration_available",

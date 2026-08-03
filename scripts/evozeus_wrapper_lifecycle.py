@@ -3997,6 +3997,20 @@ def _supervised_legacy_write_plan(
     evidence: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, bytes], list[dict[str, Any]]]:
     proof = evidence.get("proof")
+    trusted_source_assets = migration_kernel.verify_supervised_legacy_source_assets(
+        migration_bundle,
+        profile,
+    )
+    expected_proof_assets = {
+        key: copy.deepcopy(trusted_source_assets[key])
+        for key in (
+            "adapter",
+            "source_envelope",
+            "implementation",
+            "templates",
+            "commonmark_dependency_lock",
+        )
+    }
     proof_without_digest = copy.deepcopy(proof) if isinstance(proof, dict) else None
     proof_sha256 = (
         proof_without_digest.pop("proof_sha256", None)
@@ -4008,10 +4022,16 @@ def _supervised_legacy_write_plan(
         or not isinstance(evidence.get("postimage"), bytes)
         or evidence.get("profile_identity")
         != migration_kernel.supervised_legacy_profile_identity(profile)
+        or evidence.get("trusted_source_assets") != trusted_source_assets
         or not isinstance(proof, dict)
         or proof.get("decision") != "supervised_migration_available"
         or proof.get("writes") is not False
         or proof.get("destructive_authority") is not False
+        or proof.get("trusted_source_assets") != expected_proof_assets
+        or proof.get("adapter")
+        != trusted_source_assets["proof_identity"]["adapter"]
+        or proof.get("source_envelope")
+        != trusted_source_assets["proof_identity"]["source_envelope"]
         or proof_sha256
         != "sha256:" + migration_kernel.canonical_json_sha256(proof_without_digest)
     ):
@@ -4061,6 +4081,7 @@ def _supervised_legacy_write_plan(
         "_verified_profile_sha256",
         "_verified_target_closure",
         "_verified_target_path",
+        "_verified_trusted_source_assets",
         "static_write_set",
     }
     runtime_payload = {
@@ -4650,6 +4671,20 @@ def plan_target_layout_migration(
         wrapper_root,
         remote_tag_resolver=remote_tag_resolver,
     )
+    expected_source_git_index = migration_bundle.get("source_git_index")
+    source_git_index_before: dict[str, Any] | None = None
+    source_authority_errors: list[str] = []
+    source_root = migration_bundle.get("wrapper_root")
+    try:
+        if not isinstance(source_root, Path) or not isinstance(
+            expected_source_git_index, dict
+        ):
+            raise ValueError("source Git index authority snapshot is missing")
+        source_git_index_before = migration_kernel.git_index_state(source_root)
+        if source_git_index_before != expected_source_git_index:
+            raise ValueError("source Git index changed after authority verification")
+    except (OSError, ValueError) as exc:
+        source_authority_errors.append(str(exc))
     migration_contract = migration_bundle["contract"]
     activation_contract = migration_contract["canonical_activation_block"]
     legacy_profile = migration_kernel.contract_profile(
@@ -4777,6 +4812,8 @@ def plan_target_layout_migration(
     ] = []
     for supervised_candidate in supervised_state_candidates:
         try:
+            if source_authority_errors:
+                raise ValueError("; ".join(source_authority_errors))
             supervised_evidence = (
                 migration_kernel.collect_supervised_legacy_evidence(
                     target,
@@ -5450,6 +5487,68 @@ def plan_target_layout_migration(
         if target_git_state is not None
         else None
     )
+    final_authority_errors = list(source_authority_errors)
+    try:
+        if not isinstance(source_root, Path) or source_git_index_before is None:
+            raise ValueError("source Git index planning snapshot is unavailable")
+        if migration_kernel.git_index_state(source_root) != source_git_index_before:
+            raise ValueError("source Git index changed during zero-write planning")
+        if target_git_state is not None and (
+            migration_kernel.target_git_state(target) != target_git_state
+        ):
+            raise ValueError("target Git index/tree changed during zero-write planning")
+        if selected_is_supervised and isinstance(selected_profile, dict):
+            final_assets = migration_kernel.verify_supervised_legacy_source_assets(
+                migration_bundle,
+                selected_profile,
+            )
+            if final_assets != (
+                migration_kernel.supervised_legacy_profile_identity(
+                    selected_profile
+                ).get("trusted_source_assets")
+            ):
+                raise ValueError(
+                    "supervised trusted source assets changed during planning"
+                )
+    except (OSError, ValueError) as exc:
+        final_authority_errors.append(str(exc))
+    if final_authority_errors:
+        diagnostic = "; ".join(dict.fromkeys(final_authority_errors))
+        plan["decision"] = "manual_migration_required"
+        plan["write_set"] = []
+        plan["managed_file_refreshes"] = []
+        plan["post_apply_baseline"] = None
+        plan["can_apply"] = False
+        plan["conflicts"] = list(dict.fromkeys([*plan["conflicts"], diagnostic]))
+        plan["apply_blockers"] = list(
+            dict.fromkeys(
+                [
+                    *plan["apply_blockers"],
+                    diagnostic,
+                    "no verified migration profile authorizes an exact write plan",
+                ]
+            )
+        )
+        instruction_path = target / instruction_surface
+        if instruction_path.is_file() and not instruction_path.is_symlink():
+            plan["protected_business_surfaces"] = [
+                {
+                    "path": instruction_surface,
+                    "rule": "byte_exact",
+                    "preimage_sha256": (
+                        f"sha256:{file_sha256(instruction_path)}"
+                    ),
+                    "planned_write": False,
+                }
+            ]
+    plan["zero_write_git_indexes"] = {
+        "source": source_git_index_before,
+        "target": (
+            target_git_state.get("git_index_file")
+            if isinstance(target_git_state, dict)
+            else None
+        ),
+    }
     plan["plan_sha256"] = f"sha256:{migration_kernel.migration_plan_digest(plan)}"
     return plan
 

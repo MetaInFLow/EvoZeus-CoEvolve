@@ -64,7 +64,7 @@
       "mode": "100644",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-      "sha256": "b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e",
+      "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
       "materialization": {
         "policy": "copy_exact"
       },
@@ -280,7 +280,7 @@
           "contract_id": "evozeus-harness-migration",
           "contract_version": "v1.0.0",
           "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-          "sha256": "sha256:b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e"
+          "sha256": "sha256:8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e"
         },
         "managed_blocks": [
           {

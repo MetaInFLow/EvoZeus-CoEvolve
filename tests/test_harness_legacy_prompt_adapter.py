@@ -353,6 +353,120 @@ def test_code_fenced_lookalikes_are_business_bytes_not_wrapper_ambiguity(
     ]
 
 
+@pytest.mark.parametrize(
+    "visible_duplicate",
+    [
+        "\n## EvoZeus-CoEvolve 状态检查\n\nATX duplicate.\n",
+        "\nEvoZeus-CoEvolve 状态检查\n-------------------------------\n\nSetext duplicate.\n",
+        "\n> ## EvoZeus-CoEvolve 状态检查\n>\n> blockquote duplicate.\n",
+        (
+            "\n## *EvoZeus*-CoEvolve "
+            "[状态](https://example.invalid)&#x68C0;&#x67E5;\n\n"
+            "Inline AST duplicate.\n"
+        ),
+        "\n## EvoZeus-CoEvolve `状态检查`\n\nCode inline duplicate.\n",
+        (
+            "\n## ![EvoZeus-CoEvolve 状态检查]"
+            "(https://example.invalid/heading.png)\n\nImage alt duplicate.\n"
+        ),
+        "\n<h2>EvoZeus-CoEvolve <em>状态</em>&#x68C0;&#x67E5;</h2>\n",
+        (
+            "\nvisible HTML inline <h2>EvoZeus-CoEvolve "
+            "<span>状态</span>&#x68C0;&#x67E5;</h2> tail\n"
+        ),
+    ],
+    ids=[
+        "atx",
+        "setext",
+        "blockquote",
+        "emphasis-link-entity",
+        "code-inline",
+        "image-alt",
+        "html-block",
+        "html-inline",
+    ],
+)
+def test_commonmark_ast_visible_heading_forms_fail_closed(
+    bundle: adapter.FrozenLegacyPromptBundle,
+    visible_duplicate: str,
+) -> None:
+    surface = SURFACE_PATH.read_bytes()
+    anchor = (
+        "把简短的企业描述转化为紧凑、可决策、可验证的 AI 场景诊断。"
+        "默认使用中文；用户明确使用其他语言时跟随用户语言。\n"
+    )
+    surface = surface.replace(
+        anchor.encode("utf-8"),
+        (anchor + visible_duplicate).encode("utf-8"),
+        1,
+    )
+
+    result = _plan(surface, bundle=bundle)
+
+    _assert_manual(result, "legacy status heading is missing or ambiguous")
+
+
+def test_indented_code_heading_is_ignored_as_business_bytes(
+    bundle: adapter.FrozenLegacyPromptBundle,
+) -> None:
+    surface = SURFACE_PATH.read_bytes()
+    anchor = (
+        "把简短的企业描述转化为紧凑、可决策、可验证的 AI 场景诊断。"
+        "默认使用中文；用户明确使用其他语言时跟随用户语言。\n"
+    )
+    lookalike = "\n    ## EvoZeus-CoEvolve 状态检查\n"
+    surface = surface.replace(
+        anchor.encode("utf-8"),
+        (anchor + lookalike).encode("utf-8"),
+        1,
+    )
+
+    result = _plan(surface, bundle=bundle)
+
+    assert result.decision == adapter.SUPERVISED_DECISION
+    assert result.postimage is not None
+    assert lookalike.encode("utf-8") in result.postimage
+
+
+@pytest.mark.parametrize(
+    "dependency_state",
+    ["missing", "wrong-parser-version", "wrong-transitive-version"],
+)
+def test_commonmark_dependency_failure_is_manual_zero_write(
+    bundle: adapter.FrozenLegacyPromptBundle,
+    monkeypatch: pytest.MonkeyPatch,
+    dependency_state: str,
+) -> None:
+    if dependency_state == "missing":
+        def missing(_distribution: str) -> str:
+            raise adapter.importlib.metadata.PackageNotFoundError("markdown-it-py")
+
+        monkeypatch.setattr(adapter.importlib.metadata, "version", missing)
+        reason = "dependency is unavailable"
+    elif dependency_state == "wrong-parser-version":
+        monkeypatch.setattr(
+            adapter.importlib.metadata,
+            "version",
+            lambda _distribution: "3.0.0",
+        )
+        reason = "parser version differs"
+    else:
+        monkeypatch.setattr(
+            adapter.importlib.metadata,
+            "version",
+            lambda distribution: (
+                adapter.COMMONMARK_VERSION
+                if distribution == adapter.COMMONMARK_DISTRIBUTION
+                else "9.9.9"
+            ),
+        )
+        reason = "parser version differs"
+
+    result = _plan(SURFACE_PATH.read_bytes(), bundle=bundle)
+
+    _assert_manual(result, reason)
+
+
 def test_backtick_in_backtick_fence_info_does_not_hide_visible_duplicate_heading(
     bundle: adapter.FrozenLegacyPromptBundle,
 ) -> None:
@@ -668,6 +782,10 @@ def test_frozen_bundle_rejects_template_drift_before_target_analysis(
     shutil.copytree(
         ROOT / "contracts/v1/migrations",
         tmp_path / "contracts/v1/migrations",
+    )
+    shutil.copy2(
+        ROOT / "requirements-commonmark.lock",
+        tmp_path / "requirements-commonmark.lock",
     )
     template = (
         tmp_path

@@ -103,6 +103,10 @@ def _make_release_source(
         ROOT / "scripts/evozeus_harness_legacy_prompt_adapter.py",
         legacy_adapter_source,
     )
+    shutil.copy2(
+        ROOT / "requirements-commonmark.lock",
+        source / "requirements-commonmark.lock",
+    )
 
     manifest_path = source / "contracts/v1/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -388,6 +392,44 @@ def test_source_trust_uses_structured_official_tag_attestation(tmp_path: Path) -
     assert bundle["source_trust"]["remote_tag_attestation"] == _SOURCE_TAG_ATTESTATIONS[
         str(source)
     ]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "contracts/v1/migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
+        "contracts/v1/migrations/history/harness-skill/current.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json",
+        "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
+        "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",
+        "scripts/evozeus_harness_legacy_prompt_adapter.py",
+        "requirements-commonmark.lock",
+    ],
+)
+def test_release_source_trust_rejects_working_tree_mode_only_drift(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    source = _make_release_source(tmp_path)
+    (source / relative).chmod(0o755)
+    manifest = json.loads(
+        (source / "contracts/v1/manifest.json").read_text(encoding="utf-8")
+    )
+    contract_bytes = (
+        source / "contracts/v1/migrations/harness-migration-contract-v1.json"
+    ).read_bytes()
+    contract = json.loads(contract_bytes.decode("utf-8"))
+
+    trust = migration_kernel._release_source_trust(  # noqa: SLF001
+        source,
+        manifest,
+        contract_bytes,
+        contract,
+        _source_tag_resolver(source),
+    )
+
+    assert trust["status"] == "source_unreleased"
+    assert any("mode mismatch" in reason for reason in trust["reasons"])
 
 
 def test_verified_migration_records_are_copied_into_the_runtime_adapter() -> None:

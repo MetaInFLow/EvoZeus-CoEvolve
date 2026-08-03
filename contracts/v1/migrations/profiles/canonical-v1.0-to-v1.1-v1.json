@@ -4,7 +4,7 @@
   "profile_version": "v1.0.0",
   "protocol": {
     "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-    "sha256": "e53ba69f9d8071cc7187fb44f7284d74416cf9f8d4c96d35f2d85f66dc2cfaad"
+    "sha256": "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360"
   },
   "from_closure": {
     "path": "migrations/history/harness-skill/v1.0.0/closure.json",
@@ -12,7 +12,7 @@
   },
   "to_closure": {
     "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-    "sha256": "8167c53603fc7b0cfeb1c2159a49b3f89e0219d324e0b6611bb67841d020891a"
+    "sha256": "f88c3af42aebbf7dbd5f9a88df290ab04fd018aea9e46a69ebe830950fc331db"
   },
   "release_axis": {
     "target_wrapper_from": "v0.14.0",
@@ -39,7 +39,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e",
+        "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
         "mode": "100644"
       }
     },
@@ -125,7 +125,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e"
+            "sha256": "sha256:8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e"
           }
         },
         {

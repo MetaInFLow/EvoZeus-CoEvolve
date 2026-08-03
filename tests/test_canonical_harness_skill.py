@@ -107,6 +107,7 @@ def copy_release_contract_source(source_root: Path) -> None:
     """Copy the contract plus every repository byte required to verify it."""
     shutil.copytree(ROOT / "contracts", source_root / "contracts")
     for relative in (
+        "requirements-commonmark.lock",
         "scripts/evozeus_wrapper_preflight.py",
         "scripts/evozeus_harness_legacy_prompt_adapter.py",
     ):

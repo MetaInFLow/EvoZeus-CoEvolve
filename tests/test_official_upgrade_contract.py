@@ -19,7 +19,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "e53ba69f9d8071cc7187fb44f7284d74416cf9f8d4c96d35f2d85f66dc2cfaad"
+PROTOCOL_SHA256 = "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 LEGACY_PREFLIGHT_SHA256 = (
     "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1"
@@ -64,6 +64,10 @@ def _write_json(path: Path, value: object) -> None:
     path.write_bytes(_json_bytes(value))
 
 
+def _filesystem_mode(path: Path) -> str:
+    return "100755" if path.stat().st_mode & 0o100 else "100644"
+
+
 def _rebind_filesystem_manifest(
     root: Path,
     *,
@@ -73,14 +77,15 @@ def _rebind_filesystem_manifest(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     entries = {item["path"]: dict(item) for item in manifest["files"]}
     for relative, item in entries.items():
-        item["sha256"] = _sha256(
-            (root / "contracts/v1" / relative).read_bytes()
-        )
+        source = root / "contracts/v1" / relative
+        item["sha256"] = _sha256(source.read_bytes())
+        item["mode"] = _filesystem_mode(source)
     for relative, role in (new_roles or {}).items():
         path = root / "contracts/v1" / relative
         entries[relative] = {
             "path": relative,
             "sha256": _sha256(path.read_bytes()),
+            "mode": _filesystem_mode(path),
             "role": role,
         }
     manifest["files"] = [entries[path] for path in sorted(entries)]
@@ -137,12 +142,14 @@ def _bind_candidate_manifest(
         if change is not None:
             assert change.loader is not None
             data = change.loader()
+            entry["mode"] = change.mode
         else:
             base_path = root / repository_path
             if not base_path.exists():
                 del entries[relative]
                 continue
             data = base_path.read_bytes()
+            entry["mode"] = _filesystem_mode(base_path)
         entry["sha256"] = _sha256(data)
     for repository_path, change in changes.items():
         if (
@@ -161,6 +168,7 @@ def _bind_candidate_manifest(
         entries[relative] = {
             "path": relative,
             "sha256": _sha256(change.loader()),
+            "mode": change.mode,
             "role": role,
         }
     manifest["files"] = [entries[path] for path in sorted(entries)]
@@ -956,6 +964,7 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
             "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
         ),
         verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+        verifier.COMMONMARK_LOCK_REL,
     ],
 )
 def test_supervised_legacy_trust_assets_are_digest_closed(path: str) -> None:
@@ -966,6 +975,102 @@ def test_supervised_legacy_trust_assets_are_digest_closed(path: str) -> None:
 
     with pytest.raises(verifier.VerificationError, match="digest mismatch"):
         verifier.verify_catalog(store)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        verifier.CONTRACT_MANIFEST_REL,
+        (
+            "contracts/v1/migrations/profiles/"
+            "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+        ),
+        verifier.HISTORY_CURRENT_REL,
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json",
+        verifier.LEGACY_ADAPTER_REL,
+        verifier.LEGACY_ENVELOPE_REL,
+        verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+        (
+            "contracts/v1/migrations/adapters/legacy-v0.14-three-section/"
+            "status.md.tpl"
+        ),
+        verifier.COMMONMARK_LOCK_REL,
+    ],
+)
+def test_supervised_trust_surfaces_reject_candidate_mode_only_drift(path: str) -> None:
+    data = (ROOT / path).read_bytes()
+    store = verifier.CandidateStore(
+        _base_store(),
+        {path: _candidate_blob(path, data, mode="100755")},
+    )
+
+    with pytest.raises(verifier.VerificationError, match="mode"):
+        verifier.verify_catalog(store)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        verifier.CONTRACT_MANIFEST_REL,
+        verifier.LEGACY_ADAPTER_REL,
+        verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+        verifier.COMMONMARK_LOCK_REL,
+    ],
+)
+def test_supervised_trust_surfaces_reject_filesystem_mode_only_drift(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    (root / path).chmod(0o755)
+
+    with pytest.raises(verifier.VerificationError, match="mode"):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
+
+
+@pytest.mark.parametrize(
+    ("path", "role"),
+    [
+        (
+            "forged/artifacts/scripts/evozeus_wrapper_preflight.py",
+            "immutable-target-closure-artifact",
+        ),
+        (
+            "migrations/history/harness-skill/v1.2.0/artifacts/scripts/"
+            "evozeus_wrapper_preflight.py",
+            "candidate-defined-role",
+        ),
+    ],
+)
+def test_candidate_cannot_forge_an_executable_preflight_by_suffix_or_role(
+    path: str,
+    role: str,
+) -> None:
+    manifest = json.loads((ROOT / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    manifest["files"].append(
+        {
+            "path": path,
+            "sha256": "0" * 64,
+            "mode": "100755",
+            "role": role,
+        }
+    )
+    store = verifier.CandidateStore(
+        _base_store(),
+        {
+            CONTRACT_MANIFEST_REL: _candidate_blob(
+                CONTRACT_MANIFEST_REL,
+                _json_bytes(manifest),
+            )
+        },
+    )
+
+    with pytest.raises(verifier.VerificationError, match="file mode is invalid"):
+        verifier._contract_manifest_files(  # noqa: SLF001
+            store,
+            "candidate contract manifest",
+            candidate=True,
+        )
 
 
 def test_legacy_preflight_artifact_is_the_declared_git_blob_and_lf_exact() -> None:
@@ -1068,7 +1173,7 @@ def test_legacy_preflight_artifact_rejects_wrong_git_source_identity(
     [
         (lambda data: data + b"# drift\n", "100755", "digest mismatch"),
         (lambda data: data.replace(b"\n", b"\r\n"), "100755", "digest mismatch"),
-        (lambda data: data, "100644", "mode is invalid"),
+        (lambda data: data, "100644", "mode mismatch"),
     ],
     ids=["replacement", "crlf-normalization", "mode-drift"],
 )
@@ -1140,6 +1245,7 @@ def test_supervised_profile_cannot_rebind_the_frozen_preflight_artifact(
         verifier.LEGACY_ADAPTER_SCHEMA_REL,
         verifier.LEGACY_PROFILE_SCHEMA_REL,
         verifier.LEGACY_ADAPTER_IMPLEMENTATION_REL,
+        verifier.COMMONMARK_LOCK_REL,
     ],
 )
 def test_legacy_trust_rotation_requires_a_protected_source_pr(path: str) -> None:
@@ -2424,7 +2530,10 @@ def test_candidate_bundle_local_source_role_is_fixed(tmp_path: Path) -> None:
     changes, resolver, head_sha = _candidate_star(root)
     _bind_candidate_bundle_source(root, changes, role="candidate-defined-role")
 
-    with pytest.raises(verifier.VerificationError, match="manifest role mismatch"):
+    with pytest.raises(
+        verifier.VerificationError,
+        match="manifest role mismatch|file mode is invalid",
+    ):
         verifier.verify_candidate(
             verifier.FilesystemStore(root),
             changes,
@@ -2509,7 +2618,10 @@ def test_candidate_current_closure_path_is_version_canonical(
     changes, resolver, head_sha = _candidate_star(root)
     _relocate_candidate_closure(root, changes, destination)
 
-    with pytest.raises(verifier.VerificationError, match="closure path is not canonical"):
+    with pytest.raises(
+        verifier.VerificationError,
+        match="closure path is not canonical|file mode is invalid",
+    ):
         verifier.verify_candidate(
             verifier.FilesystemStore(root),
             changes,

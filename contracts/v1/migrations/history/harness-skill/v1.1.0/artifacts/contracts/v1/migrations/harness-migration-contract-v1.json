@@ -44,16 +44,23 @@
       },
       "adapter": {
         "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-        "sha256": "ea82bfb8fbeae9e1f5e89302ca0c6f4ea718ee3577bddc0bedc352682d4da9ca",
+        "sha256": "04d410940e61a088cea5fd4d2dac926e5cc4ce63ab11adda000d254544be839f",
         "schema": {
           "path": "migrations/schemas/legacy-prompt-adapter-v1.schema.json",
-          "sha256": "e62604a27d8fc3c2549e97354f9cb9925b773063db20752cff1e67828ce71745"
+          "sha256": "db0e46888ebd36635aaab9752389074a3a31cf3ef6f4b7093b2c14a6c738b2a1"
         },
         "implementation": {
           "root": "repository_path",
           "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
-          "sha256": "403143476b38b0fe721c86f8b2937844606aa01bf409e141d22ffd8604d9c85d",
+          "sha256": "46f3cee827c4f5bc613f16b61dd1b2017ef7e82728f25734b9835c57340521b5",
           "entrypoint": "plan_supervised_legacy_prompt_transform"
+        },
+        "commonmark_parser": {
+          "root": "repository_path",
+          "path": "requirements-commonmark.lock",
+          "sha256": "41ab63af490a4b68f4e2af84545fb1863511cddcc75c557261ca8c8b2155b4a0",
+          "distribution": "markdown-it-py",
+          "version": "4.0.0"
         }
       },
       "target_closure_pointer": {

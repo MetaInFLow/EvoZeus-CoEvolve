@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import stat
 import subprocess
 from datetime import date
@@ -222,6 +223,15 @@ def test_reviewed_lf_fixture_produces_contract_derived_zero_write_golden_plan(
     assert first["supervised_candidate_evidence"][0]["decision"] == (
         "supervised_migration_available"
     )
+    assert first["zero_write_git_indexes"] == {
+        "source": bundle["source_git_index"],
+        "target": first["target_git_state"]["git_index_file"],
+    }
+    for index_state in first["zero_write_git_indexes"].values():
+        assert index_state["kind"] == "file"
+        assert isinstance(index_state["sha256"], str)
+        assert isinstance(index_state["st_ino"], int)
+        assert isinstance(index_state["mtime_ns"], int)
 
     creates = [
         item for item in first["write_set"] if item["operation"] == "create_exact"
@@ -388,6 +398,119 @@ def test_unbound_executing_adapter_fails_closed_before_write_planning(
         "executing supervised legacy adapter is not release-bound"
     ]
     assert _target_snapshot(target) == before
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["adapter-identity", "trusted-implementation"],
+)
+def test_rehashed_self_modified_adapter_proof_is_not_plan_authority(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    target = _prepare_reviewed_legacy_target(tmp_path)
+    bundle = _trusted_development_bundle()
+    profile = _supervised_profile(bundle)
+    evidence = migration_kernel.collect_supervised_legacy_evidence(
+        target,
+        bundle,
+        profile,
+        expected_binding=migration_kernel.target_git_state(target)["target_binding"],
+    )
+    proof = evidence["proof"]
+    if drift == "adapter-identity":
+        proof["adapter"]["sha256"] = "0" * 64
+    else:
+        proof["trusted_source_assets"]["implementation"]["sha256"] = "0" * 64
+    proof_without_digest = copy.deepcopy(proof)
+    proof_without_digest.pop("proof_sha256")
+    proof["proof_sha256"] = (
+        "sha256:" + migration_kernel.canonical_json_sha256(proof_without_digest)
+    )
+
+    with pytest.raises(ValueError, match="proof is not plan-authoritative"):
+        lifecycle._supervised_legacy_write_plan(bundle, profile, evidence)
+
+
+@pytest.mark.parametrize("axis", ["sha256", "st_ino", "mtime_ns"])
+def test_source_git_index_change_during_planning_forces_manual_zero_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    axis: str,
+) -> None:
+    target = _prepare_reviewed_legacy_target(tmp_path)
+    bundle = _trusted_development_bundle()
+    real_git_index_state = migration_kernel.git_index_state
+    source_calls = 0
+
+    def changed_source_state(repository_root: Path) -> dict[str, Any]:
+        nonlocal source_calls
+        state = real_git_index_state(repository_root)
+        if repository_root.expanduser().resolve() != ROOT.resolve():
+            return state
+        source_calls += 1
+        if source_calls < 2:
+            return state
+        changed = copy.deepcopy(state)
+        if axis == "sha256":
+            changed[axis] = "sha256:" + "0" * 64
+        else:
+            changed[axis] += 1
+        return changed
+
+    monkeypatch.setattr(migration_kernel, "git_index_state", changed_source_state)
+
+    plan = _plan(target, bundle=bundle)
+
+    _assert_plan_only(plan)
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+    assert plan["post_apply_baseline"] is None
+    assert any("source Git index changed" in item for item in plan["conflicts"])
+
+
+@pytest.mark.parametrize("axis", ["sha256", "st_ino", "mtime_ns"])
+def test_target_git_index_change_during_planning_forces_manual_zero_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    axis: str,
+) -> None:
+    target = _prepare_reviewed_legacy_target(tmp_path)
+    original_collect = migration_kernel.collect_supervised_legacy_evidence
+
+    def collect_then_mutate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        evidence = original_collect(*args, **kwargs)
+        index_path = Path(_git(target, "rev-parse", "--git-path", "index"))
+        if not index_path.is_absolute():
+            index_path = target / index_path
+        metadata = index_path.stat()
+        if axis == "sha256":
+            index_path.write_bytes(index_path.read_bytes() + b"\0")
+        elif axis == "st_ino":
+            replacement = index_path.with_name("index.replacement")
+            replacement.write_bytes(index_path.read_bytes())
+            replacement.chmod(stat.S_IMODE(metadata.st_mode))
+            replacement.replace(index_path)
+        else:
+            os.utime(
+                index_path,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000_000),
+            )
+        return evidence
+
+    monkeypatch.setattr(
+        migration_kernel,
+        "collect_supervised_legacy_evidence",
+        collect_then_mutate,
+    )
+
+    plan = _plan(target)
+
+    _assert_plan_only(plan)
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+    assert plan["post_apply_baseline"] is None
+    assert any("target Git" in item for item in plan["conflicts"])
 
 
 @pytest.mark.parametrize("drift", ["profile-operation", "target-closure"])

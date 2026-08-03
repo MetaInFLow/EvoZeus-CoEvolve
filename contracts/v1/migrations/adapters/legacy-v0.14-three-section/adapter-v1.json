@@ -4,8 +4,14 @@
   "adapter_version": "v1.0.0",
   "implementation": {
     "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
-    "sha256": "403143476b38b0fe721c86f8b2937844606aa01bf409e141d22ffd8604d9c85d",
+    "sha256": "46f3cee827c4f5bc613f16b61dd1b2017ef7e82728f25734b9835c57340521b5",
     "entrypoint": "plan_supervised_legacy_prompt_transform"
+  },
+  "commonmark_parser": {
+    "distribution": "markdown-it-py",
+    "version": "4.0.0",
+    "lock_path": "requirements-commonmark.lock",
+    "lock_sha256": "41ab63af490a4b68f4e2af84545fb1863511cddcc75c557261ca8c8b2155b4a0"
   },
   "source_envelope": {
     "path": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",

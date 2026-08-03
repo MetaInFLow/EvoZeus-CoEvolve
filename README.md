@@ -175,6 +175,7 @@ Skillware Release 与 Harness Version 是两条版本轴：
 ## 开发与验证
 
 ```bash
+python3 -m pip install --require-hashes -r requirements-commonmark.lock
 python3 -m pytest -q
 python3 -m py_compile \
   scripts/evozeus_wrapper.py \

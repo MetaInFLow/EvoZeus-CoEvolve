@@ -25,6 +25,7 @@
       "contracts/v1/migrations/adapters/legacy-v0.14-three-section/",
       "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/",
       "scripts/evozeus_official_upgrade_verify.py",
+      "requirements-commonmark.lock",
       "scripts/evozeus_harness_legacy_prompt_adapter.py",
       "scripts/evozeus_harness_migration.py",
       "scripts/evozeus_wrapper.py",
@@ -52,6 +53,7 @@
       ],
       "authority_rotation_paths": [
         "scripts/evozeus_official_upgrade_verify.py",
+        "requirements-commonmark.lock",
         "scripts/evozeus_harness_legacy_prompt_adapter.py",
         "scripts/evozeus_harness_migration.py",
         "scripts/evozeus_wrapper.py",

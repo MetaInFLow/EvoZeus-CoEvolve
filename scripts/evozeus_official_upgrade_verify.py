@@ -48,11 +48,13 @@ LEGACY_ENVELOPE_SCHEMA_REL = (
 LEGACY_ADAPTER_IMPLEMENTATION_REL = (
     "scripts/evozeus_harness_legacy_prompt_adapter.py"
 )
+COMMONMARK_LOCK_REL = "requirements-commonmark.lock"
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
 BUNDLE_PREFIX = "contracts/v1/"
 PROTECTED_MIGRATION_CONSUMER_PATHS = frozenset(
     {
+        COMMONMARK_LOCK_REL,
         LEGACY_ADAPTER_IMPLEMENTATION_REL,
         "scripts/evozeus_harness_migration.py",
         "scripts/evozeus_wrapper.py",
@@ -103,6 +105,22 @@ ALLOWED_OPERATION_TYPES = {
     "supervised_transform",
 }
 ALLOWED_BLOB_MODES = {"100644", "100755"}
+EXECUTABLE_MANIFEST_PATHS = frozenset(
+    {
+        (
+            "migrations/history/harness-skill/v1.0.0/artifacts/scripts/"
+            "evozeus_wrapper_preflight.py"
+        ),
+        (
+            "migrations/history/harness-skill/v1.1.0/artifacts/scripts/"
+            "evozeus_wrapper_preflight.py"
+        ),
+        (
+            "migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/"
+            "evozeus_wrapper_preflight.py"
+        ),
+    }
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OID_PATTERN = re.compile(r"[0-9a-f]{40}")
 SEMVER_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
@@ -122,6 +140,36 @@ MAX_TOTAL_BLOB_BYTES = 32 * 1024 * 1024
 
 class VerificationError(ValueError):
     """A candidate or installed contract cannot be verified safely."""
+
+
+def _contract_manifest_mode(
+    relative: str,
+    *,
+    role: str | None = None,
+    candidate: bool = False,
+) -> str:
+    if relative in EXECUTABLE_MANIFEST_PATHS:
+        return "100755"
+    if candidate and role == "immutable-target-closure-artifact" and re.fullmatch(
+        r"migrations/history/harness-skill/"
+        r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/"
+        r"artifacts/scripts/evozeus_wrapper_preflight\.py",
+        relative,
+    ):
+        return "100755"
+    if (
+        candidate
+        and role == "target-closure-source"
+        and relative == "core-snapshots/evozeus_wrapper_preflight.py"
+    ):
+        return "100755"
+    return "100644"
+
+
+def _git_read_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    return environment
 
 
 class BlobStore(Protocol):
@@ -1222,7 +1270,12 @@ def _manifest_bound_bundle_binding(
     path, digest = _binding_path(binding, label)
     relative = path.removeprefix(BUNDLE_PREFIX)
     manifest_item = manifest_files.get(relative)
-    if manifest_item != {"sha256": digest, "role": role}:
+    expected_mode = _contract_manifest_mode(relative)
+    if manifest_item != {
+        "sha256": digest,
+        "mode": expected_mode,
+        "role": role,
+    }:
         raise VerificationError(
             f"{label} is not exactly bound by the contract manifest: {relative}"
         )
@@ -1253,7 +1306,7 @@ def _manifest_bound_repository_file(
     path = _safe_relative(binding.get("path"), f"{label} path")
     digest = _require_sha256(binding.get("sha256"), f"{label} digest")
     manifest_item = repository_files.get(path)
-    if manifest_item != {"sha256": digest, "role": role}:
+    if manifest_item != {"sha256": digest, "mode": "100644", "role": role}:
         raise VerificationError(
             f"{label} is not exactly bound by the contract manifest: {path}"
         )
@@ -1705,6 +1758,7 @@ def load_supervised_legacy_profile(
         or template_manifest_item
         != {
             "sha256": projection.get("template_sha256"),
+            "mode": "100644",
             "role": "trusted-legacy-source-artifact",
         }
         or _sha256(store.read_bytes(manifest_template_path))
@@ -1718,6 +1772,7 @@ def load_supervised_legacy_profile(
         "sha256",
         "schema",
         "implementation",
+        "commonmark_parser",
     }:
         raise VerificationError("reviewed legacy adapter binding is invalid")
     adapter_path = _manifest_bound_bundle_binding(
@@ -1766,6 +1821,39 @@ def load_supervised_legacy_profile(
     expected_implementation.pop("root")
     if implementation != expected_implementation:
         raise VerificationError("reviewed legacy adapter implementation binding differs")
+    contract_parser = adapter_binding["commonmark_parser"]
+    if not isinstance(contract_parser, dict) or set(contract_parser) != {
+        "root",
+        "path",
+        "sha256",
+        "distribution",
+        "version",
+    }:
+        raise VerificationError("reviewed legacy CommonMark contract binding is invalid")
+    if (
+        contract_parser.get("root") != "repository_path"
+        or contract_parser.get("path") != COMMONMARK_LOCK_REL
+        or contract_parser.get("distribution") != "markdown-it-py"
+        or contract_parser.get("version") != "4.0.0"
+    ):
+        raise VerificationError("reviewed legacy CommonMark contract binding differs")
+    parser_manifest_item = repository_files.get(COMMONMARK_LOCK_REL)
+    if parser_manifest_item != {
+        "sha256": contract_parser.get("sha256"),
+        "mode": "100644",
+        "role": "trusted-commonmark-dependency-lock",
+    }:
+        raise VerificationError("reviewed legacy CommonMark dependency lock is unbound")
+    parser_binding = adapter_document.get("commonmark_parser")
+    if parser_binding != {
+        "distribution": contract_parser["distribution"],
+        "version": contract_parser["version"],
+        "lock_path": contract_parser["path"],
+        "lock_sha256": contract_parser["sha256"],
+    }:
+        raise VerificationError("reviewed legacy CommonMark parser binding differs")
+    if _sha256(store.read_bytes(COMMONMARK_LOCK_REL)) != parser_binding["lock_sha256"]:
+        raise VerificationError("reviewed legacy CommonMark dependency lock is unbound")
     template_kinds: list[str] = []
     for template in adapter_document.get("templates", []):
         if not isinstance(template, dict):
@@ -1777,7 +1865,11 @@ def load_supervised_legacy_profile(
         if (
             not path.startswith(BUNDLE_PREFIX)
             or manifest_item
-            != {"sha256": digest, "role": "trusted-legacy-adapter-template"}
+            != {
+                "sha256": digest,
+                "mode": "100644",
+                "role": "trusted-legacy-adapter-template",
+            }
             or _sha256(store.read_bytes(path)) != digest
         ):
             raise VerificationError(f"reviewed legacy adapter template is unbound: {path}")
@@ -2003,8 +2095,67 @@ def load_supervised_legacy_profile(
         "ambiguous_prompt": "manual_migration_required_zero_write",
     }:
         raise VerificationError("reviewed legacy fallback is invalid")
+    trusted_source_assets = {
+        "schema_version": "evozeus.coevolve.supervised-source-assets.v1",
+        "proof_identity": {
+            "adapter": {
+                "adapter_id": adapter_document["adapter_id"],
+                "adapter_version": adapter_document["adapter_version"],
+                "path": adapter_path,
+                "sha256": adapter_binding["sha256"],
+                "implementation": implementation,
+                "template_bindings": adapter_document["templates"],
+                "commonmark_parser": parser_binding,
+            },
+            "source_envelope": {
+                "envelope_id": envelope["envelope_id"],
+                "envelope_version": envelope["envelope_version"],
+                "path": envelope_path,
+                "sha256": source_binding["sha256"],
+                "source_evidence": evidence,
+            },
+        },
+        "profile": {
+            "path": profile_path,
+            **profile_manifest_item,
+        },
+        "target_closure_pointer": {
+            "path": pointer_path,
+            **pointer_manifest_item,
+        },
+        "target_closure": {
+            "path": target_path,
+            **target_manifest_item,
+        },
+        "source_envelope": {
+            "path": envelope_path,
+            **manifest_files[source_binding["path"]],
+        },
+        "adapter": {
+            "path": adapter_path,
+            **manifest_files[adapter_binding["path"]],
+        },
+        "implementation": {
+            "path": implementation_path,
+            **repository_files[implementation_path],
+        },
+        "templates": [
+            {
+                "path": template["path"],
+                **manifest_files[
+                    str(template["path"]).removeprefix(BUNDLE_PREFIX)
+                ],
+            }
+            for template in adapter_document["templates"]
+        ],
+        "commonmark_dependency_lock": {
+            "path": COMMONMARK_LOCK_REL,
+            **repository_files[COMMONMARK_LOCK_REL],
+        },
+    }
     profile["_verified_target_path"] = target_path
     profile["_active_for_current"] = active_for_current
+    profile["_verified_trusted_source_assets"] = trusted_source_assets
     profile["static_write_set"] = [
         {"target_path": path, "type": changes[path][0]} for path in sorted(changes)
     ]
@@ -2192,6 +2343,8 @@ def _contract_manifest_document(
     label: str,
 ) -> dict[str, Any]:
     manifest = _json_file(store, CONTRACT_MANIFEST_REL, label)
+    if store.mode(CONTRACT_MANIFEST_REL) != "100644":
+        raise VerificationError(f"{label} Git mode must be 100644")
     if manifest.get("schema_version") != "evozeus.coevolve.contract-manifest.v1":
         raise VerificationError(f"{label} schema identity is invalid")
     if manifest.get("bundle_id") != "evozeus-coevolve":
@@ -2217,14 +2370,22 @@ def _contract_manifest_document(
 def _contract_manifest_files(
     store: BlobStore,
     label: str,
+    *,
+    candidate: bool = False,
 ) -> dict[str, dict[str, str]]:
+    candidate = candidate or isinstance(store, CandidateStore)
     manifest = _contract_manifest_document(store, label)
     raw_files = manifest.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         raise VerificationError(f"{label} files are missing")
     files: dict[str, dict[str, str]] = {}
     for item in raw_files:
-        if not isinstance(item, dict) or set(item) != {"path", "sha256", "role"}:
+        if not isinstance(item, dict) or set(item) != {
+            "path",
+            "sha256",
+            "mode",
+            "role",
+        }:
             raise VerificationError(f"{label} contains an invalid file entry")
         path = _safe_relative(item.get("path"), f"{label} file path")
         if path == "manifest.json" or path in files:
@@ -2232,8 +2393,20 @@ def _contract_manifest_files(
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise VerificationError(f"{label} file role is invalid: {path}")
+        mode = item.get("mode")
+        expected_mode = _contract_manifest_mode(
+            path,
+            role=role,
+            candidate=candidate,
+        )
+        if mode != expected_mode:
+            raise VerificationError(
+                f"{label} file mode is invalid: {path}: "
+                f"expected={expected_mode}; actual={mode}"
+            )
         files[path] = {
             "sha256": _require_sha256(item.get("sha256"), f"{label} file digest"),
+            "mode": mode,
             "role": role,
         }
     return files
@@ -2249,7 +2422,12 @@ def _contract_manifest_repository_files(
         raise VerificationError(f"{label} trusted repository files are missing")
     files: dict[str, dict[str, str]] = {}
     for item in raw_files:
-        if not isinstance(item, dict) or set(item) != {"path", "sha256", "role"}:
+        if not isinstance(item, dict) or set(item) != {
+            "path",
+            "sha256",
+            "mode",
+            "role",
+        }:
             raise VerificationError(
                 f"{label} contains an invalid trusted repository file entry"
             )
@@ -2261,10 +2439,16 @@ def _contract_manifest_repository_files(
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise VerificationError(f"{label} repository file role is invalid: {path}")
+        mode = item.get("mode")
+        if mode != "100644":
+            raise VerificationError(
+                f"{label} trusted repository file mode must be 100644: {path}"
+            )
         files[path] = {
             "sha256": _require_sha256(
                 item.get("sha256"), f"{label} repository file digest"
             ),
+            "mode": mode,
             "role": role,
         }
     return files
@@ -2276,11 +2460,17 @@ def _verify_contract_manifest_digests(
     label: str,
 ) -> None:
     for relative, item in files.items():
-        actual = _sha256(store.read_bytes(BUNDLE_PREFIX + relative))
+        path = BUNDLE_PREFIX + relative
+        actual = _sha256(store.read_bytes(path))
         if actual != item["sha256"]:
             raise VerificationError(
                 f"{label} digest mismatch: {relative}: "
                 f"expected={item['sha256']}; actual={actual}"
+            )
+        if store.mode(path) != item["mode"]:
+            raise VerificationError(
+                f"{label} mode mismatch: {relative}: "
+                f"expected={item['mode']}; actual={store.mode(path)}"
             )
 
 
@@ -2295,6 +2485,11 @@ def _verify_contract_manifest_repository_digests(
             raise VerificationError(
                 f"{label} trusted repository digest mismatch: {relative}: "
                 f"expected={item['sha256']}; actual={actual}"
+            )
+        if store.mode(relative) != item["mode"]:
+            raise VerificationError(
+                f"{label} trusted repository mode mismatch: {relative}: "
+                f"expected={item['mode']}; actual={store.mode(relative)}"
             )
 
 
@@ -2523,6 +2718,7 @@ def _local_construction_revision_resolver(
             ["git", "-C", str(root), "merge-base", "--is-ancestor", revision, head_sha],
             capture_output=True,
             check=False,
+            env=_git_read_environment(),
         )
         if ancestry.returncode not in {0, 1}:
             raise VerificationError(
@@ -2535,6 +2731,7 @@ def _local_construction_revision_resolver(
                 ["git", "-C", str(root), "ls-tree", "-z", revision, "--", path],
                 capture_output=True,
                 check=False,
+                env=_git_read_environment(),
             )
             if listing.returncode != 0 or not listing.stdout.endswith(b"\0"):
                 raise VerificationError(
@@ -2556,6 +2753,7 @@ def _local_construction_revision_resolver(
                 ["git", "-C", str(root), "show", f"{revision}:{path}"],
                 capture_output=True,
                 check=False,
+                env=_git_read_environment(),
             )
             if content.returncode != 0:
                 raise VerificationError(
@@ -2583,7 +2781,11 @@ def _verify_candidate_contract_manifest(
     changes: dict[str, CandidateBlob],
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     base_files = _contract_manifest_files(base, "trusted base contract manifest")
-    candidate_files = _contract_manifest_files(candidate, "candidate contract manifest")
+    candidate_files = _contract_manifest_files(
+        candidate,
+        "candidate contract manifest",
+        candidate=True,
+    )
     base_repository_files = _contract_manifest_repository_files(
         base, "trusted base contract manifest"
     )
@@ -2628,6 +2830,12 @@ def _verify_candidate_contract_manifest(
             raise VerificationError(
                 f"candidate contract manifest digest mismatch: {relative}: "
                 f"expected={item['sha256']}; actual={actual}"
+            )
+        actual_mode = candidate.mode(BUNDLE_PREFIX + relative)
+        if actual_mode != item["mode"]:
+            raise VerificationError(
+                f"candidate contract manifest mode mismatch: {relative}: "
+                f"expected={item['mode']}; actual={actual_mode}"
             )
     return base_files, candidate_files
 
@@ -2737,7 +2945,13 @@ def _legacy_trust_anchor_projection(contract: dict[str, Any]) -> list[dict[str, 
                 "source_envelope": item.get("source_envelope"),
                 "adapter": {
                     key: adapter.get(key)
-                    for key in ("path", "sha256", "schema", "implementation")
+                    for key in (
+                        "path",
+                        "sha256",
+                        "schema",
+                        "implementation",
+                        "commonmark_parser",
+                    )
                 },
                 "source_repository": lineage.get("source_repository"),
                 "source_commit": lineage.get("source_commit"),
@@ -3328,6 +3542,7 @@ def candidate_from_pull_request(
         text=True,
         capture_output=True,
         check=False,
+        env=_git_read_environment(),
     )
     if local_head.returncode != 0 or local_head.stdout.strip() != base_sha:
         raise VerificationError("trusted verifier checkout does not equal the PR base SHA")
@@ -3361,6 +3576,7 @@ def _resolve_git_commit(repo_root: Path, revision: str, label: str) -> str:
         text=True,
         capture_output=True,
         check=False,
+        env=_git_read_environment(),
     )
     commit = result.stdout.strip()
     if result.returncode != 0 or GIT_OID_PATTERN.fullmatch(commit) is None:
@@ -3404,6 +3620,7 @@ def _verify_release_git_state(
         ],
         capture_output=True,
         check=False,
+        env=_git_read_environment(),
     )
     if ancestry.returncode not in {0, 1}:
         raise VerificationError("release tag ancestry against trusted main cannot be verified")
@@ -3475,6 +3692,7 @@ def main(argv: list[str] | None = None) -> int:
                 text=True,
                 capture_output=True,
                 check=False,
+                env=_git_read_environment(),
             )
             head_sha = head.stdout.strip()
             if head.returncode != 0 or GIT_OID_PATTERN.fullmatch(head_sha) is None:

@@ -11,10 +11,14 @@ from __future__ import annotations
 import copy
 import difflib
 import hashlib
+import html
+import importlib.metadata
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -26,6 +30,13 @@ SOURCE_ENVELOPE_REL = (
     "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json"
 )
 IMPLEMENTATION_REL = "scripts/evozeus_harness_legacy_prompt_adapter.py"
+COMMONMARK_LOCK_REL = "requirements-commonmark.lock"
+COMMONMARK_DISTRIBUTION = "markdown-it-py"
+COMMONMARK_VERSION = "4.0.0"
+COMMONMARK_RUNTIME_DISTRIBUTIONS = (
+    (COMMONMARK_DISTRIBUTION, COMMONMARK_VERSION),
+    ("mdurl", "0.1.2"),
+)
 PROOF_SCHEMA = "evozeus.coevolve.legacy-prompt-transform-proof.v1"
 MANUAL_DECISION = "manual_migration_required"
 SUPERVISED_DECISION = "supervised_migration_available"
@@ -64,6 +75,9 @@ class FrozenLegacyPromptBundle:
             "sha256": self.adapter_sha256,
             "implementation": copy.deepcopy(self.adapter["implementation"]),
             "template_bindings": copy.deepcopy(self.adapter["templates"]),
+            "commonmark_parser": copy.deepcopy(
+                self.adapter["commonmark_parser"]
+            ),
         }
 
     @property
@@ -74,6 +88,46 @@ class FrozenLegacyPromptBundle:
             "path": SOURCE_ENVELOPE_REL,
             "sha256": self.envelope_sha256,
             "source_evidence": copy.deepcopy(self.envelope["source_evidence"]),
+        }
+
+    @property
+    def trusted_source_assets(self) -> dict[str, Any]:
+        implementation = self.adapter["implementation"]
+        parser = self.adapter["commonmark_parser"]
+        return {
+            "adapter": {
+                "path": ADAPTER_DOCUMENT_REL,
+                "sha256": self.adapter_sha256,
+                "mode": "100644",
+                "role": "trusted-legacy-adapter",
+            },
+            "source_envelope": {
+                "path": SOURCE_ENVELOPE_REL,
+                "sha256": self.envelope_sha256,
+                "mode": "100644",
+                "role": "trusted-legacy-source-envelope",
+            },
+            "implementation": {
+                "path": implementation["path"],
+                "sha256": implementation["sha256"],
+                "mode": "100644",
+                "role": "trusted-legacy-adapter-implementation",
+            },
+            "templates": [
+                {
+                    "path": item["path"],
+                    "sha256": item["sha256"],
+                    "mode": "100644",
+                    "role": "trusted-legacy-adapter-template",
+                }
+                for item in self.adapter["templates"]
+            ],
+            "commonmark_dependency_lock": {
+                "path": parser["lock_path"],
+                "sha256": parser["lock_sha256"],
+                "mode": "100644",
+                "role": "trusted-commonmark-dependency-lock",
+            },
         }
 
 
@@ -90,6 +144,55 @@ class _Heading:
     label: str
     start: int
     end: int
+
+
+class _HTMLHeadingCollector(HTMLParser):
+    """Collect visible HTML h1-h6 text and reject ambiguous nesting."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._active: tuple[int, list[str]] | None = None
+        self.headings: list[tuple[int, str]] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        _attrs: list[tuple[str, str | None]],
+    ) -> None:
+        match = re.fullmatch(r"h([1-6])", tag.lower())
+        if match is None:
+            return
+        if self._active is not None:
+            raise TargetMismatch("HTML heading nesting is ambiguous")
+        self._active = (int(match.group(1)), [])
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+        if self._active is not None:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        match = re.fullmatch(r"h([1-6])", tag.lower())
+        if match is None:
+            return
+        if self._active is None or self._active[0] != int(match.group(1)):
+            raise TargetMismatch("HTML heading boundary is ambiguous")
+        level, parts = self._active
+        self._active = None
+        self.headings.append((level, "".join(parts)))
+
+    def handle_data(self, data: str) -> None:
+        if self._active is not None:
+            self._active[1].append(data)
+
+    def close(self) -> None:
+        super().close()
+        if self._active is not None:
+            raise TargetMismatch("HTML heading is unterminated")
 
 
 def _sha256(data: bytes) -> str:
@@ -223,6 +326,28 @@ def load_frozen_bundle(
     if implementation.get("entrypoint") != "plan_supervised_legacy_prompt_transform":
         raise FrozenBundleError("adapter implementation entrypoint is invalid")
 
+    parser_binding = adapter.get("commonmark_parser")
+    expected_parser_identity = {
+        "distribution": COMMONMARK_DISTRIBUTION,
+        "version": COMMONMARK_VERSION,
+        "lock_path": COMMONMARK_LOCK_REL,
+    }
+    if not isinstance(parser_binding, dict) or any(
+        parser_binding.get(field) != value
+        for field, value in expected_parser_identity.items()
+    ):
+        raise FrozenBundleError("adapter CommonMark parser identity is invalid")
+    parser_lock = _safe_source_file(
+        root,
+        parser_binding["lock_path"],
+        "CommonMark parser dependency lock",
+    )
+    if _plain_sha256(
+        parser_binding.get("lock_sha256"),
+        "CommonMark parser dependency lock binding",
+    ) != _sha256(parser_lock.read_bytes()):
+        raise FrozenBundleError("CommonMark parser dependency lock digest mismatch")
+
     templates_raw = adapter.get("templates")
     if not isinstance(templates_raw, list) or [
         item.get("kind") if isinstance(item, dict) else None for item in templates_raw
@@ -306,45 +431,170 @@ def _line_records(text: str) -> list[tuple[int, int, str, str]]:
     return records
 
 
+def _normalized_visible_text(value: str) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        unicodedata.normalize("NFC", html.unescape(value)),
+    ).strip()
+
+
+def _commonmark_parser() -> Any:
+    try:
+        from markdown_it import MarkdownIt
+    except (ImportError, importlib.metadata.PackageNotFoundError) as exc:
+        raise TargetMismatch(
+            "hash-locked CommonMark parser dependency is unavailable"
+        ) from exc
+    for distribution, expected in COMMONMARK_RUNTIME_DISTRIBUTIONS:
+        try:
+            installed = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise TargetMismatch(
+                "hash-locked CommonMark parser dependency is unavailable: "
+                + distribution
+            ) from exc
+        if installed != expected:
+            raise TargetMismatch(
+                "hash-locked CommonMark parser version differs: "
+                f"distribution={distribution}; expected={expected}; actual={installed}"
+            )
+    return MarkdownIt("commonmark", {"html": True})
+
+
+def _inline_plain_text(children: list[Any], parser: Any) -> str:
+    parts: list[str] = []
+    for child in children:
+        if child.type in {"text", "code_inline"}:
+            parts.append(child.content)
+        elif child.type == "image":
+            nested = parser.parseInline(child.content)
+            inline = next(
+                (item for item in nested if item.type == "inline"),
+                None,
+            )
+            if inline is not None:
+                parts.append(_inline_plain_text(list(inline.children or []), parser))
+            else:
+                parts.append(child.content)
+        elif child.type in {"softbreak", "hardbreak"}:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _inline_html_fragment(children: list[Any], parser: Any) -> str:
+    parts: list[str] = []
+    for child in children:
+        if child.type == "html_inline":
+            parts.append(child.content)
+        elif child.type in {"text", "code_inline"}:
+            parts.append(html.escape(child.content, quote=False))
+        elif child.type == "image":
+            nested = parser.parseInline(child.content)
+            inline = next(
+                (item for item in nested if item.type == "inline"),
+                None,
+            )
+            alt = (
+                _inline_plain_text(list(inline.children or []), parser)
+                if inline is not None
+                else child.content
+            )
+            parts.append(html.escape(alt, quote=False))
+        elif child.type in {"softbreak", "hardbreak"}:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _html_headings(fragment: str) -> list[tuple[int, str]]:
+    collector = _HTMLHeadingCollector()
+    try:
+        collector.feed(fragment)
+        collector.close()
+    except (TargetMismatch, ValueError) as exc:
+        if isinstance(exc, TargetMismatch):
+            raise
+        raise TargetMismatch("HTML heading evidence is malformed") from exc
+    return [
+        (level, _normalized_visible_text(label))
+        for level, label in collector.headings
+    ]
+
+
 def _visible_headings(text: str) -> tuple[list[_Heading], str]:
+    """Parse visible heading structure with a pinned CommonMark AST."""
+    body_offset = _frontmatter_end(text)
+    body = text[body_offset:]
+    records = _line_records(body)
+    parser = _commonmark_parser()
+    try:
+        tokens = parser.parse(body)
+    except Exception as exc:
+        raise TargetMismatch("instruction surface CommonMark cannot be parsed") from exc
+
+    def token_span(token: Any) -> tuple[int, int]:
+        mapping = token.map
+        if (
+            not isinstance(mapping, list)
+            or len(mapping) != 2
+            or any(not isinstance(item, int) for item in mapping)
+            or mapping[0] < 0
+            or mapping[1] <= mapping[0]
+            or mapping[1] > len(records)
+        ):
+            raise TargetMismatch("CommonMark token source span is unavailable")
+        return (
+            body_offset + records[mapping[0]][0],
+            body_offset + records[mapping[1] - 1][1],
+        )
+
     headings: list[_Heading] = []
     visible_parts: list[str] = []
-    fence: tuple[str, int] | None = None
-    for start, end, content, ending in _line_records(text):
-        stripped = content.lstrip(" ")
-        indent = len(content) - len(stripped)
-        fence_match = re.match(r"(`{3,}|~{3,})(.*)$", stripped) if indent <= 3 else None
-        if fence is not None:
-            char, minimum = fence
-            if re.fullmatch(rf"{re.escape(char)}{{{minimum},}}[ \t]*", stripped):
-                fence = None
-            visible_parts.append(" " * len(content) + ending)
-            continue
-        if fence_match:
-            run = fence_match.group(1)
-            info = fence_match.group(2)
-            # CommonMark does not recognize a backtick fence when its info
-            # string itself contains a backtick.  Treating it as a fence would
-            # hide real headings and turn an ambiguous target into authority.
-            if run[0] != "`" or "`" not in info:
-                fence = (run[0], len(run))
-                visible_parts.append(" " * len(content) + ending)
-                continue
-        visible_parts.append(content + ending)
-        heading_match = re.match(r"^[ ]{0,3}(#{1,6})(?:[ \t]+(.*?))[ \t]*$", content)
-        if not heading_match:
-            continue
-        label = heading_match.group(2).strip()
-        label = re.sub(r"[ \t]+#+[ \t]*$", "", label).strip()
-        headings.append(
-            _Heading(
-                level=len(heading_match.group(1)),
-                label=label,
-                start=start,
-                end=end,
+    for index, token in enumerate(tokens):
+        if token.type == "heading_open":
+            inline = tokens[index + 1] if index + 1 < len(tokens) else None
+            if inline is None or inline.type != "inline":
+                raise TargetMismatch("CommonMark heading lacks inline structure")
+            start, end = token_span(token)
+            label = _normalized_visible_text(
+                _inline_plain_text(list(inline.children or []), parser)
             )
-        )
-    return headings, "".join(visible_parts)
+            headings.append(
+                _Heading(
+                    level=int(token.tag.removeprefix("h")),
+                    label=label,
+                    start=start,
+                    end=end,
+                )
+            )
+        if token.type == "inline":
+            children = list(token.children or [])
+            plain = _inline_plain_text(children, parser)
+            if plain:
+                visible_parts.append(plain)
+            fragment = _inline_html_fragment(children, parser)
+            if "<" in fragment and ">" in fragment:
+                start, end = token_span(token)
+                headings.extend(
+                    _Heading(level, label, start, end)
+                    for level, label in _html_headings(fragment)
+                )
+        elif token.type == "html_block":
+            start, end = token_span(token)
+            html_headings = _html_headings(token.content)
+            headings.extend(
+                _Heading(level, label, start, end)
+                for level, label in html_headings
+            )
+            collector = _HTMLHeadingCollector()
+            collector.feed(token.content)
+            collector.close()
+            visible_parts.extend(label for _level, label in collector.headings)
+        # fence and code_block tokens deliberately contribute no visible
+        # structure or ownership signatures.
+    return sorted(headings, key=lambda item: (item.start, item.end, item.level)), "\n".join(
+        visible_parts
+    )
 
 
 def _section_span(headings: list[_Heading], selected: _Heading, text_length: int) -> tuple[int, int]:
@@ -771,6 +1021,7 @@ def _manual_result(
         "destructive_authority": False,
         "adapter": bundle.adapter_identity,
         "source_envelope": bundle.envelope_identity,
+        "trusted_source_assets": bundle.trusted_source_assets,
         "reasons": [reason],
     }
     proof["proof_sha256"] = "sha256:" + canonical_json_sha256(proof)
@@ -824,6 +1075,7 @@ def plan_supervised_legacy_prompt_transform(
             },
             "adapter": frozen.adapter_identity,
             "source_envelope": frozen.envelope_identity,
+            "trusted_source_assets": frozen.trusted_source_assets,
             "manifest": {
                 "path": frozen.envelope["manifest_projection"]["path"],
                 "sha256": _sha256_uri(manifest_bytes),

@@ -9,6 +9,7 @@
     "adapter_id",
     "adapter_version",
     "implementation",
+    "commonmark_parser",
     "source_envelope",
     "expected_headings",
     "forbidden_legacy_headings",
@@ -35,6 +36,30 @@
         "path": { "const": "scripts/evozeus_harness_legacy_prompt_adapter.py" },
         "sha256": { "$ref": "#/$defs/sha256" },
         "entrypoint": { "const": "plan_supervised_legacy_prompt_transform" }
+      }
+    },
+    "commonmark_parser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distribution",
+        "version",
+        "lock_path",
+        "lock_sha256"
+      ],
+      "properties": {
+        "distribution": {
+          "const": "markdown-it-py"
+        },
+        "version": {
+          "const": "4.0.0"
+        },
+        "lock_path": {
+          "const": "requirements-commonmark.lock"
+        },
+        "lock_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     },
     "source_envelope": {
