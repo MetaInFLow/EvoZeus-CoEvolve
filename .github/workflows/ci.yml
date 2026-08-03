@@ -24,7 +24,36 @@ jobs:
       - name: Install hash-locked CommonMark parser
         run: python -m pip install --require-hashes -r requirements-commonmark.lock
       - run: python -m pip install --upgrade pytest pydantic pyyaml
-      - run: python scripts/evozeus_test.py -q
-      - name: Verify immutable Harness history and release bindings
+      - name: Select Harness contract activation state
+        id: catalog
+        run: |
+          if test -e contracts/v1/migrations/harness-migration-contract-v1.json; then
+            echo "active_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "active_data=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Test initial source-only trust surfaces
+        if: steps.catalog.outputs.active_data != 'true'
+        run: |
+          python scripts/evozeus_test.py -q tests/test_trusted_source_bootstrap.py
+          python scripts/evozeus_test.py -q \
+            tests/test_official_upgrade_contract.py::test_initial_bootstrap_release_resolver_expires_on_tag_or_release \
+            tests/test_official_upgrade_contract.py::test_source_only_initial_bootstrap_state_is_verified_without_active_catalog \
+            tests/test_official_upgrade_contract.py::test_initial_source_ci_gate_rejects_partial_or_forged_data \
+            tests/test_official_upgrade_contract.py::test_initial_bootstrap_executable_anchors_are_source_authority \
+            tests/test_official_upgrade_contract.py::test_ci_selects_source_only_or_active_data_verification
+          python scripts/evozeus_test.py -q tests/test_harness_legacy_prompt_adapter.py \
+            -k 'not published_schemas_validate_the_frozen_documents and not supervised_profile_schema_requires_frozen_preflight_artifact_binding'
+      - name: Verify initial source-only Harness state
+        if: steps.catalog.outputs.active_data != 'true'
+        run: |
+          report="$(python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .)"
+          printf '%s\n' "$report"
+          printf '%s' "$report" | python -c 'import json, sys; report = json.load(sys.stdin); assert report.get("status") == "verified_initial_source", report'
+      - name: Test active Harness data catalog
+        if: steps.catalog.outputs.active_data == 'true'
+        run: python scripts/evozeus_test.py -q
+      - name: Verify active immutable Harness history and release bindings
+        if: steps.catalog.outputs.active_data == 'true'
         run: python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .
       - run: python -m py_compile scripts/evozeus_source_guard.py scripts/evozeus_test.py scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py

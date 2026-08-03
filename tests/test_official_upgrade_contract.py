@@ -2500,6 +2500,27 @@ def test_source_only_initial_bootstrap_state_is_verified_without_active_catalog(
     assert cli_report == report
 
 
+@pytest.mark.parametrize("fault", ["residual_data", "forged_contract"])
+def test_initial_source_ci_gate_rejects_partial_or_forged_data(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fault: str,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    path = (
+        root / verifier.HISTORY_CURRENT_REL
+        if fault == "residual_data"
+        else root / verifier.MIGRATION_CONTRACT_REL
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{}\n")
+
+    assert verifier.main(["verify-base", "--repo-root", str(root)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "rejected"
+    assert report["error"]
+
+
 def test_initial_bootstrap_executable_anchors_are_source_authority() -> None:
     protocol = verifier.load_protocol(_base_store())
     executable_paths = {
@@ -2724,6 +2745,76 @@ def test_main_uat_and_release_workflows_explicitly_run_history_gate() -> None:
     assert ci_command in ci
     assert release_command in release
     assert ci_command not in release
+
+
+def test_ci_selects_source_only_or_active_data_verification() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["test"]["steps"]
+    selector = next(step for step in steps if step.get("id") == "catalog")
+    source_tests = next(
+        step
+        for step in steps
+        if step.get("name") == "Test initial source-only trust surfaces"
+    )
+    source_verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify initial source-only Harness state"
+    )
+    active_tests = next(
+        step
+        for step in steps
+        if step.get("name") == "Test active Harness data catalog"
+    )
+    active_verify = next(
+        step
+        for step in steps
+        if step.get("name")
+        == "Verify active immutable Harness history and release bindings"
+    )
+
+    contract = "contracts/v1/migrations/harness-migration-contract-v1.json"
+    assert f"test -e {contract}" in selector["run"]
+    assert 'echo "active_data=true" >> "$GITHUB_OUTPUT"' in selector["run"]
+    assert 'echo "active_data=false" >> "$GITHUB_OUTPUT"' in selector["run"]
+    assert source_tests["if"] == "steps.catalog.outputs.active_data != 'true'"
+    assert "tests/test_trusted_source_bootstrap.py" in source_tests["run"]
+    assert "tests/test_harness_legacy_prompt_adapter.py" in source_tests["run"]
+    assert "not published_schemas_validate_the_frozen_documents" in source_tests["run"]
+    assert (
+        "not supervised_profile_schema_requires_frozen_preflight_artifact_binding"
+        in source_tests["run"]
+    )
+    for node in (
+        "test_initial_bootstrap_release_resolver_expires_on_tag_or_release",
+        "test_source_only_initial_bootstrap_state_is_verified_without_active_catalog",
+        "test_initial_source_ci_gate_rejects_partial_or_forged_data",
+        "test_initial_bootstrap_executable_anchors_are_source_authority",
+        "test_ci_selects_source_only_or_active_data_verification",
+    ):
+        assert f"tests/test_official_upgrade_contract.py::{node}" in source_tests["run"]
+    assert "frontmatter" not in source_tests["run"].lower()
+    assert "regex" not in source_tests["run"].lower()
+
+    verify_command = (
+        "python scripts/evozeus_official_upgrade_verify.py "
+        "verify-base --repo-root ."
+    )
+    assert source_verify["if"] == "steps.catalog.outputs.active_data != 'true'"
+    assert verify_command in source_verify["run"]
+    assert 'report.get("status") == "verified_initial_source"' in source_verify["run"]
+    assert active_tests == {
+        "name": "Test active Harness data catalog",
+        "if": "steps.catalog.outputs.active_data == 'true'",
+        "run": "python scripts/evozeus_test.py -q",
+    }
+    assert active_verify == {
+        "name": "Verify active immutable Harness history and release bindings",
+        "if": "steps.catalog.outputs.active_data == 'true'",
+        "run": verify_command,
+    }
 
 
 def test_catalog_requires_a_unique_direct_profile_from_each_historical_closure(
