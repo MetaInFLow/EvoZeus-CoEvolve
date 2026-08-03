@@ -511,8 +511,8 @@ def test_attach_quarantine_capability_failure_is_zero_target_write(
             raise PermissionError("simulated unwritable target parent")
 
         monkeypatch.setattr(
-            bootstrap.tempfile,
-            "mkdtemp",
+            migration_kernel,
+            "create_secure_retirement_root",
             reject_transaction_directory,
         )
         expected_error = "unwritable target parent"
@@ -1701,7 +1701,11 @@ def test_secure_create_rejects_missing_atomic_publish_without_copy_fallback(
     assert not any(
         path.name.startswith(".evozeus-tmp-") for path in target.iterdir()
     )
-    assert any(path.read_bytes() == b"POSTIMAGE\n" for path in retirement.iterdir())
+    assert any(
+        path.read_bytes() == b"POSTIMAGE\n"
+        for path in retirement.rglob("*")
+        if path.is_file()
+    )
 
 
 def test_secure_create_consumes_staging_without_any_unlink(
@@ -3839,3 +3843,138 @@ def test_atomic_capability_failure_is_detected_before_target_staging(
         if path.is_file()
     } == target_before
     assert not any(path.name.startswith(".evozeus-") for path in target.rglob("*"))
+
+
+def test_force_never_replaces_a_mismatched_project_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(bootstrap, "LOCAL_PROJECTS_DIR", projects)
+    old_target = tmp_path / "old-target"
+    old_target.mkdir()
+    target = tmp_path / "new-target"
+    target.mkdir()
+    pointer = projects / "MetaInFLow" / "pointer-target"
+    pointer.parent.mkdir(parents=True)
+    pointer.symlink_to(old_target, target_is_directory=True)
+    original_link = os.readlink(pointer)
+
+    actions = bootstrap.ensure_project_pointer(
+        target,
+        "MetaInFLow/pointer-target",
+        force=True,
+    )
+
+    assert os.readlink(pointer) == original_link
+    assert pointer.resolve() == old_target
+    assert any("manual" in action for action in actions)
+
+
+def test_fresh_attach_rolls_back_templates_lineage_skill_and_manifest_as_one_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "fresh-attach-single-batch"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "fresh-attach"\ndescription: Owner bytes.\n---\n\n'
+        "# Fresh Attach\n\nOWNER-BUSINESS-BYTES\n",
+        encoding="utf-8",
+    )
+    skill.chmod(0o640)
+    before_bytes = skill.read_bytes()
+    before_mode = stat.S_IMODE(skill.stat().st_mode)
+    manifest = {
+        "wrapper_repo": lifecycle.WRAPPER_REPO,
+        "wrapper_version": bootstrap.WRAPPER_VERSION,
+        "canonical_repo": "MetaInFLow/fresh-attach",
+        "instruction_surface": "SKILL.md",
+    }
+    original_write = migration_kernel.SecureTargetFS.write_exact
+
+    def fail_after_manifest_publication(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+        expected_mode: int | None = None,
+    ) -> None:
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            mode=mode,
+            expected_mode=expected_mode,
+        )
+        if str(raw) == lifecycle.TARGET_WRAPPER_MANIFEST:
+            raise OSError("simulated manifest directory fsync failure")
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "write_exact",
+        fail_after_manifest_publication,
+    )
+    with pytest.raises(ValueError, match="rolled back"):
+        bootstrap.attach_harness_transaction(
+            target,
+            _current_replacement_values(),
+            force=False,
+            manifest=manifest,
+            _migration_bundle=_trusted_development_bundle(),
+        )
+
+    assert skill.read_bytes() == before_bytes
+    assert stat.S_IMODE(skill.stat().st_mode) == before_mode
+    assert {
+        path.relative_to(target).as_posix()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == {"SKILL.md"}
+
+
+def test_fresh_attach_commits_the_complete_hash_and_mode_bound_artifact_set(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "fresh-attach-complete-batch"
+    target.mkdir()
+    skill = target / "SKILL.md"
+    skill.write_text(
+        '---\nname: "fresh-attach"\ndescription: Owner bytes.\n---\n\n'
+        "# Fresh Attach\n\nOWNER-BUSINESS-BYTES\n",
+        encoding="utf-8",
+    )
+    skill.chmod(0o640)
+    bundle = _trusted_development_bundle()
+    manifest = {
+        "wrapper_repo": lifecycle.WRAPPER_REPO,
+        "wrapper_version": bootstrap.WRAPPER_VERSION,
+        "canonical_repo": "MetaInFLow/fresh-attach",
+        "instruction_surface": "SKILL.md",
+    }
+    lineage = bootstrap.current_release_lineage_artifacts(bundle, target)
+
+    bootstrap.attach_harness_transaction(
+        target,
+        _current_replacement_values(),
+        force=False,
+        manifest=manifest,
+        _migration_bundle=bundle,
+    )
+
+    skill_bytes = skill.read_bytes()
+    assert b"OWNER-BUSINESS-BYTES" in skill_bytes
+    assert lifecycle.HARNESS_ENTRY_BEGIN.encode("utf-8") in skill_bytes
+    assert stat.S_IMODE(skill.stat().st_mode) == 0o640
+    manifest_path = target / lifecycle.TARGET_WRAPPER_MANIFEST
+    assert manifest_path.read_bytes() == lifecycle.wrapper_manifest_bytes(manifest)
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644
+    for destination, expected, executable in lineage:
+        assert destination.read_bytes() == expected
+        assert stat.S_IMODE(destination.stat().st_mode) == (
+            0o755 if executable else 0o644
+        )

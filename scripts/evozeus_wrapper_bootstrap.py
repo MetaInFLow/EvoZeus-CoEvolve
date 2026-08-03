@@ -7,7 +7,6 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -29,9 +28,10 @@ try:
         latest_changelog_tag,
         load_wrapper_manifest,
         require_repo_admin,
+        render_fresh_harness_entry,
         validate_instruction_surface_for_harness_entry,
         version_key,
-        write_wrapper_manifest,
+        wrapper_manifest_bytes,
         wrapper_manifest_status,
     )
 except ImportError:
@@ -52,9 +52,10 @@ except ImportError:
         latest_changelog_tag,
         load_wrapper_manifest,
         require_repo_admin,
+        render_fresh_harness_entry,
         validate_instruction_surface_for_harness_entry,
         version_key,
-        write_wrapper_manifest,
+        wrapper_manifest_bytes,
         wrapper_manifest_status,
     )
 
@@ -524,16 +525,12 @@ def current_release_lineage_artifacts(
     return lineage
 
 
-def copy_templates(
+def _attachment_template_artifacts(
     target: Path,
     replacements: dict[str, str],
-    force: bool,
     *,
-    _migration_bundle: dict[str, object] | None = None,
-) -> list[str]:
-    bundle = _migration_bundle or validate_migration_contract_source(
-        require_trusted_release=True
-    )
+    bundle: dict[str, object],
+) -> list[dict[str, object]]:
     if bundle["source_trust"]["status"] != "trusted_release":
         raise ValueError("Harness attachment source is not a trusted immutable release")
     governed = validate_target_source_inventory(bundle)
@@ -566,7 +563,7 @@ def copy_templates(
         source = _safe_source_file(bundle_root, entry["source"], "contract source")
         expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
     expected_artifacts.extend(current_release_lineage_artifacts(bundle, target))
-    relative_artifacts: list[tuple[str, bytes, int]] = []
+    relative_artifacts: list[dict[str, object]] = []
     seen_destinations: set[str] = set()
     for destination, expected, executable in expected_artifacts:
         validate_template_destination(target, destination)
@@ -574,36 +571,111 @@ def copy_templates(
         if relative in seen_destinations:
             raise ValueError(f"duplicate target artifact destination: {relative}")
         seen_destinations.add(relative)
-        relative_artifacts.append((relative, expected, 0o755 if executable else 0o644))
+        relative_artifacts.append(
+            {
+                "path": relative,
+                "postimage": expected,
+                "post_mode": 0o755 if executable else 0o644,
+                "policy": "create_or_exact",
+            }
+        )
+    return relative_artifacts
 
-    actions: list[str] = []
+
+def _apply_attachment_artifact_batch(
+    target: Path,
+    artifacts: list[dict[str, object]],
+    *,
+    force: bool,
+) -> list[str]:
+    planned: list[dict[str, object]] = []
     with migration_kernel.SecureTargetFS(target) as planning_target:
         approved_target_binding = planning_target.binding
-        planned_states: dict[str, dict[str, object]] = {}
-        for relative, expected, mode in relative_artifacts:
+        for artifact in artifacts:
+            relative = str(artifact["path"])
+            postimage = artifact["postimage"]
+            post_mode = artifact["post_mode"]
+            policy = artifact["policy"]
+            if not isinstance(postimage, bytes) or not isinstance(post_mode, int):
+                raise ValueError(f"invalid attachment artifact declaration: {relative}")
             state = planning_target.file_state(relative)
-            expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
-            if (
-                state["kind"] == "file"
-                and state["sha256"] == expected_sha256
-                and state["mode"] == mode
-            ):
-                planned_states[relative] = state
+            post_sha256 = "sha256:" + hashlib.sha256(postimage).hexdigest()
+            item = {
+                **artifact,
+                "preimage_sha256": state.get("sha256"),
+                "preimage_mode": state.get("mode"),
+                "preimage": None,
+                "postimage_sha256": post_sha256,
+                "mutate": False,
+            }
+            if policy == "create_or_exact":
+                if (
+                    state["kind"] == "file"
+                    and state["sha256"] == post_sha256
+                    and state["mode"] == post_mode
+                ):
+                    planned.append(item)
+                    continue
+                if state["kind"] != "absent":
+                    raise ValueError(
+                        "existing managed destination has no exact trusted preimage: "
+                        f"{relative}; --force cannot authorize replacement; "
+                        "target was not modified"
+                    )
+                item["mutate"] = True
+                planned.append(item)
                 continue
-            if state["kind"] != "absent":
-                raise ValueError(
-                    "existing managed destination has no exact trusted preimage: "
-                    f"{relative}; --force cannot authorize replacement; target was not modified"
+            if policy == "replace_required":
+                required_preimage = artifact.get("required_preimage_sha256")
+                if (
+                    state["kind"] != "file"
+                    or state.get("sha256") != required_preimage
+                    or not isinstance(state.get("mode"), int)
+                ):
+                    raise ValueError(
+                        f"fresh attachment preimage changed before planning: {relative}"
+                    )
+                item["preimage"] = planning_target.read_exact(
+                    relative,
+                    str(required_preimage),
                 )
-            planned_states[relative] = state
+                item["post_mode"] = int(state["mode"])
+                item["mutate"] = (
+                    state["sha256"] != post_sha256
+                    or state["mode"] != item["post_mode"]
+                )
+                planned.append(item)
+                continue
+            if policy != "manifest":
+                raise ValueError(f"unknown attachment artifact policy: {policy}")
+            if state["kind"] == "absent":
+                item["mutate"] = True
+                planned.append(item)
+                continue
+            if state["kind"] != "file" or not isinstance(state.get("mode"), int):
+                raise ValueError(f"wrapper manifest destination is unsafe: {relative}")
+            preimage = planning_target.read_exact(relative, str(state["sha256"]))
+            item["preimage"] = preimage
+            item["post_mode"] = int(state["mode"])
+            if state["sha256"] == post_sha256:
+                planned.append(item)
+                continue
+            if not force:
+                item["postimage"] = preimage
+                item["postimage_sha256"] = state["sha256"]
+                planned.append(item)
+                continue
+            item["mutate"] = True
+            planned.append(item)
 
-    retirement_root = Path(
-        tempfile.mkdtemp(
-            prefix=f".{target.name}.evozeus-attachment-",
-            dir=target.parent,
-        )
+    actions: list[str] = []
+    mutations = [item for item in planned if item["mutate"] is True]
+    if not mutations:
+        return [f"skip exact existing {target / str(item['path'])}" for item in planned]
+    retirement_root = migration_kernel.create_secure_retirement_root(
+        target,
+        prefix=f"{target.name}.evozeus-attachment",
     )
-    retirement_root.chmod(0o700)
     with migration_kernel.SecureTargetFS(
         target,
         expected_binding=approved_target_binding,
@@ -611,50 +683,67 @@ def copy_templates(
     ) as secure_target:
         try:
             secure_target.prepare_mutation_batch(
-                [relative for relative, _expected, _mode in relative_artifacts]
+                [str(item["path"]) for item in mutations]
             )
-            for relative, expected, mode in relative_artifacts:
-                if planned_states[relative]["kind"] == "file":
+            for item in planned:
+                relative = str(item["path"])
+                if item["mutate"] is not True:
                     actions.append(f"skip exact existing {target / relative}")
                     continue
                 secure_target.write_exact(
                     relative,
-                    expected,
-                    expected_preimage=None,
-                    mode=mode,
+                    item["postimage"],
+                    expected_preimage=item["preimage_sha256"],
+                    expected_mode=item["preimage_mode"],
+                    mode=int(item["post_mode"]),
                 )
                 actions.append(f"write {target / relative}")
-            for relative, expected, mode in relative_artifacts:
-                expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
+            for item in planned:
+                relative = str(item["path"])
                 current = secure_target.file_state(relative)
                 if (
-                    current.get("sha256") != expected_sha256
-                    or current.get("mode") != mode
+                    current.get("sha256") != item["postimage_sha256"]
+                    or current.get("mode") != item["post_mode"]
                 ):
                     raise ValueError(f"target artifact postimage changed: {relative}")
         except Exception as exc:
             rollback_errors: list[str] = []
-            for relative, expected, mode in reversed(relative_artifacts):
-                if planned_states[relative]["kind"] != "absent":
+            for item in reversed(planned):
+                if item["mutate"] is not True:
                     continue
-                expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
+                relative = str(item["path"])
                 try:
                     current = secure_target.file_state(relative)
-                    if current["kind"] == "absent":
+                    if (
+                        current.get("sha256") == item["preimage_sha256"]
+                        and current.get("mode") == item["preimage_mode"]
+                    ) or (
+                        current["kind"] == "absent"
+                        and item["preimage_sha256"] is None
+                    ):
                         continue
                     if (
-                        current.get("sha256") != expected_sha256
-                        or current.get("mode") != mode
+                        current.get("sha256") != item["postimage_sha256"]
+                        or current.get("mode") != item["post_mode"]
                     ):
                         rollback_errors.append(
                             f"{relative}: unexpected rollback state {current}"
                         )
                         continue
-                    secure_target.remove_exact(
-                        relative,
-                        expected_sha256,
-                        expected_mode=mode,
-                    )
+                    if item["preimage_sha256"] is None:
+                        secure_target.remove_exact(
+                            relative,
+                            str(item["postimage_sha256"]),
+                            expected_mode=int(item["post_mode"]),
+                        )
+                    else:
+                        secure_target.write_exact(
+                            relative,
+                            item["preimage"],
+                            expected_preimage=str(item["postimage_sha256"]),
+                            expected_mode=int(item["post_mode"]),
+                            mode=int(item["preimage_mode"]),
+                        )
                 except Exception as rollback_exc:
                     rollback_errors.append(f"{relative}: {rollback_exc}")
             try:
@@ -673,11 +762,69 @@ def copy_templates(
                     + f"; quarantine={retirement_root}"
                 ) from exc
             raise ValueError(
-                "Harness attachment CAS failed; all created artifacts rolled back: "
+                "Harness attachment transaction failed and rolled back all target "
+                "artifacts: "
                 f"{exc}; quarantine={retirement_root}"
             ) from exc
     actions.append(f"retain attachment transaction quarantine {retirement_root}")
     return actions
+
+
+def copy_templates(
+    target: Path,
+    replacements: dict[str, str],
+    force: bool,
+    *,
+    _migration_bundle: dict[str, object] | None = None,
+) -> list[str]:
+    bundle = _migration_bundle or validate_migration_contract_source(
+        require_trusted_release=True
+    )
+    return _apply_attachment_artifact_batch(
+        target,
+        _attachment_template_artifacts(target, replacements, bundle=bundle),
+        force=force,
+    )
+
+
+def attach_harness_transaction(
+    target: Path,
+    replacements: dict[str, str],
+    force: bool,
+    *,
+    manifest: dict[str, object],
+    _migration_bundle: dict[str, object] | None = None,
+) -> list[str]:
+    """Commit every target-owned fresh attachment surface as one CAS batch."""
+    bundle = _migration_bundle or validate_migration_contract_source(
+        require_trusted_release=True
+    )
+    artifacts = _attachment_template_artifacts(target, replacements, bundle=bundle)
+    original_skill = validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+    original_skill_bytes = original_skill.encode("utf-8")
+    artifacts.append(
+        {
+            "path": "SKILL.md",
+            "postimage": render_fresh_harness_entry(original_skill).encode("utf-8"),
+            "post_mode": 0o644,
+            "policy": "replace_required",
+            "required_preimage_sha256": (
+                "sha256:" + hashlib.sha256(original_skill_bytes).hexdigest()
+            ),
+        }
+    )
+    artifacts.append(
+        {
+            "path": TARGET_WRAPPER_MANIFEST,
+            "postimage": wrapper_manifest_bytes(manifest),
+            "post_mode": 0o644,
+            "policy": "manifest",
+        }
+    )
+    paths = [str(item["path"]) for item in artifacts]
+    if len(paths) != len(set(paths)):
+        raise ValueError("fresh attachment target artifact set contains duplicates")
+    return _apply_attachment_artifact_batch(target, artifacts, force=force)
 
 
 def local_project_dir(repo: str) -> Path:
@@ -690,14 +837,18 @@ def ensure_project_pointer(target: Path, repo: str, force: bool) -> list[str]:
     actions: list[str] = []
 
     if project_dir.is_symlink():
-        if project_dir.resolve() == target:
+        try:
+            resolved = project_dir.resolve(strict=True)
+        except (OSError, RuntimeError):
+            resolved = None
+        if resolved == target:
             actions.append(f"skip existing pointer {project_dir}")
-        elif force:
-            project_dir.unlink()
-            project_dir.symlink_to(target, target_is_directory=True)
-            actions.append(f"update pointer {project_dir} -> {target}")
         else:
-            actions.append(f"skip existing pointer {project_dir}; points to {project_dir.resolve()}")
+            actions.append(
+                "manual action required: preserve mismatched project pointer "
+                f"{project_dir}; observed_target={resolved}; requested_target={target}; "
+                f"force_ignored={force}"
+            )
         return actions
 
     if project_dir.exists():
@@ -705,7 +856,14 @@ def ensure_project_pointer(target: Path, repo: str, force: bool) -> list[str]:
         return actions
 
     project_dir.parent.mkdir(parents=True, exist_ok=True)
-    project_dir.symlink_to(target, target_is_directory=True)
+    try:
+        project_dir.symlink_to(target, target_is_directory=True)
+    except FileExistsError:
+        actions.append(
+            "manual action required: project pointer appeared concurrently; "
+            f"preserved={project_dir}; requested_target={target}"
+        )
+        return actions
     actions.append(f"write pointer {project_dir} -> {target}")
 
     return actions
@@ -896,25 +1054,37 @@ def main() -> int:
         f"verified GitHub ADMIN authority: {authority['repository']}",
     ]
     try:
-        actions.extend(copy_templates(target, replacements, args.force))
+        attachment_bundle = validate_migration_contract_source(
+            require_trusted_release=True
+        )
+        manifest = build_wrapper_manifest(
+            args.repo,
+            WRAPPER_VERSION,
+            WRAPPER_MANAGED_FILES,
+            [],
+            instruction_surface="SKILL.md",
+            onboarding=onboarding,
+            migration_bundle=attachment_bundle,
+        )
+        actions.extend(
+            attach_harness_transaction(
+                target,
+                replacements,
+                args.force,
+                manifest=manifest,
+                _migration_bundle=attachment_bundle,
+            )
+        )
     except ValueError as exc:
         fail(str(exc))
-    actions.extend(ensure_project_pointer(target, args.repo, args.force))
-    actions.extend(inject_evolution_method(target, replacements, instruction_surface="SKILL.md"))
-    actions.append(
-        write_wrapper_manifest(
-            target,
-            build_wrapper_manifest(
-                args.repo,
-                WRAPPER_VERSION,
-                WRAPPER_MANAGED_FILES,
-                [],
-                instruction_surface="SKILL.md",
-                onboarding=onboarding,
-            ),
-            args.force,
+    try:
+        actions.extend(ensure_project_pointer(target, args.repo, args.force))
+    except OSError as exc:
+        fail(
+            "Harness target attachment committed completely, but the external "
+            f"project pointer was not created: {exc}; manual action required: "
+            f"{local_project_dir(args.repo)} -> {target}"
         )
-    )
     print("EvoZeus-CoEvolve repository Harness attachment complete.")
     print(f"Target: {target}")
     print(f"Repo: {args.repo}")

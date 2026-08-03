@@ -1868,10 +1868,8 @@ def build_wrapper_manifest(
     return manifest
 
 
-def write_wrapper_manifest(target: Path, manifest: dict[str, Any], force: bool = False) -> str:
-    path = wrapper_manifest_path(target)
-    if path.exists() and not force:
-        return f"skip existing {path}"
+def wrapper_manifest_bytes(manifest: dict[str, Any]) -> bytes:
+    """Serialize the complete manifest postimage before any target mutation."""
     try:
         serialized = json.dumps(
             manifest,
@@ -1883,8 +1881,16 @@ def write_wrapper_manifest(target: Path, manifest: dict[str, Any], force: bool =
         raise ValueError(
             f"wrapper manifest cannot be serialized as strict JSON: {exc}"
         ) from exc
+    return serialized.encode("utf-8")
+
+
+def write_wrapper_manifest(target: Path, manifest: dict[str, Any], force: bool = False) -> str:
+    path = wrapper_manifest_path(target)
+    if path.exists() and not force:
+        return f"skip existing {path}"
+    serialized = wrapper_manifest_bytes(manifest)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(serialized, encoding="utf-8")
+    path.write_bytes(serialized)
     return f"write {path}"
 
 
@@ -2898,14 +2904,10 @@ def validate_instruction_surface_for_harness_entry(target: Path, surface_rel: st
     return text
 
 
-def add_fresh_harness_entry(target: Path, surface_rel: str) -> bool:
-    """Add one canonical marker block only to a surface with zero legacy candidates."""
-    surface = safe_target_relative_file(target, surface_rel)
-    if surface is None:
-        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
-    original = validate_instruction_surface_for_harness_entry(target, surface_rel)
+def render_fresh_harness_entry(original: str) -> str:
+    """Return the complete postimage for a prevalidated fresh instruction surface."""
     if _has_canonical_harness_entry(original):
-        return False
+        return original
 
     entry_spans = [
         (match.start(), match.end())
@@ -2925,15 +2927,22 @@ def add_fresh_harness_entry(target: Path, surface_rel: str) -> bool:
             + ("\n- " + "\n- ".join(diagnostics) if diagnostics else "")
         )
 
-    updated = original
-
     newline = "\r\n" if "\r\n" in original else "\n"
-    insert_at = _instruction_insert_index(updated)
-    prefix = updated[:insert_at]
-    suffix = updated[insert_at:]
+    insert_at = _instruction_insert_index(original)
+    prefix = original[:insert_at]
+    suffix = original[insert_at:]
     before = "" if not prefix or prefix.endswith(newline * 2) else newline if prefix.endswith(newline) else newline * 2
     after = "" if suffix.startswith(newline * 2) else newline if suffix.startswith(newline) else newline * 2
-    updated = prefix + before + build_harness_activation_block(newline) + after + suffix
+    return prefix + before + build_harness_activation_block(newline) + after + suffix
+
+
+def add_fresh_harness_entry(target: Path, surface_rel: str) -> bool:
+    """Add one canonical marker block only to a surface with zero legacy candidates."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    original = validate_instruction_surface_for_harness_entry(target, surface_rel)
+    updated = render_fresh_harness_entry(original)
 
     if updated == original:
         return False
