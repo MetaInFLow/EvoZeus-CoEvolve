@@ -32,7 +32,7 @@
       "profile_path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
       "profile_schema": {
         "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
-        "sha256": "c1be868ea77137487093d896c9844981f413c3593d39fc1ddffd5e7060aef07c"
+        "sha256": "cd52f73b4ab943dd67b7fab1e174f95e26bedff57088ccc74cc8b30960dc2fd0"
       },
       "source_envelope": {
         "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
@@ -76,12 +76,31 @@
         "source_tree": "801f60fa4df1a6c3a60fe44e8f0b81fe490cc5eb",
         "target_release": "v0.15.0"
       },
+      "release_lineage_records": [
+        ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md"
+      ],
+      "applied_lineage": {
+        "role": "applied_migration_lineage",
+        "target_path": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+        "artifact": {
+          "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+          "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+          "mode": "100644"
+        },
+        "profile": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
+        "source_envelope": "legacy-wrapper-v0.14-three-section@v1.0.0",
+        "wrapper_transition": "v0.14.0-to-v0.15.0",
+        "harness_transition": "absent-to-v1.1.0",
+        "instruction_transition": "reviewed-three-section-to-single-canonical-activation",
+        "retained_complement_sha256": "3822b34e173d290cd2a93ccd083f706546dcc90c2069c77d4d9b3bcf74db8b2e",
+        "rollback": "receipt_bound_snapshot_restore_on_any_failure"
+      },
       "execution": {
         "mode": "supervised_exact_plan",
         "discovery_authority": false,
         "adapter_write_authority": false,
-        "approval": "one_time_exact_plan_digest",
-        "runtime_apply": "not_implemented"
+        "approval": "one_time_exact_operation_sha256",
+        "runtime_apply": "trusted_kernel_exact_apply"
       }
     }
   ],

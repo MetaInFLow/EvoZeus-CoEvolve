@@ -4,11 +4,11 @@
   "profile_version": "v1.0.0",
   "profile_schema": {
     "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
-    "sha256": "c1be868ea77137487093d896c9844981f413c3593d39fc1ddffd5e7060aef07c"
+    "sha256": "cd52f73b4ab943dd67b7fab1e174f95e26bedff57088ccc74cc8b30960dc2fd0"
   },
   "protocol": {
     "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-    "sha256": "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360"
+    "sha256": "b4ecf070c779d4f30b860975b595b689b1bc89b57db477d391319e6def4af589"
   },
   "source_envelope": {
     "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
@@ -47,15 +47,38 @@
     "mode": "supervised_exact_plan",
     "discovery_authority": false,
     "adapter_write_authority": false,
-    "approval": "one_time_exact_plan_digest",
+    "approval": "one_time_exact_operation_sha256",
     "approval_scope": "one_target_one_preimage_one_postimage",
     "compare_and_swap": "full_file_preimage",
     "snapshot": "required_before_any_write",
     "post_verify": "adapter_proof_and_current_closure",
     "rollback": "restore_snapshot_on_any_failure",
-    "runtime_apply": "not_implemented"
+    "runtime_apply": "trusted_kernel_exact_apply"
   },
   "automatic": false,
+  "release_lineage_records": [
+    ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md"
+  ],
+  "migration_records": [
+    ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+  ],
+  "current_migration_record": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+  "applied_lineage": {
+    "role": "applied_migration_lineage",
+    "target_path": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+    "artifact": {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+      "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+      "mode": "100644"
+    },
+    "profile": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
+    "source_envelope": "legacy-wrapper-v0.14-three-section@v1.0.0",
+    "wrapper_transition": "v0.14.0-to-v0.15.0",
+    "harness_transition": "absent-to-v1.1.0",
+    "instruction_transition": "reviewed-three-section-to-single-canonical-activation",
+    "retained_complement_sha256": "3822b34e173d290cd2a93ccd083f706546dcc90c2069c77d4d9b3bcf74db8b2e",
+    "rollback": "receipt_bound_snapshot_restore_on_any_failure"
+  },
   "operations": [
     {
       "change_id": "create:.evozeus-wrapper/contracts/harness-migration-contract-v1.json",
@@ -66,7 +89,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
+        "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
         "mode": "100644"
       }
     },
@@ -80,6 +103,19 @@
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/generated/harness-skill-v1.0.0-to-v1.1.0.md",
         "sha256": "c609568fc97c601acb30362ef3566ae047740102223db4bbcc580709b44f81ee",
+        "mode": "100644"
+      }
+    },
+    {
+      "change_id": "create:.evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+      "type": "create_exact",
+      "target_path": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+      "preimage": {
+        "state": "absent"
+      },
+      "postimage": {
+        "artifact_path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+        "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
         "mode": "100644"
       }
     },
@@ -99,7 +135,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-        "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
+        "sha256": "654daad991e70463e383144b516a9a0d461b7647d94a0b7cd3eec1a86d17ac56",
         "mode": "100755"
       }
     },
@@ -112,7 +148,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
-        "sha256": "21e32790d0baabdd4cba93574f37f85cdd1c111a0055ad1c0a3337f9e0fae084",
+        "sha256": "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
         "mode": "100644"
       }
     },
@@ -161,7 +197,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e"
+            "sha256": "sha256:db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570"
           }
         },
         {
@@ -209,9 +245,9 @@
       "plan_contract": {
         "decision": "supervised_migration_available",
         "writes": false,
-        "approval": "one_time_exact_proof_sha256",
+        "approval": "one_time_exact_operation_sha256",
         "compare_and_swap": "full_file_preimage",
-        "runtime_apply": "not_implemented"
+        "runtime_apply": "trusted_kernel_exact_apply"
       }
     }
   ],

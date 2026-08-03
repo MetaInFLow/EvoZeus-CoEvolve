@@ -4,7 +4,7 @@
   "closure_version": "v1.1.0",
   "source": {
     "repository": "MetaInFLow/EvoZeus-CoEvolve",
-    "construction_revision": "ee199b5d50bd12b26d8150538a85b1e959cadf0a",
+    "construction_revision": "52c7f01137def0b44057322801d4d0d3daa4ad06",
     "release_status": "release_required_for_apply",
     "required_release": "v0.15.0"
   },
@@ -64,7 +64,7 @@
       "mode": "100644",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-      "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
       "materialization": {
         "policy": "copy_exact"
       },
@@ -238,7 +238,7 @@
       "mode": "100755",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
+      "sha256": "654daad991e70463e383144b516a9a0d461b7647d94a0b7cd3eec1a86d17ac56",
       "materialization": {
         "policy": "copy_exact"
       },
@@ -251,7 +251,7 @@
       "mode": "100644",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
-      "sha256": "21e32790d0baabdd4cba93574f37f85cdd1c111a0055ad1c0a3337f9e0fae084",
+      "sha256": "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
       "materialization": {
         "policy": "copy_exact"
       },
@@ -280,7 +280,7 @@
           "contract_id": "evozeus-harness-migration",
           "contract_version": "v1.0.0",
           "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-          "sha256": "sha256:8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e"
+          "sha256": "sha256:db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570"
         },
         "managed_blocks": [
           {

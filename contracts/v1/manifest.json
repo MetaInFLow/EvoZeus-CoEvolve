@@ -55,13 +55,13 @@
     },
     {
       "path": "migrations/harness-migration-contract-v1.json",
-      "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
       "mode": "100644",
       "role": "harness-migration-contract"
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "57db61a2bbb8c6837337dc4610d795d4c735fcba5d546980f3b46f40222e3c1e",
+      "sha256": "5af8412c0f67a2b8fb7eb39e654714c2ddf1acc29bbbd9777da4c6ff6fea3a71",
       "mode": "100644",
       "role": "current-target-closure-pointer"
     },
@@ -193,7 +193,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-      "sha256": "8911092600506b91838328ebf00a39cd2ab46f1a3cd0d12c2c51b63129bb268e",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
       "mode": "100644",
       "role": "immutable-target-closure-artifact"
     },
@@ -211,7 +211,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
+      "sha256": "654daad991e70463e383144b516a9a0d461b7647d94a0b7cd3eec1a86d17ac56",
       "mode": "100755",
       "role": "immutable-target-closure-artifact"
     },
@@ -247,7 +247,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
-      "sha256": "21e32790d0baabdd4cba93574f37f85cdd1c111a0055ad1c0a3337f9e0fae084",
+      "sha256": "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
       "mode": "100644",
       "role": "immutable-target-closure-artifact"
     },
@@ -325,9 +325,15 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "f88c3af42aebbf7dbd5f9a88df290ab04fd018aea9e46a69ebe830950fc331db",
+      "sha256": "f743d3e45a122c69922e70a2510c8875a89890ef252017a325d73e68d8eb1d22",
       "mode": "100644",
       "role": "immutable-target-closure"
+    },
+    {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+      "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+      "mode": "100644",
+      "role": "trusted-legacy-applied-lineage-artifact"
     },
     {
       "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py",
@@ -349,25 +355,25 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "e4bdb386ef572699cfbc3a44a009ee384e78fc13f6be9e8bc34f00f8b8c09cfd",
+      "sha256": "4bd1421e938ee828ce3a17ed9820da2c65890a3b83334432f398430a5047d014",
       "mode": "100644",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "d433fb22bbbb98ee8639a1d689db9111cfceabb059438efd8f51834eefd6d942",
+      "sha256": "6d6f9fe06d4b260e74fe7a9044c41a48ce4c45ab0bbee07936403739fa3cb653",
       "mode": "100644",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
-      "sha256": "09f3445a2cf6c642744ec10a65dc2f98267825af55b9962aa9657bac4e5452d3",
+      "sha256": "01c459e53e33d5c659383851263ddd131c8fcc15b0556262a4e37784936ded77",
       "mode": "100644",
       "role": "supervised-legacy-profile"
     },
     {
       "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-      "sha256": "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360",
+      "sha256": "b4ecf070c779d4f30b860975b595b689b1bc89b57db477d391319e6def4af589",
       "mode": "100644",
       "role": "official-upgrade-protocol"
     },
@@ -397,13 +403,13 @@
     },
     {
       "path": "migrations/schemas/official-upgrade-protocol-v1.schema.json",
-      "sha256": "5f1fc3a2e16116423f56e1344527f3188b848af010ccb3f50f9716c803d1ca95",
+      "sha256": "33dee60e5cc9e4c758f912f7daf763eb7b93e295b3c0e5d08bfeaf89eee76438",
       "mode": "100644",
       "role": "official-upgrade-json-schema"
     },
     {
       "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
-      "sha256": "c1be868ea77137487093d896c9844981f413c3593d39fc1ddffd5e7060aef07c",
+      "sha256": "cd52f73b4ab943dd67b7fab1e174f95e26bedff57088ccc74cc8b30960dc2fd0",
       "mode": "100644",
       "role": "official-upgrade-json-schema"
     },
@@ -421,7 +427,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "1d61ef6559ed857cf7f56a26b2e4dd1d276086b3b94affc83392103dd0213425",
+      "sha256": "75b1d3892af8e15253700273966824b025ecb1e673baa229b3b265eee1d7b5ec",
       "mode": "100644",
       "role": "target-template-inventory"
     },
