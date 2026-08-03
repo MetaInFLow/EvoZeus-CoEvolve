@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,90 @@ def test_direct_entrypoint_alias_cannot_select_an_adjacent_source_guard(
     assert "trusted source" in result.stderr or "Too many levels" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "evozeus_wrapper.py",
+        "evozeus_wrapper_bootstrap.py",
+        "evozeus_official_upgrade_verify.py",
+        "evozeus_test.py",
+    ],
+)
+def test_parent_directory_exchange_fails_closed_without_loading_replacement_sources(
+    tmp_path: Path,
+    entrypoint: str,
+) -> None:
+    runtime = _copy_runtime(tmp_path)
+    scripts = runtime / "scripts"
+    signal = tmp_path / "guard-captured"
+    proceed = tmp_path / "continue-bootstrap"
+    entrypoint_path = scripts / entrypoint
+    source = entrypoint_path.read_text(encoding="utf-8")
+    pause = (
+        "        signal_fd = posix.open(\n"
+        f"            {str(signal)!r},\n"
+        "            posix.O_WRONLY | posix.O_CREAT | posix.O_EXCL,\n"
+        "            0o600,\n"
+        "        )\n"
+        "        posix.close(signal_fd)\n"
+        "        while True:\n"
+        "            try:\n"
+        f"                posix.stat({str(proceed)!r})\n"
+        "                break\n"
+        "            except FileNotFoundError:\n"
+        "                __import__('time').sleep(0.01)\n"
+    )
+    needle = (
+        "        exec(compile(source, guard_path, \"exec\", "
+        "dont_inherit=True), namespace)\n"
+    )
+    assert source.count(needle) == 1
+    entrypoint_path.write_text(
+        source.replace(needle, needle + pause),
+        encoding="utf-8",
+    )
+
+    process = subprocess.Popen(
+        [sys.executable, str(entrypoint_path), "--help"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not signal.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert signal.exists(), "entrypoint did not reach the directory-exchange barrier"
+
+        retained_scripts = runtime / "scripts-retained"
+        scripts.rename(retained_scripts)
+        shutil.copytree(retained_scripts, scripts)
+        markers: list[Path] = []
+        for filename in (
+            "evozeus_source_guard.py",
+            "evozeus_wrapper_lifecycle.py",
+            "evozeus_wrapper_global_hook.py",
+        ):
+            marker = tmp_path / f"replacement-{Path(filename).stem}.executed"
+            markers.append(marker)
+            scripts.joinpath(filename).write_text(
+                f"open({str(marker)!r}, 'w').write('executed')\n"
+                "raise SystemExit(91)\n",
+                encoding="utf-8",
+            )
+        proceed.write_bytes(b"continue\n")
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode != 0, stdout
+    assert "trusted source directory" in stderr
+    assert not any(marker.exists() for marker in markers)
+
+
 def test_source_reader_detects_same_path_race_by_final_metadata_cas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -203,7 +288,18 @@ def test_source_reader_detects_same_path_race_by_final_metadata_cas(
 
     monkeypatch.setattr(source_guard.os, "read", racing_read)
 
-    with pytest.raises(ImportError, match="metadata changed while reading"):
-        source_guard._read_regular_source(str(source))
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    directory_metadata = os.fstat(directory_fd)
+    try:
+        with pytest.raises(ImportError, match="metadata changed while reading"):
+            source_guard._read_regular_source_at(
+                directory_fd,
+                (directory_metadata.st_dev, directory_metadata.st_ino),
+                str(tmp_path),
+                source.name,
+                str(source),
+            )
+    finally:
+        os.close(directory_fd)
 
     assert raced is True

@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -2160,6 +2161,86 @@ def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) ->
     assert list(trusted.rglob("*.pyc")) == []
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        ("short_header", "payload header is incomplete"),
+        ("invalid_length", "payload length is invalid"),
+        ("oversize", "payload source size is invalid"),
+        ("preflight_digest", "preflight source digest changed"),
+        ("notice_digest", "notice source digest changed"),
+    ],
+)
+def test_trusted_structure_runner_rejects_invalid_frames(
+    failure: str,
+    expected_error: str,
+) -> None:
+    preflight_source = b"raise SystemExit(0)\n"
+    notice_source = b"VALUE = 1\n"
+    preflight_sha256 = hashlib.sha256(preflight_source).hexdigest()
+    notice_sha256 = hashlib.sha256(notice_source).hexdigest()
+    payload = b"".join(
+        (
+            len(preflight_source).to_bytes(8, "big"),
+            len(notice_source).to_bytes(8, "big"),
+            preflight_source,
+            notice_source,
+        )
+    )
+    if failure == "short_header":
+        payload = b"\0" * 15
+    elif failure == "invalid_length":
+        payload = (1).to_bytes(8, "big") + (1).to_bytes(8, "big") + b"x"
+    elif failure == "oversize":
+        payload = (
+            (lifecycle._TRUSTED_STRUCTURE_SOURCE_MAX_BYTES + 1).to_bytes(8, "big")
+            + (1).to_bytes(8, "big")
+        )
+    elif failure == "preflight_digest":
+        preflight_sha256 = "0" * 64
+    elif failure == "notice_digest":
+        notice_sha256 = "0" * 64
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            lifecycle._TRUSTED_STRUCTURE_RUNNER,
+            preflight_sha256,
+            notice_sha256,
+            "structure",
+            "--target",
+            "/unused",
+        ],
+        cwd=Path("/"),
+        input=payload,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error.encode("utf-8") in result.stderr
+
+
+@pytest.mark.parametrize("oversize_field", ["preflight", "notice"])
+def test_trusted_structure_snapshot_rejects_oversize_sources(
+    oversize_field: str,
+) -> None:
+    oversize = b"x" * (lifecycle._TRUSTED_STRUCTURE_SOURCE_MAX_BYTES + 1)
+    preflight_source = oversize if oversize_field == "preflight" else b"pass\n"
+    notice_source = oversize if oversize_field == "notice" else b"VALUE = 1\n"
+    snapshot = lifecycle._TrustedStructureSnapshot(
+        preflight_source=preflight_source,
+        notice_source=notice_source,
+        preflight_sha256=hashlib.sha256(preflight_source).hexdigest(),
+        notice_sha256=hashlib.sha256(notice_source).hexdigest(),
+    )
+
+    with pytest.raises(ValueError, match="source bytes changed"):
+        snapshot.verify()
+
+
 def test_current_harness_version_is_derived_from_the_verified_closure(
     tmp_path: Path,
 ) -> None:
@@ -2611,6 +2692,20 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     )
     assert applied["status"] == "applied"
     assert applied["writes"] is True
+    frozen_scripts = source / (
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/scripts"
+    )
+    assert applied["validation"] == {
+        "structure": "passed",
+        "protected_business_surfaces": "byte_exact",
+        "command": "immutable-bytes",
+        "preflight_sha256": hashlib.sha256(
+            frozen_scripts.joinpath("evozeus_wrapper_preflight.py").read_bytes()
+        ).hexdigest(),
+        "notice_sha256": hashlib.sha256(
+            frozen_scripts.joinpath("evozeus_notice.py").read_bytes()
+        ).hexdigest(),
+    }
     assert not target.joinpath(applied_lineage).exists()
     assert target.joinpath("SKILL.md").read_bytes() == protected_before
     record = target.joinpath(plan["migration_record"]).read_bytes()

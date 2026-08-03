@@ -11,6 +11,7 @@ def _bootstrap_trusted_sources() -> dict:
     if trusted_loader is not None:
         if trusted_loader not in sys.meta_path:
             raise RuntimeError("trusted source loader is not authoritative")
+        trusted_loader.verify_directory()
         sys.meta_path.remove(trusted_loader)
         sys.meta_path.insert(0, trusted_loader)
         scripts_dir = trusted_loader.scripts_dir
@@ -146,12 +147,26 @@ def _bootstrap_trusted_sources() -> dict:
             final_metadata.st_ctime_ns,
         ):
             raise RuntimeError("trusted source bootstrap changed while reading")
+        trusted_scripts_metadata = posix.fstat(entrypoint_parent)
+        trusted_scripts_descriptor = posix.dup(entrypoint_parent)
     finally:
         posix.close(descriptor)
         posix.close(entrypoint_parent)
-    namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
-    exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
-    return namespace["bootstrap"](__file__, original_sys_path)
+    try:
+        namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
+        exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
+        return namespace["bootstrap"](
+            __file__,
+            original_sys_path,
+            scripts_dir_fd=trusted_scripts_descriptor,
+            scripts_dir_identity=(
+                trusted_scripts_metadata.st_dev,
+                trusted_scripts_metadata.st_ino,
+            ),
+            scripts_dir_path=scripts_dir,
+        )
+    finally:
+        posix.close(trusted_scripts_descriptor)
 
 
 _TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()

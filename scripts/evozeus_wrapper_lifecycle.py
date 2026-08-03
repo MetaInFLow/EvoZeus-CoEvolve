@@ -317,20 +317,32 @@ def run_command(
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
 
+_TRUSTED_STRUCTURE_SOURCE_MAX_BYTES = 8 * 1024 * 1024
+
+
 _TRUSTED_STRUCTURE_RUNNER = r"""
 import hashlib
 import sys
 
-payload = sys.stdin.buffer.read()
-if len(payload) < 16:
+max_source_bytes = 8 * 1024 * 1024
+header = sys.stdin.buffer.read(16)
+if len(header) < 16:
     raise SystemExit("trusted structure payload header is incomplete")
-preflight_size = int.from_bytes(payload[:8], "big")
-notice_size = int.from_bytes(payload[8:16], "big")
-expected_size = 16 + preflight_size + notice_size
-if len(payload) != expected_size:
+preflight_size = int.from_bytes(header[:8], "big")
+notice_size = int.from_bytes(header[8:16], "big")
+if (
+    preflight_size < 1
+    or preflight_size > max_source_bytes
+    or notice_size < 1
+    or notice_size > max_source_bytes
+):
+    raise SystemExit("trusted structure payload source size is invalid")
+body_size = preflight_size + notice_size
+body = sys.stdin.buffer.read(body_size)
+if len(body) != body_size or sys.stdin.buffer.read(1):
     raise SystemExit("trusted structure payload length is invalid")
-preflight_source = payload[16 : 16 + preflight_size]
-notice_source = payload[16 + preflight_size :]
+preflight_source = body[:preflight_size]
+notice_source = body[preflight_size:]
 if hashlib.sha256(preflight_source).hexdigest() != sys.argv[1]:
     raise SystemExit("trusted preflight source digest changed")
 if hashlib.sha256(notice_source).hexdigest() != sys.argv[2]:
@@ -365,9 +377,19 @@ class _TrustedStructureSnapshot:
     def verify(self) -> None:
         if (
             not isinstance(self.preflight_source, bytes)
+            or not (
+                1
+                <= len(self.preflight_source)
+                <= _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            )
             or hashlib.sha256(self.preflight_source).hexdigest()
             != self.preflight_sha256
             or not isinstance(self.notice_source, bytes)
+            or not (
+                1
+                <= len(self.notice_source)
+                <= _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            )
             or hashlib.sha256(self.notice_source).hexdigest()
             != self.notice_sha256
         ):
@@ -441,6 +463,14 @@ def _trusted_structure_preflight(
         descriptor = os.open(source, flags | nofollow)
         try:
             metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size < 1
+                or metadata.st_size > _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            ):
+                raise ValueError(
+                    f"trusted structure source size/type is invalid: {target_path}"
+                )
             chunks: list[bytes] = []
             remaining = metadata.st_size
             while remaining:
@@ -5887,7 +5917,7 @@ def plan_target_layout_migration(
                 "verify target Git worktree is clean",
             ],
             "post_apply": [
-                f"python3 {TARGET_PREFLIGHT_SCRIPT} structure --target {target}",
+                "immutable-bytes structure validation from verified closure",
                 "verify protected business surface bytes",
             ],
         },
@@ -6564,6 +6594,14 @@ def _apply_supervised_legacy_upgrade(
             raise ValueError(
                 f"supervised migration structure validation failed: {detail}"
             )
+        validation.update(
+            {
+                "structure": "passed",
+                "command": "immutable-bytes",
+                "preflight_sha256": trusted_structure.preflight_sha256,
+                "notice_sha256": trusted_structure.notice_sha256,
+            }
+        )
         migration_kernel.verify_post_apply_target_state(target, plan)
         migration_kernel.mark_migration_transaction(
             snapshot,
@@ -6804,7 +6842,9 @@ def _apply_canonical_v1_upgrade(
         "validation": {
             "structure": "passed",
             "protected_business_surfaces": "byte_exact",
-            "command": f"python3 {TARGET_PREFLIGHT_SCRIPT} structure --target {target}",
+            "command": "immutable-bytes",
+            "preflight_sha256": trusted_structure.preflight_sha256,
+            "notice_sha256": trusted_structure.notice_sha256,
         },
     }
 

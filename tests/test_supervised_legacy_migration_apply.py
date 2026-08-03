@@ -205,6 +205,20 @@ def test_reviewed_v014_exact_operation_approval_apply_verify_and_rollback_golden
         "manifest": "closure_exact",
         "release_lineage": "closure_exact",
         "migration_ledger": "profile_exact_applied_lineage",
+        "structure": "passed",
+        "command": "immutable-bytes",
+        "preflight_sha256": hashlib.sha256(
+            source.joinpath(
+                "contracts/v1/migrations/history/harness-skill/v1.1.0/"
+                "artifacts/scripts/evozeus_wrapper_preflight.py"
+            ).read_bytes()
+        ).hexdigest(),
+        "notice_sha256": hashlib.sha256(
+            source.joinpath(
+                "contracts/v1/migrations/history/harness-skill/v1.1.0/"
+                "artifacts/scripts/evozeus_notice.py"
+            ).read_bytes()
+        ).hexdigest(),
     }
     applied_record = target / plan["migration_record"]
     assert applied_record.read_bytes() == source.joinpath(
@@ -480,22 +494,29 @@ def test_target_owned_pyc_cannot_execute_during_final_structure_validation(
     assert before["SKILL.md"]["bytes"] != skill_bytes
 
 
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["evozeus_wrapper_preflight.py", "evozeus_notice.py"],
+)
 def test_final_structure_validation_uses_immutable_bytes_after_source_inode_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
 ) -> None:
     source = _make_release_source(tmp_path)
     target = _prepare_reviewed_legacy_target(tmp_path)
     plan = _release_plan(target, source)
     original_run = lifecycle._run_harness_structure_check
-    artifact = source / (
-        "contracts/v1/migrations/history/harness-skill/v1.1.0/"
-        "artifacts/scripts/evozeus_wrapper_preflight.py"
+    artifact = (
+        source
+        / "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/scripts"
+        / artifact_name
     )
     writer = os.open(artifact, os.O_WRONLY)
     forged_staging = (
         tmp_path
-        / "evozeus-structure-preflight-forged/scripts/evozeus_wrapper_preflight.py"
+        / "evozeus-structure-preflight-forged/scripts"
+        / artifact_name
     )
     source_mutated = False
 
