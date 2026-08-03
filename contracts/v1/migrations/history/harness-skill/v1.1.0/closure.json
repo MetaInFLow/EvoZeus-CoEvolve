@@ -4,7 +4,7 @@
   "closure_version": "v1.1.0",
   "source": {
     "repository": "MetaInFLow/EvoZeus-CoEvolve",
-    "construction_revision": "dbde7f3826dce8540280fde34bb435213bd6f874",
+    "construction_revision": "7eff14b4b93b77a3c360254339f000a1ccbcd855",
     "release_status": "release_required_for_apply",
     "required_release": "v0.15.0"
   },

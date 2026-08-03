@@ -23,7 +23,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - name: Install hash-locked CommonMark parser
         run: python -m pip install --require-hashes -r requirements-commonmark.lock
-      - run: python -m pip install --upgrade pytest pydantic pyyaml
+      - run: python -m pip install --upgrade pytest pydantic pyyaml "jsonschema==4.26.0"
       - name: Select Harness contract activation state
         id: catalog
         run: |

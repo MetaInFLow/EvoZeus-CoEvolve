@@ -61,7 +61,7 @@
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "126365559574d2c6af5eede4c929bf8e93312d1a0f2da76d5c664749d6c124df",
+      "sha256": "f554179e25cb3bd90e6782bc2ab0833946d9b1ec39b447da66a841e6e408a0e8",
       "mode": "100644",
       "role": "current-target-closure-pointer"
     },
@@ -325,7 +325,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "1a0c5ffbcf91a43487e6cdcbf2158c1255e95690d1cd33ba999ee3fd2757ba22",
+      "sha256": "600bb4147e979b3f1dc81a6dc472456fa2ad83c1871ba86bbcc00c32fd23ece9",
       "mode": "100644",
       "role": "immutable-target-closure"
     },
@@ -355,13 +355,13 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "c2bc019bd387a0493df536c2255eb8edf651c1b393a3c8111951f1f53e9822a6",
+      "sha256": "1fbe12bd2828796642cd60a9f4fd85c2442968d8454ef7398d0552f73aec3b5a",
       "mode": "100644",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "b432a9c2346733e76401f57febc720b00f6c14e99a00fb7a20dcfd7ae9dcc8d0",
+      "sha256": "77f9753e5f28f1b26ccf6c1c66f7184a10a06208b77f45984587218c500a4961",
       "mode": "100644",
       "role": "current-official-upgrade-profile-pointer"
     },
