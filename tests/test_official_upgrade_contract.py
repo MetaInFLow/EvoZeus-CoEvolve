@@ -946,7 +946,13 @@ def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     workflow = (ROOT / verifier.WORKFLOW_REL).read_text(encoding="utf-8")
 
     assert "pull_request_target:" in workflow
-    assert 'paths:\n      - "contracts/v1/migrations/**"\n' in workflow
+    for protected_path in (
+        "contracts/v1/migrations/**",
+        "contracts/v1/manifest.json",
+        "scripts/evozeus_official_upgrade_verify.py",
+        ".github/workflows/evozeus-official-upgrade-profile.yml",
+    ):
+        assert f'      - "{protected_path}"\n' in workflow
     assert "permissions:\n  contents: read\n" in workflow
     assert "pull-requests:" not in workflow
     assert (
