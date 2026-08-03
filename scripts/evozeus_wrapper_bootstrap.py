@@ -610,6 +610,9 @@ def copy_templates(
         retirement_root=retirement_root,
     ) as secure_target:
         try:
+            secure_target.prepare_mutation_batch(
+                [relative for relative, _expected, _mode in relative_artifacts]
+            )
             for relative, expected, mode in relative_artifacts:
                 if planned_states[relative]["kind"] == "file":
                     actions.append(f"skip exact existing {target / relative}")

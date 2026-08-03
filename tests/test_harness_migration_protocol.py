@@ -467,7 +467,7 @@ def test_fresh_attach_rejects_unreleased_development_source(tmp_path: Path) -> N
     assert sorted(path.name for path in target.iterdir()) == ["SKILL.md"]
 
 
-def test_attach_success_consumes_staging_and_keeps_an_empty_external_quarantine(
+def test_attach_success_consumes_staging_and_keeps_capability_evidence_external(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "attach-success"
@@ -486,7 +486,11 @@ def test_attach_success_consumes_staging_and_keeps_an_empty_external_quarantine(
     assert quarantines[0].parent == target.parent
     assert stat.S_IMODE(quarantines[0].stat().st_mode) == 0o700
     assert quarantines[0].stat().st_dev == target.stat().st_dev
-    assert list(quarantines[0].iterdir()) == []
+    capability_evidence = list(
+        quarantines[0].glob(".evozeus-atomic-capability-*")
+    )
+    assert len(capability_evidence) == 1
+    assert capability_evidence[0].is_dir()
     assert not any(
         path.name.startswith(".evozeus-tmp-") for path in target.rglob("*")
     )
@@ -596,12 +600,19 @@ def test_attach_create_cas_preserves_a_racing_unknown_leaf(
         )
 
     assert raced_path is not None
-    assert raced_path.read_bytes() == b"OWNER-RACE\n"
+    assert not raced_path.exists()
+    quarantines = list(tmp_path.glob(".attach-leaf-race.evozeus-attachment-*"))
+    preserved = [
+        path
+        for path in quarantines[0].rglob("*")
+        if path.is_file() and path.read_bytes() == b"OWNER-RACE\n"
+    ]
+    assert len(preserved) == 1
     assert {
         path.relative_to(target).as_posix()
         for path in target.rglob("*")
         if path.is_file()
-    } == {"SKILL.md", raced_path.relative_to(target).as_posix()}
+    } == {"SKILL.md"}
 
 
 def test_attach_parent_swap_never_writes_through_the_replacement(
@@ -997,6 +1008,7 @@ def test_secure_nested_directory_creation_fsyncs_each_parent(
 ) -> None:
     target = tmp_path / "secure-directory-fsync"
     target.mkdir()
+    retirement = _retirement_root(tmp_path, "secure-directory-fsync")
     created_under: list[tuple[int, int]] = []
     fsynced_directories: list[tuple[int, int]] = []
     original_mkdir = os.mkdir
@@ -1021,7 +1033,11 @@ def test_secure_nested_directory_creation_fsyncs_each_parent(
 
     monkeypatch.setattr(os, "mkdir", record_mkdir)
     monkeypatch.setattr(os, "fsync", record_fsync)
-    with migration_kernel.SecureTargetFS(target, directory_mode=0o700) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        directory_mode=0o700,
+        retirement_root=retirement,
+    ) as secure_target:
         secure_target.write_exact(
             "one/two/artifact.json",
             b"{}\n",
@@ -1039,8 +1055,12 @@ def test_secure_replace_mode_cas_preserves_a_changed_preimage(tmp_path: Path) ->
     managed.write_bytes(b"PREIMAGE\n")
     managed.chmod(0o644)
     expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+    retirement = _retirement_root(tmp_path, "secure-mode-cas")
 
-    with migration_kernel.SecureTargetFS(target) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
         with pytest.raises(ValueError, match="mode CAS changed"):
             secure_target.write_exact(
                 "managed.txt",
@@ -1083,15 +1103,15 @@ def test_secure_replace_prepare_failure_preserves_preimage_and_allows_rollback(
     def fail_fchmod(_descriptor: int, _mode: int) -> None:
         raise OSError("simulated staged fchmod failure")
 
-    with monkeypatch.context() as failure_patch:
-        if failure_point == "write":
-            failure_patch.setattr(os, "write", fail_during_write)
-        else:
-            failure_patch.setattr(os, "fchmod", fail_fchmod)
-        with migration_kernel.SecureTargetFS(
-            target,
-            retirement_root=snapshot / "quarantine",
-        ) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=snapshot / "quarantine",
+    ) as secure_target:
+        with monkeypatch.context() as failure_patch:
+            if failure_point == "write":
+                failure_patch.setattr(os, "write", fail_during_write)
+            else:
+                failure_patch.setattr(os, "fchmod", fail_fchmod)
             with pytest.raises(OSError, match="simulated staged"):
                 secure_target.write_exact(
                     "owned.txt",
@@ -1137,15 +1157,15 @@ def test_secure_create_prepare_failure_leaves_no_file_directory_or_temp_residue(
         raise OSError("simulated staged fchmod failure")
 
     retirement = _retirement_root(tmp_path, f"secure-create-{failure_point}")
-    with monkeypatch.context() as failure_patch:
-        if failure_point == "write":
-            failure_patch.setattr(os, "write", fail_during_write)
-        else:
-            failure_patch.setattr(os, "fchmod", fail_fchmod)
-        with migration_kernel.SecureTargetFS(
-            target,
-            retirement_root=retirement,
-        ) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with monkeypatch.context() as failure_patch:
+            if failure_point == "write":
+                failure_patch.setattr(os, "write", fail_during_write)
+            else:
+                failure_patch.setattr(os, "fchmod", fail_fchmod)
             with pytest.raises(OSError, match="simulated staged"):
                 secure_target.write_exact(
                     "generated/nested/new.txt",
@@ -1210,12 +1230,12 @@ def test_secure_replace_breaks_external_hardlink_without_mutating_approved_inode
             return original_write(descriptor, view[: max(1, len(view) // 2)])
         raise OSError("simulated staged write failure")
 
-    with monkeypatch.context() as failure_patch:
-        failure_patch.setattr(os, "write", fail_during_write)
-        with migration_kernel.SecureTargetFS(
-            target,
-            retirement_root=retirement,
-        ) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with monkeypatch.context() as failure_patch:
+            failure_patch.setattr(os, "write", fail_during_write)
             with pytest.raises(OSError, match="simulated staged"):
                 secure_target.write_exact(
                     "failed.txt",
@@ -1628,15 +1648,15 @@ def test_secure_replace_and_remove_reject_missing_atomic_name_primitives(
     assert destination.read_bytes() == b"PREIMAGE\n"
     assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
 
-    monkeypatch.setattr(
-        migration_kernel,
-        "_atomic_rename_noreplace_between_directories",
-        unsupported,
-    )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
+        monkeypatch.setattr(
+            migration_kernel,
+            "_atomic_rename_noreplace_between_directories",
+            unsupported,
+        )
         with pytest.raises(ValueError, match="cleanup_required"):
             secure_target.remove_exact(
                 "managed.txt",
@@ -1715,7 +1735,10 @@ def test_secure_create_consumes_staging_without_any_unlink(
 
     with monkeypatch.context() as unlink_patch:
         unlink_patch.setattr(os, "unlink", forbid_unlink)
-        with migration_kernel.SecureTargetFS(target) as secure_target:
+        with migration_kernel.SecureTargetFS(
+            target,
+            retirement_root=snapshot / "quarantine",
+        ) as secure_target:
             secure_target.write_exact(
                 "generated/nested/new.txt",
                 b"CREATED-POSTIMAGE\n",
@@ -1757,6 +1780,7 @@ def test_secure_apply_swap_never_writes_outside_the_target(
     outside_file.write_bytes(b"OUTSIDE\n")
     detached = tmp_path / f"secure-apply-{swap}-detached"
     expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+    retirement = _retirement_root(tmp_path, f"secure-apply-{swap}")
     original_verify = migration_kernel.SecureTargetFS._verify_parent_binding
     swapped = False
 
@@ -1782,7 +1806,10 @@ def test_secure_apply_swap_never_writes_outside_the_target(
         "_verify_parent_binding",
         inject_swap,
     )
-    with migration_kernel.SecureTargetFS(target) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
         with pytest.raises(ValueError):
             secure_target.write_exact(
                 "managed/artifact.txt",
@@ -1851,7 +1878,10 @@ def test_rollback_upgrades_an_authenticated_pre_quarantine_v1_snapshot(
         for item in plan["write_set"]
         if item["path"] == "generated/nested/new.txt"
     )
-    with migration_kernel.SecureTargetFS(target) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=snapshot / "quarantine",
+    ) as secure_target:
         secure_target.write_exact(
             created_item["path"],
             b"CREATED-POSTIMAGE\n",
@@ -3270,6 +3300,7 @@ def test_post_retirement_stat_replacement_is_never_unlinked(
             and (parent_metadata.st_dev, parent_metadata.st_ino)
             == retirement_identity
             and stat.S_ISREG(identity[2])
+            and not name.startswith("probe-")
         ):
             raced = True
             original_unlink(name, dir_fd=parent_fd)
@@ -3699,3 +3730,112 @@ def test_migration_json_serializers_reject_nonfinite_values() -> None:
         migration_kernel.canonical_json_sha256({"value": float("inf")})
     with pytest.raises(ValueError):
         migration_kernel.canonical_plan_bytes({"value": float("nan")})
+
+
+def test_mutation_batch_rejects_an_inner_mount_before_any_target_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "inner-mount-zero-write"
+    target.mkdir()
+    mounted_parent = target / "mounted"
+    mounted_parent.mkdir()
+    retirement = _retirement_root(tmp_path, "inner-mount-zero-write")
+    original_fstat = os.fstat
+    mounted_identity = mounted_parent.stat()
+    target_before = list(target.rglob("*"))
+
+    def report_inner_mount(descriptor: int) -> os.stat_result:
+        metadata = original_fstat(descriptor)
+        if (
+            metadata.st_dev == mounted_identity.st_dev
+            and metadata.st_ino == mounted_identity.st_ino
+        ):
+            fields = list(metadata)
+            fields[2] = retirement.stat().st_dev + 1
+            return os.stat_result(fields)
+        return metadata
+
+    monkeypatch.setattr(os, "fstat", report_inner_mount)
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with pytest.raises(ValueError, match="mutation parent.*filesystem"):
+            secure_target.prepare_mutation_batch(["mounted/artifact.txt"])
+
+    assert list(target.rglob("*")) == target_before
+
+
+def test_directory_publication_never_adopts_a_concurrent_named_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "directory-publication-race"
+    target.mkdir()
+    retirement = _retirement_root(tmp_path, "directory-publication-race")
+    original_publish = migration_kernel._atomic_rename_noreplace_same_directory
+    injected = False
+
+    def publish_with_competitor(
+        parent_fd: int,
+        source: str,
+        destination: str,
+    ) -> None:
+        nonlocal injected
+        if destination == "raced" and not injected:
+            injected = True
+            os.mkdir(destination, mode=0o755, dir_fd=parent_fd)
+        original_publish(parent_fd, source, destination)
+
+    monkeypatch.setattr(
+        migration_kernel,
+        "_atomic_rename_noreplace_same_directory",
+        publish_with_competitor,
+    )
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with pytest.raises(ValueError, match="directory create CAS changed"):
+            secure_target.prepare_mutation_batch(["raced/artifact.txt"])
+
+    assert injected is True
+    assert list((target / "raced").iterdir()) == []
+    assert not target.joinpath("raced/artifact.txt").exists()
+
+
+def test_atomic_capability_failure_is_detected_before_target_staging(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "atomic-capability-zero-write"
+    target.mkdir()
+    target.joinpath("SKILL.md").write_bytes(b"OWNER\n")
+    retirement = _retirement_root(tmp_path, "atomic-capability-zero-write")
+    target_before = {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+
+    def reject_atomic_rename(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("simulated unsupported atomic rename filesystem")
+
+    monkeypatch.setattr(
+        migration_kernel,
+        "_atomic_rename_between_directories",
+        reject_atomic_rename,
+    )
+    with pytest.raises(ValueError, match="atomic rename capability"):
+        migration_kernel.SecureTargetFS(
+            target,
+            retirement_root=retirement,
+        )
+
+    assert {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == target_before
+    assert not any(path.name.startswith(".evozeus-") for path in target.rglob("*"))

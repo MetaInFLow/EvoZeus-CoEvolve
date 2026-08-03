@@ -4733,6 +4733,7 @@ def _apply_canonical_v1_upgrade(
             expected_binding=approved_target_binding,
             retirement_root=snapshot / "quarantine",
         ) as secure_target:
+            secure_target.prepare_mutation_batch(sorted(staged))
             for relative in sorted(staged):
                 item = write_items[relative]
                 changed_files.append(relative)
