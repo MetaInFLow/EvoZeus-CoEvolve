@@ -49,7 +49,7 @@
         {
           "source": "migrations/harness-migration-contract-v1.json",
           "target": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-          "sha256": "cf06e92ba312918ccb37fcc26c0dd8f43bc845d8210a3af17a59d7604906782a"
+          "sha256": "f20d85a70f888a072578ecb74aae0765cc5fa4cdbbc5ccf17d7926e6756d51ed"
         }
       ]
     }

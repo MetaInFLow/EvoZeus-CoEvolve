@@ -343,7 +343,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "d6da248fa32f7c5f59731271e90b5c14e018d29f52a464d8b2c033c24182e8cb",
+      "sha256": "b41acc6a4314067688e33d2c50a0fdc19fbcf40e4b0ab1f2589d5d8ebfe2742f",
       "role": "target-template-inventory"
     },
     {
