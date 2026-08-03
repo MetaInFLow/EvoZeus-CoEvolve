@@ -884,6 +884,7 @@ def _official_upgrade_profile_compatibility(
             "to_closure": raw_profile.get("to_closure"),
         },
         "operations": copy.deepcopy(raw_profile.get("operations", [])),
+        "from_closure_files": copy.deepcopy(from_closure.get("files", [])),
         "write_sources": write_sources,
         "trusted_preimages": trusted_preimages,
         "stable_blocks": [

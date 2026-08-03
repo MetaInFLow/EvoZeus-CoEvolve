@@ -3058,13 +3058,188 @@ def _canonical_v1_upgrade_evidence(
 ) -> dict[str, Any]:
     """Match only release-bound exact artifacts; discovery regexes are not consulted."""
     blockers: list[str] = []
-    required_fields = profile.get("required_manifest_fields") or {}
-    for field, expected in required_fields.items():
-        if manifest.get(field) != expected:
-            blockers.append(
-                f"manifest {field} does not match profile: "
-                f"expected={expected}; actual={manifest.get(field)}"
+    closure_files = (profile.get("adapter_payload") or {}).get("from_closure_files")
+    closure_evidence: list[dict[str, Any]] = []
+    manifest_identity: dict[str, Any] = {}
+    if not isinstance(closure_files, list):
+        blockers.append("verified from closure file set is missing")
+        closure_files = []
+    for entry in closure_files:
+        if not isinstance(entry, dict):
+            blockers.append("verified from closure contains an invalid file entry")
+            continue
+        target_path = entry.get("target_path")
+        kind = entry.get("kind")
+        if kind == "exact":
+            path = (
+                safe_target_relative_file(target, target_path)
+                if isinstance(target_path, str)
+                else None
             )
+            actual_sha256 = f"sha256:{file_sha256(path)}" if path is not None else None
+            actual_mode = path.stat().st_mode & 0o7777 if path is not None else None
+            expected_sha256 = f"sha256:{entry.get('sha256')}"
+            try:
+                expected_mode = _official_exact_file_mode(entry.get("mode"))
+            except ValueError:
+                expected_mode = None
+            matched = (
+                actual_sha256 == expected_sha256
+                and actual_mode == expected_mode
+            )
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                    "expected_mode": expected_mode,
+                    "actual_mode": actual_mode,
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(f"from closure exact artifact mismatch: {target_path}")
+        elif kind == "absent":
+            candidate = None
+            if isinstance(target_path, str):
+                relative = Path(target_path)
+                if (
+                    not relative.is_absolute()
+                    and ".." not in relative.parts
+                    and "\\" not in target_path
+                    and relative.as_posix() == target_path
+                ):
+                    candidate = target / relative
+                    cursor = candidate
+                    while cursor != target:
+                        if cursor.is_symlink():
+                            candidate = None
+                            break
+                        cursor = cursor.parent
+            matched = bool(
+                candidate is not None
+                and not candidate.exists()
+                and not candidate.is_symlink()
+            )
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "expected": "absent",
+                    "actual": "absent" if matched else "present_or_unsafe",
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(
+                    f"from closure absent artifact is present or unsafe: {target_path}"
+                )
+        elif kind == "manifest_state":
+            owned_state = entry.get("owned_state")
+            field_evidence: list[dict[str, Any]] = []
+            if not isinstance(owned_state, dict):
+                blockers.append("from closure manifest owned state is missing")
+                owned_state = {}
+            for field, expected in owned_state.items():
+                if field == "managed_files_require":
+                    actual = manifest.get("managed_files")
+                    matched = bool(
+                        isinstance(expected, list)
+                        and isinstance(actual, list)
+                        and all(isinstance(item, str) for item in [*expected, *actual])
+                        and set(expected).issubset(actual)
+                    )
+                    normalized_expected: object = copy.deepcopy(expected)
+                elif field == "managed_blocks":
+                    normalized_blocks: list[dict[str, Any]] = []
+                    valid = isinstance(expected, list)
+                    for block in expected if isinstance(expected, list) else []:
+                        if not isinstance(block, dict):
+                            valid = False
+                            continue
+                        normalized = copy.deepcopy(block)
+                        selector = normalized.pop("path_selector", None)
+                        if selector == "manifest.instruction_surface":
+                            instruction_path = manifest.get("instruction_surface")
+                            if not isinstance(instruction_path, str):
+                                valid = False
+                            else:
+                                normalized["path"] = instruction_path
+                        elif selector is not None:
+                            valid = False
+                        normalized_blocks.append(normalized)
+                    actual = manifest.get("managed_blocks")
+                    normalized_expected = normalized_blocks
+                    matched = valid and actual == normalized_blocks
+                else:
+                    actual = manifest.get(field)
+                    normalized_expected = copy.deepcopy(expected)
+                    matched = field in manifest and actual == expected
+                field_evidence.append(
+                    {
+                        "field": field,
+                        "expected": normalized_expected,
+                        "actual": copy.deepcopy(actual),
+                        "matched": matched,
+                    }
+                )
+                manifest_identity[field] = copy.deepcopy(actual)
+                if not matched:
+                    blockers.append(f"from closure manifest state mismatch: {field}")
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "fields": field_evidence,
+                    "matched": all(item["matched"] for item in field_evidence),
+                }
+            )
+        elif kind == "rendered_template":
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "policy": "preserve_byte_exact_no_auto_upgrade",
+                    "planned_write": False,
+                }
+            )
+        else:
+            blockers.append(f"verified from closure contains an unsupported kind: {kind}")
+
+    manifest_patch_preconditions: list[dict[str, Any]] = []
+    operations = (profile.get("adapter_payload") or {}).get("operations")
+    if not isinstance(operations, list):
+        blockers.append("verified profile operation set is missing")
+        operations = []
+    for operation in operations:
+        if not isinstance(operation, dict) or operation.get("type") != "manifest_patch":
+            continue
+        preconditions = operation.get("preconditions")
+        if not isinstance(preconditions, dict):
+            blockers.append("verified manifest patch preconditions are missing")
+            continue
+        for field, expected in preconditions.items():
+            if expected == {"state": "absent"}:
+                matched = field not in manifest
+                actual: object = (
+                    {"state": "absent"}
+                    if matched
+                    else copy.deepcopy(manifest.get(field))
+                )
+            else:
+                actual = copy.deepcopy(manifest.get(field))
+                matched = field in manifest and actual == expected
+            manifest_patch_preconditions.append(
+                {
+                    "field": field,
+                    "expected": copy.deepcopy(expected),
+                    "actual": actual,
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(f"manifest patch precondition mismatch: {field}")
     if manifest.get("wrapper_repo") != WRAPPER_REPO:
         blockers.append("manifest wrapper_repo does not identify EvoZeus-CoEvolve")
     managed_files = manifest.get("managed_files")
@@ -3147,9 +3322,9 @@ def _canonical_v1_upgrade_evidence(
 
     return {
         "matched": not blockers,
-        "manifest_identity": {
-            field: manifest.get(field) for field in required_fields
-        },
+        "manifest_identity": manifest_identity,
+        "from_closure_files": closure_evidence,
+        "manifest_patch_preconditions": manifest_patch_preconditions,
         "trusted_preimages": preimages,
         "stable_block": stable_block,
         "blockers": blockers,
@@ -3610,6 +3785,8 @@ def plan_target_layout_migration(
             canonical_evidence = {
                 "matched": False,
                 "manifest_identity": {},
+                "from_closure_files": [],
+                "manifest_patch_preconditions": [],
                 "trusted_preimages": [],
                 "stable_block": {
                     "block_id": activation_contract.get("block_id"),

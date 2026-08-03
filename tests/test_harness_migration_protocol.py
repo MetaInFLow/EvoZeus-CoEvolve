@@ -1172,6 +1172,8 @@ def test_zero_or_ambiguous_dynamic_profile_match_is_manual_zero_write(
     assert no_match["decision"] == "manual_migration_required"
     assert no_match["write_set"] == []
     assert no_match["automatic_profile_candidates"] == []
+    assert no_match["ownership_evidence"]["from_closure_files"] == []
+    assert no_match["ownership_evidence"]["manifest_patch_preconditions"] == []
 
     ambiguous_bundle = _trusted_development_bundle()
     original = next(
@@ -1234,6 +1236,240 @@ def test_dynamic_selection_uses_exact_closure_preimages_before_profile_id(
     assert [
         item["profile_id"] for item in plan["automatic_profile_candidates"]
     ] == [original["profile_id"]]
+
+
+def test_unmodified_exact_from_closure_file_drift_is_manual_zero_write(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    onboarding = target / ".evozeus-wrapper/docs/onboarding.md"
+    onboarding.write_bytes(onboarding.read_bytes() + b"\nOWNER-DRIFT\n")
+    _git(target, "add", onboarding.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Drift an unchanged closure artifact")
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=_trusted_development_bundle(),
+    )
+
+    evidence = next(
+        item
+        for item in plan["ownership_evidence"]["from_closure_files"]
+        if item["target_path"] == ".evozeus-wrapper/docs/onboarding.md"
+    )
+    assert evidence["kind"] == "exact"
+    assert evidence["matched"] is False
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+
+
+def test_rendered_from_closure_surface_is_preserved_without_automatic_write(
+    tmp_path: Path,
+) -> None:
+    source = _make_release_source(tmp_path)
+    target = _prepare_exact_v1_target(tmp_path)
+    rendered = target / ".evozeus-wrapper/CHANGELOG.md"
+    rendered.write_bytes(b"OWNER-RENDERED-HISTORY\n")
+    _git(target, "add", rendered.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Customize a preserved rendered surface")
+    before = rendered.read_bytes()
+
+    plan = _plan(target, source)
+
+    evidence = next(
+        item
+        for item in plan["ownership_evidence"]["from_closure_files"]
+        if item["target_path"] == ".evozeus-wrapper/CHANGELOG.md"
+    )
+    assert evidence == {
+        "target_path": ".evozeus-wrapper/CHANGELOG.md",
+        "kind": "rendered_template",
+        "policy": "preserve_byte_exact_no_auto_upgrade",
+        "planned_write": False,
+    }
+    assert plan["decision"] == "automatic_migration_available"
+    assert rendered.relative_to(target).as_posix() not in {
+        item["path"] for item in plan["write_set"]
+    }
+
+    applied = lifecycle.migrate_target_layout(
+        target,
+        "v0.15.0",
+        date(2026, 8, 2),
+        wrapper_root=source,
+        require_clean_git=True,
+        snapshot_root=tmp_path / "rendered-preserve-snapshots",
+        approved_plan_sha256=plan["plan_sha256"],
+        remote_tag_resolver=_source_tag_resolver(source),
+    )
+
+    assert applied["status"] == "applied"
+    assert rendered.read_bytes() == before
+
+
+def test_present_from_closure_absent_file_is_manual_zero_write(tmp_path: Path) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    unexpected = target / lifecycle.TARGET_MIGRATION_CONTRACT
+    unexpected.parent.mkdir(parents=True, exist_ok=True)
+    unexpected.write_text("{}\n", encoding="utf-8")
+    _git(target, "add", unexpected.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Add a file excluded by the from closure")
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=_trusted_development_bundle(),
+    )
+
+    evidence = next(
+        item
+        for item in plan["ownership_evidence"]["from_closure_files"]
+        if item["target_path"] == lifecycle.TARGET_MIGRATION_CONTRACT
+    )
+    assert evidence["kind"] == "absent"
+    assert evidence["matched"] is False
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+
+
+def test_from_closure_manifest_owned_field_drift_is_manual_zero_write(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    manifest_path = target / lifecycle.TARGET_WRAPPER_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["target_infra_dir"] = ".owner-controlled"
+    _write_json(manifest_path, manifest)
+    _git(target, "add", manifest_path.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Drift a closure-owned manifest field")
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=_trusted_development_bundle(),
+    )
+
+    manifest_evidence = next(
+        item
+        for item in plan["ownership_evidence"]["from_closure_files"]
+        if item["kind"] == "manifest_state"
+    )
+    field = next(
+        item for item in manifest_evidence["fields"] if item["field"] == "target_infra_dir"
+    )
+    assert field["matched"] is False
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+
+
+def test_manifest_patch_precondition_drift_is_evidence_backed_manual_zero_write(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    manifest_path = target / lifecycle.TARGET_WRAPPER_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["migration_contract"] = {"owner": "unexpected"}
+    _write_json(manifest_path, manifest)
+    _git(target, "add", manifest_path.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Drift a manifest patch precondition")
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=_trusted_development_bundle(),
+    )
+
+    precondition = next(
+        item
+        for item in plan["ownership_evidence"]["manifest_patch_preconditions"]
+        if item["field"] == "migration_contract"
+    )
+    assert precondition["expected"] == {"state": "absent"}
+    assert precondition["matched"] is False
+    assert plan["decision"] == "manual_migration_required"
+    assert plan["write_set"] == []
+
+
+def test_from_closure_manifest_requirements_use_subset_and_normalized_block_path(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    bundle = _trusted_development_bundle()
+    profile = next(
+        item
+        for item in bundle["contract"]["profiles"]
+        if item.get("automatic") is True
+    )
+    manifest_entry = next(
+        item
+        for item in profile["adapter_payload"]["from_closure_files"]
+        if item["kind"] == "manifest_state"
+    )
+    activation = bundle["contract"]["canonical_activation_block"]
+    required_managed_file = ".codex/hooks.json"
+    manifest_entry["owned_state"]["managed_files_require"] = [required_managed_file]
+    manifest_entry["owned_state"]["managed_blocks"] = [
+        {**copy.deepcopy(activation), "path_selector": "manifest.instruction_surface"}
+    ]
+    profile["adapter_sha256"] = migration_kernel.canonical_json_sha256(
+        profile["adapter_payload"]
+    )
+
+    manifest_path = target / lifecycle.TARGET_WRAPPER_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert required_managed_file in manifest["managed_files"]
+    manifest["managed_blocks"] = [
+        {**copy.deepcopy(activation), "path": manifest["instruction_surface"]}
+    ]
+    _write_json(manifest_path, manifest)
+    _git(target, "add", manifest_path.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Record normalized closure block evidence")
+
+    matching = lifecycle._canonical_v1_upgrade_evidence(
+        target,
+        manifest,
+        manifest["instruction_surface"],
+        profile,
+        activation,
+    )
+    managed_files_evidence = next(
+        item
+        for item in matching["from_closure_files"]
+        if item["kind"] == "manifest_state"
+    )
+    assert next(
+        item
+        for item in managed_files_evidence["fields"]
+        if item["field"] == "managed_files_require"
+    )["matched"] is True
+    assert next(
+        item
+        for item in managed_files_evidence["fields"]
+        if item["field"] == "managed_blocks"
+    )["matched"] is True
+
+    manifest["managed_files"].remove(required_managed_file)
+    manifest["managed_blocks"][0]["path"] = "OWNER.md"
+    _write_json(manifest_path, manifest)
+    _git(target, "add", manifest_path.relative_to(target).as_posix())
+    _git(target, "commit", "-m", "Drift closure manifest semantics")
+    drifted = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=bundle,
+    )
+
+    assert any(
+        blocker == "from closure manifest state mismatch: managed_files_require"
+        for blocker in drifted["ownership_evidence"]["blockers"]
+    )
+    assert any(
+        blocker == "from closure manifest state mismatch: managed_blocks"
+        for blocker in drifted["ownership_evidence"]["blockers"]
+    )
+    assert drifted["decision"] == "manual_migration_required"
+    assert drifted["write_set"] == []
 
 
 def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> None:
