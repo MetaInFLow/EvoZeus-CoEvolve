@@ -63,9 +63,10 @@ OFFICIAL_UPGRADE_PROFILE_SCHEMA_REL = "migrations/schemas/official-upgrade-profi
 OFFICIAL_UPGRADE_CLOSURE_SCHEMA_REL = "migrations/schemas/target-closure-v1.schema.json"
 
 
-def _atomic_rename_same_directory(
-    parent_fd: int,
+def _atomic_rename_between_directories(
+    source_parent_fd: int,
     source: str,
+    destination_parent_fd: int,
     destination: str,
     *,
     exchange: bool,
@@ -95,9 +96,9 @@ def _atomic_rename_same_directory(
     function.restype = ctypes.c_int
     ctypes.set_errno(0)
     result = function(
-        parent_fd,
+        source_parent_fd,
         os.fsencode(source),
-        parent_fd,
+        destination_parent_fd,
         os.fsencode(destination),
         flag,
     )
@@ -117,6 +118,22 @@ def _atomic_rename_same_directory(
         error,
         os.strerror(error),
         f"{source} -> {destination}",
+    )
+
+
+def _atomic_rename_same_directory(
+    parent_fd: int,
+    source: str,
+    destination: str,
+    *,
+    exchange: bool,
+) -> None:
+    _atomic_rename_between_directories(
+        parent_fd,
+        source,
+        parent_fd,
+        destination,
+        exchange=exchange,
     )
 
 
@@ -141,6 +158,21 @@ def _atomic_rename_noreplace_same_directory(
     _atomic_rename_same_directory(
         parent_fd,
         source,
+        destination,
+        exchange=False,
+    )
+
+
+def _atomic_rename_noreplace_between_directories(
+    source_parent_fd: int,
+    source: str,
+    destination_parent_fd: int,
+    destination: str,
+) -> None:
+    _atomic_rename_between_directories(
+        source_parent_fd,
+        source,
+        destination_parent_fd,
         destination,
         exchange=False,
     )
@@ -1651,6 +1683,7 @@ class SecureTargetFS:
         *,
         directory_mode: int = 0o755,
         expected_binding: dict[str, Any] | None = None,
+        retirement_root: Path | None = None,
     ):
         if os.name != "posix" or not all(
             hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
@@ -1663,6 +1696,10 @@ class SecureTargetFS:
             raise ValueError("secure target root must be a non-symlink directory")
         self._root_identity = (metadata.st_dev, metadata.st_ino)
         self._directory_mode = directory_mode
+        self._retirement_fd = -1
+        self._retirement_root: Path | None = None
+        self._retirement_identity: tuple[int, int] | None = None
+        self.retained_quarantine: list[dict[str, Any]] = []
         self._root_fd = os.open(
             self.target,
             os.O_RDONLY
@@ -1692,8 +1729,18 @@ class SecureTargetFS:
                 )
         self.binding = actual_binding
         self.created_directories: list[str] = []
+        self._created_directory_identities: dict[str, tuple[int, int]] = {}
+        if retirement_root is not None:
+            try:
+                self._configure_retirement_root(retirement_root)
+            except BaseException:
+                self.close()
+                raise
 
     def close(self) -> None:
+        if self._retirement_fd >= 0:
+            os.close(self._retirement_fd)
+            self._retirement_fd = -1
         if self._root_fd >= 0:
             os.close(self._root_fd)
             self._root_fd = -1
@@ -1712,6 +1759,86 @@ class SecureTargetFS:
             or (metadata.st_dev, metadata.st_ino) != self._root_identity
         ):
             raise ValueError("secure target root identity changed")
+
+    def _configure_retirement_root(
+        self,
+        retirement_root: Path,
+        *,
+        allow_inside_target: bool = False,
+    ) -> None:
+        lexical = Path(os.path.abspath(os.fspath(retirement_root.expanduser())))
+        _reject_symlink_chain(lexical, "secure retirement root")
+        canonical = lexical.resolve(strict=True)
+        if not allow_inside_target and (
+            canonical == self.target
+            or self.target in canonical.parents
+            or canonical in self.target.parents
+        ):
+            raise ValueError("secure retirement root must be outside the target")
+        metadata = os.lstat(canonical)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise ValueError(
+                "secure retirement root must be an owned non-symlink 0700 directory"
+            )
+        descriptor = os.open(
+            canonical,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            os.close(descriptor)
+            raise ValueError("secure retirement root changed while opening")
+        if opened.st_dev != self._root_identity[0]:
+            os.close(descriptor)
+            raise ValueError(
+                "secure retirement root must share the target filesystem for atomic moves"
+            )
+        if self._retirement_fd >= 0:
+            os.close(self._retirement_fd)
+        self._retirement_fd = descriptor
+        self._retirement_root = canonical
+        self._retirement_identity = (opened.st_dev, opened.st_ino)
+
+    def _verify_retirement_root(self) -> None:
+        if (
+            self._retirement_fd < 0
+            or self._retirement_root is None
+            or self._retirement_identity is None
+        ):
+            raise ValueError(
+                "secure target cleanup_required: no external retirement root; "
+                "candidate preserved in target"
+            )
+        try:
+            metadata = os.lstat(self._retirement_root)
+            opened = os.fstat(self._retirement_fd)
+        except OSError as exc:
+            raise ValueError(
+                "secure target cleanup_required: retirement root cannot be "
+                "verified; candidate preserved in target"
+            ) from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or (metadata.st_dev, metadata.st_ino) != self._retirement_identity
+            or (opened.st_dev, opened.st_ino) != self._retirement_identity
+        ):
+            raise ValueError(
+                "secure target cleanup_required: retirement root identity changed; "
+                "candidate preserved in target"
+            )
 
     def _open_parent(
         self,
@@ -1746,7 +1873,6 @@ class SecureTargetFS:
                         )
                     os.mkdir(part, mode=self._directory_mode, dir_fd=descriptors[-1])
                     os.fsync(descriptors[-1])
-                    self.created_directories.append(current_rel.as_posix())
                     descriptor = os.open(
                         part,
                         os.O_RDONLY
@@ -1758,6 +1884,13 @@ class SecureTargetFS:
                     try:
                         os.fchmod(descriptor, self._directory_mode)
                         os.fsync(descriptor)
+                        created_metadata = os.fstat(descriptor)
+                        created_path = current_rel.as_posix()
+                        self.created_directories.append(created_path)
+                        self._created_directory_identities[created_path] = (
+                            created_metadata.st_dev,
+                            created_metadata.st_ino,
+                        )
                     except BaseException:
                         os.close(descriptor)
                         raise
@@ -1827,96 +1960,111 @@ class SecureTargetFS:
             raise ValueError("secure target staging path is not a regular file")
         return device, inode
 
-    @classmethod
-    def _unlink_named_identity(
-        cls,
+    def _retire_named_entry(
+        self,
         parent_fd: int,
         name: str,
         expected_identity: tuple[int, int],
-    ) -> None:
-        """Atomically isolate a cleanup candidate before removing its random name."""
-        prefix = (
-            ".evozeus-tmp-"
-            if name.startswith(".evozeus-tmp-")
-            else ".evozeus-quarantine-"
-        )
-        isolated_name = cls._unique_private_name(parent_fd, prefix)
-        try:
-            _atomic_rename_noreplace_same_directory(
-                parent_fd,
-                name,
-                isolated_name,
-            )
-        except BaseException as exc:
-            raise ValueError(
-                "secure target cleanup_required: candidate could not be isolated"
-            ) from exc
-
-        try:
-            isolated_identity = cls._named_identity(parent_fd, isolated_name)
-        except BaseException as exc:
-            raise ValueError(
-                "secure target cleanup_required: isolated candidate is unsafe; "
-                f"preserved={isolated_name}"
-            ) from exc
-        if isolated_identity != expected_identity:
-            restored = cls._restore_isolated_cleanup_name(
-                parent_fd,
-                isolated_name,
-                name,
-            )
-            state = "restored" if restored else f"preserved={isolated_name}"
-            raise ValueError(
-                "secure target cleanup_required: candidate identity changed; "
-                f"state={state}"
-            )
-        try:
-            os.unlink(isolated_name, dir_fd=parent_fd)
-        except BaseException as exc:
-            restored = cls._restore_isolated_cleanup_name(
-                parent_fd,
-                isolated_name,
-                name,
-            )
-            if restored:
-                raise
-            raise ValueError(
-                "secure target cleanup_required: isolated candidate could not be "
-                f"removed; preserved={isolated_name}"
-            ) from exc
-
-    @staticmethod
-    def _unique_private_name(parent_fd: int, prefix: str) -> str:
+        *,
+        source_path: str,
+        expected_kind: str = "file",
+    ) -> str:
+        """Atomically move a candidate to trusted storage and retain it permanently."""
+        self._verify_retirement_root()
+        assert self._retirement_fd >= 0
+        source_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", source_path).strip("-")
+        source_slug = (source_slug or "entry")[-40:]
+        source_digest = sha256_bytes(source_path.encode("utf-8"))[:12]
+        retired_name: str | None = None
         for _attempt in range(32):
-            name = f"{prefix}{uuid.uuid4().hex}"
-            try:
-                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return name
-        raise ValueError("secure target could not allocate a private cleanup path")
-
-    @staticmethod
-    def _restore_isolated_cleanup_name(
-        parent_fd: int,
-        isolated_name: str,
-        original_name: str,
-    ) -> bool:
-        try:
-            _atomic_rename_noreplace_same_directory(
-                parent_fd,
-                isolated_name,
-                original_name,
+            candidate = (
+                f"{expected_kind}-{source_slug}-{source_digest}-{uuid.uuid4().hex}"
             )
-        except (OSError, ValueError):
-            return False
-        return True
+            try:
+                _atomic_rename_noreplace_between_directories(
+                    parent_fd,
+                    name,
+                    self._retirement_fd,
+                    candidate,
+                )
+            except FileExistsError:
+                continue
+            except BaseException as exc:
+                raise ValueError(
+                    "secure target cleanup_required: candidate could not be "
+                    f"atomically retired; preserved={source_path}"
+                ) from exc
+            retired_name = candidate
+            break
+        if retired_name is None:
+            raise ValueError(
+                "secure target cleanup_required: no unique retirement name; "
+                f"preserved={source_path}"
+            )
 
-    @staticmethod
-    def _unique_quarantine_name(parent_fd: int) -> str:
-        return SecureTargetFS._unique_private_name(
-            parent_fd,
-            ".evozeus-quarantine-",
+        record: dict[str, Any] = {
+            "source_path": source_path,
+            "retired_name": retired_name,
+            "expected_st_dev": expected_identity[0],
+            "expected_st_ino": expected_identity[1],
+            "kind": expected_kind,
+        }
+        self.retained_quarantine.append(record)
+        try:
+            retired = self._named_entry_identity(self._retirement_fd, retired_name)
+            record.update(
+                {
+                    "actual_st_dev": retired[0],
+                    "actual_st_ino": retired[1],
+                }
+            )
+            os.fsync(parent_fd)
+            os.fsync(self._retirement_fd)
+        except BaseException as exc:
+            raise ValueError(
+                "secure target cleanup_required: retired candidate could not be "
+                f"verified; preserved={retired_name}"
+            ) from exc
+        retired_kind_matches = (
+            stat.S_ISREG(retired[2])
+            if expected_kind == "file"
+            else stat.S_ISDIR(retired[2])
         )
+        if retired[:2] != expected_identity or not retired_kind_matches:
+            raise ValueError(
+                "secure target cleanup_required: candidate identity changed during "
+                f"retirement; preserved={retired_name}"
+            )
+        return retired_name
+
+    def _restore_retired_entry(
+        self,
+        parent_fd: int,
+        name: str,
+        retired_name: str,
+        expected_identity: tuple[int, int],
+    ) -> tuple[bool, str]:
+        """Restore from trusted retirement storage only into an absent destination."""
+        try:
+            self._verify_retirement_root()
+            assert self._retirement_fd >= 0
+            if self._named_entry_identity(self._retirement_fd, retired_name)[:2] != (
+                expected_identity
+            ):
+                return False, "retired identity changed before recovery"
+            _atomic_rename_noreplace_between_directories(
+                self._retirement_fd,
+                retired_name,
+                parent_fd,
+                name,
+            )
+            if self._named_entry_identity(parent_fd, name)[:2] != expected_identity:
+                return False, "retirement recovery identity verification failed"
+            os.fsync(self._retirement_fd)
+            os.fsync(parent_fd)
+            return True, "retired destination restored"
+        except (OSError, ValueError) as exc:
+            return False, f"retirement recovery failed: {exc}"
 
     @staticmethod
     def _open_unique_staging_file(parent_fd: int) -> tuple[str, int, tuple[int, int]]:
@@ -2022,38 +2170,6 @@ class SecureTargetFS:
         except (OSError, ValueError) as exc:
             return False, f"atomic exchange recovery failed: {exc}"
 
-    def _restore_quarantined_entry(
-        self,
-        parent_fd: int,
-        name: str,
-        quarantine_name: str,
-        relative: Path,
-        *,
-        quarantined_identity: tuple[int, int, int] | None,
-    ) -> tuple[bool, str]:
-        """Restore a quarantined entry only when the destination remains absent."""
-        try:
-            if quarantined_identity is None:
-                quarantined_identity = self._named_entry_identity(
-                    parent_fd,
-                    quarantine_name,
-                )
-            if self._named_entry_identity(parent_fd, quarantine_name) != quarantined_identity:
-                return False, "quarantined destination changed before recovery"
-            self._verify_parent_binding(relative, parent_fd)
-            _atomic_rename_noreplace_same_directory(
-                parent_fd,
-                quarantine_name,
-                name,
-            )
-            self._verify_parent_binding(relative, parent_fd)
-            if self._named_entry_identity(parent_fd, name) != quarantined_identity:
-                return False, "quarantine recovery identity verification failed"
-            os.fsync(parent_fd)
-            return True, "quarantined destination restored"
-        except (OSError, ValueError) as exc:
-            return False, f"quarantine recovery failed: {exc}"
-
     def _verify_published_postimage(
         self,
         parent_fd: int,
@@ -2103,6 +2219,7 @@ class SecureTargetFS:
 
     def _cleanup_created_directory_paths(self, paths: list[str]) -> list[str]:
         removed: set[str] = set()
+        unresolved: set[str] = set()
         for relative_text in sorted(
             set(paths),
             key=lambda value: len(Path(value).parts),
@@ -2116,27 +2233,79 @@ class SecureTargetFS:
                     missing_is_absent=True,
                 )
             except ValueError:
+                unresolved.add(relative_text)
                 continue
             if not descriptors:
-                removed.add(relative_text)
+                if relative_text in self._created_directory_identities:
+                    unresolved.add(relative_text)
+                else:
+                    removed.add(relative_text)
                 continue
             try:
                 try:
-                    os.rmdir(name, dir_fd=descriptors[-1])
+                    descriptor = os.open(
+                        name,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=descriptors[-1],
+                    )
                 except FileNotFoundError:
-                    removed.add(relative_text)
+                    if relative_text in self._created_directory_identities:
+                        unresolved.add(relative_text)
+                    else:
+                        removed.add(relative_text)
+                    continue
                 except OSError:
-                    pass
-                else:
-                    os.fsync(descriptors[-1])
-                    removed.add(relative_text)
+                    unresolved.add(relative_text)
+                    continue
+                try:
+                    metadata = os.fstat(descriptor)
+                    current_identity = (metadata.st_dev, metadata.st_ino)
+                finally:
+                    os.close(descriptor)
+                expected_identity = self._created_directory_identities.get(
+                    relative_text,
+                    current_identity,
+                )
+                try:
+                    retired_name = self._retire_named_entry(
+                        descriptors[-1],
+                        name,
+                        expected_identity,
+                        source_path=relative_text,
+                        expected_kind="directory",
+                    )
+                except (OSError, ValueError):
+                    unresolved.add(relative_text)
+                    continue
+                removed.add(relative_text)
+                try:
+                    assert self._retirement_fd >= 0
+                    retired_descriptor = os.open(
+                        retired_name,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | getattr(os, "O_CLOEXEC", 0),
+                        dir_fd=self._retirement_fd,
+                    )
+                    try:
+                        if os.listdir(retired_descriptor):
+                            unresolved.add(relative_text)
+                            self.retained_quarantine[-1]["unexpected_contents"] = True
+                    finally:
+                        os.close(retired_descriptor)
+                except (OSError, ValueError):
+                    unresolved.add(relative_text)
             finally:
                 self._close_descriptors(descriptors)
         if removed:
             self.created_directories = [
                 path for path in self.created_directories if path not in removed
             ]
-        return sorted(set(paths) - removed)
+        return sorted((set(paths) - removed) | unresolved)
 
     def file_state(self, raw: object) -> dict[str, Any]:
         descriptors, name, relative = self._open_parent(
@@ -2230,6 +2399,8 @@ class SecureTargetFS:
         staging_name: str | None = None
         staging_identity: tuple[int, int] | None = None
         staging_was_exchanged = False
+        published_create = False
+        replace_identity: tuple[int, int] | None = None
         try:
             descriptors, name, relative = self._open_parent(
                 raw,
@@ -2237,7 +2408,6 @@ class SecureTargetFS:
             )
             parent_fd = descriptors[-1]
             self._verify_parent_binding(relative, parent_fd)
-            replace_identity = None
             if expected_preimage is not None:
                 replace_identity = self._verified_replace_preimage(
                     parent_fd,
@@ -2276,17 +2446,16 @@ class SecureTargetFS:
                 )
             if expected_preimage is None:
                 try:
-                    os.link(
+                    _atomic_rename_noreplace_same_directory(
+                        parent_fd,
                         staging_name,
                         name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                        follow_symlinks=False,
                     )
                 except FileExistsError as exc:
                     raise ValueError(
                         f"secure target create CAS changed: {relative.as_posix()}"
                     ) from exc
+                published_create = True
                 self._verify_parent_binding(relative, parent_fd)
                 self._verify_published_postimage(
                     parent_fd,
@@ -2296,11 +2465,16 @@ class SecureTargetFS:
                     expected_data=data,
                     expected_mode=mode,
                 )
-                self._unlink_named_identity(
-                    parent_fd,
-                    staging_name,
-                    staging_identity,
-                )
+                try:
+                    self._named_entry_identity(parent_fd, staging_name)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ValueError(
+                        "secure target create staging was not consumed by atomic "
+                        f"publication: {relative.as_posix()}"
+                    )
+                staging_name = None
             else:
                 self._verified_replace_preimage(
                     parent_fd,
@@ -2345,53 +2519,73 @@ class SecureTargetFS:
                         staging_identity=staging_identity,
                         displaced_identity=displaced_identity,
                     )
+                    if recovered:
+                        staging_was_exchanged = False
                     state = "restored" if recovered else "quarantined"
                     raise ValueError(
                         "secure target replace CAS changed during atomic exchange: "
                         f"{relative.as_posix()}; state={state}; recovery={recovery}"
                     ) from exc
-                self._unlink_named_identity(
+                self._retire_named_entry(
                     parent_fd,
                     staging_name,
                     replace_identity,
+                    source_path=relative.as_posix(),
                 )
-            staging_name = None
+                staging_name = None
             os.fsync(parent_fd)
-        except BaseException:
+        except BaseException as operation_error:
             if staging_descriptor >= 0:
                 os.close(staging_descriptor)
                 staging_descriptor = -1
+            cleanup_errors: list[str] = []
+            if published_create and parent_fd >= 0 and staging_identity is not None:
+                try:
+                    self._retire_named_entry(
+                        parent_fd,
+                        name,
+                        staging_identity,
+                        source_path=relative.as_posix(),
+                    )
+                    published_create = False
+                except (OSError, ValueError) as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
             if (
                 parent_fd >= 0
                 and staging_name is not None
                 and staging_identity is not None
             ):
                 try:
-                    if staging_was_exchanged:
-                        self._verify_published_postimage(
-                            parent_fd,
-                            staging_name,
-                            relative,
-                            expected_identity=staging_identity,
-                            expected_data=data,
-                            expected_mode=mode,
-                        )
-                    self._unlink_named_identity(
+                    cleanup_identity = (
+                        replace_identity
+                        if staging_was_exchanged and replace_identity is not None
+                        else staging_identity
+                    )
+                    self._retire_named_entry(
                         parent_fd,
                         staging_name,
-                        staging_identity,
+                        cleanup_identity,
+                        source_path=relative.as_posix(),
                     )
                     staging_name = None
-                    os.fsync(parent_fd)
-                except (OSError, ValueError):
-                    # Unknown concurrent bytes remain quarantined for manual recovery.
-                    pass
+                except (OSError, ValueError) as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
             if descriptors:
                 self._close_descriptors(descriptors)
                 descriptors = []
-            self._cleanup_created_directory_paths(
+            unresolved_directories = self._cleanup_created_directory_paths(
                 self.created_directories[created_directory_start:]
             )
+            if unresolved_directories:
+                cleanup_errors.append(
+                    "unresolved created directories: "
+                    + ", ".join(unresolved_directories)
+                )
+            if cleanup_errors:
+                raise ValueError(
+                    "secure target cleanup_required after failed write: "
+                    + "; ".join(cleanup_errors)
+                ) from operation_error
             raise
         finally:
             if staging_descriptor >= 0:
@@ -2407,8 +2601,6 @@ class SecureTargetFS:
         expected_mode: int | None = None,
     ) -> None:
         descriptors, name, relative = self._open_parent(raw, create_parents=False)
-        quarantine_name: str | None = None
-        quarantined_identity: tuple[int, int, int] | None = None
         try:
             expected_identity = self._verified_replace_preimage(
                 descriptors[-1],
@@ -2418,73 +2610,36 @@ class SecureTargetFS:
                 expected_mode=expected_mode,
             )
             self._verify_parent_binding(relative, descriptors[-1])
-            for _attempt in range(32):
-                quarantine_name = self._unique_quarantine_name(descriptors[-1])
-                try:
-                    _atomic_rename_noreplace_same_directory(
-                        descriptors[-1],
-                        name,
-                        quarantine_name,
-                    )
-                except FileExistsError:
-                    quarantine_name = None
-                    continue
-                break
-            else:
-                raise ValueError(
-                    "secure target could not atomically allocate a quarantine path"
-                )
+            retired_name = self._retire_named_entry(
+                descriptors[-1],
+                name,
+                expected_identity,
+                source_path=relative.as_posix(),
+            )
             try:
-                quarantined_identity = self._named_entry_identity(
-                    descriptors[-1],
-                    quarantine_name,
-                )
+                assert self._retirement_fd >= 0
                 self._verified_replace_preimage(
-                    descriptors[-1],
-                    quarantine_name,
+                    self._retirement_fd,
+                    retired_name,
                     relative,
                     expected_preimage=expected_sha256,
                     expected_mode=expected_mode,
                     expected_identity=expected_identity,
                 )
             except BaseException as exc:
-                recovered, recovery = self._restore_quarantined_entry(
+                recovered, recovery = self._restore_retired_entry(
                     descriptors[-1],
                     name,
-                    quarantine_name,
-                    relative,
-                    quarantined_identity=quarantined_identity,
-                )
-                if recovered:
-                    quarantine_name = None
-                state = "restored" if recovered else "quarantined"
-                raise ValueError(
-                    "secure target remove CAS changed during atomic quarantine: "
-                    f"{relative.as_posix()}; state={state}; recovery={recovery}"
-                ) from exc
-            try:
-                self._unlink_named_identity(
-                    descriptors[-1],
-                    quarantine_name,
+                    retired_name,
                     expected_identity,
                 )
-            except BaseException as exc:
-                recovered, recovery = self._restore_quarantined_entry(
-                    descriptors[-1],
-                    name,
-                    quarantine_name,
-                    relative,
-                    quarantined_identity=quarantined_identity,
-                )
-                if recovered:
-                    quarantine_name = None
-                state = "restored" if recovered else "quarantined"
+                if self.retained_quarantine:
+                    self.retained_quarantine[-1]["restored"] = recovered
+                state = "restored" if recovered else "retained"
                 raise ValueError(
-                    "secure target cleanup_required: remove cleanup failed after "
-                    "quarantine: "
+                    "secure target remove CAS changed during atomic retirement: "
                     f"{relative.as_posix()}; state={state}; recovery={recovery}"
                 ) from exc
-            quarantine_name = None
             os.fsync(descriptors[-1])
         finally:
             self._close_descriptors(descriptors)
@@ -2572,6 +2727,11 @@ class SecureTargetFS:
                     os.fsync(descriptor)
                     current = Path(*relative.parts[: index + 1]).as_posix()
                     self.created_directories.append(current)
+                    created_metadata = os.fstat(descriptor)
+                    self._created_directory_identities[current] = (
+                        created_metadata.st_dev,
+                        created_metadata.st_ino,
+                    )
                     if is_final:
                         created_final = True
                 except OSError as exc:
@@ -2607,6 +2767,19 @@ class SecureSnapshotFS(SecureTargetFS):
         if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
             self.close()
             raise ValueError("trusted snapshot root owner or mode is invalid")
+        try:
+            try:
+                os.mkdir(".retired", mode=0o700, dir_fd=self._root_fd)
+                os.fsync(self._root_fd)
+            except FileExistsError:
+                pass
+            self._configure_retirement_root(
+                self.target / ".retired",
+                allow_inside_target=True,
+            )
+        except BaseException:
+            self.close()
+            raise
 
 
 def migration_plan_digest(plan: dict[str, Any]) -> str:
@@ -2888,6 +3061,43 @@ def _snapshot_anchor_path(base: Path, transaction_id: str) -> Path:
     return base / ".anchors" / f"{transaction_id}.json"
 
 
+def _transaction_quarantine_inventory(snapshot_root: Path) -> list[dict[str, Any]]:
+    quarantine = snapshot_root / "quarantine"
+    try:
+        _require_owned_mode(
+            quarantine,
+            mode=0o700,
+            kind="directory",
+            label="migration transaction quarantine",
+        )
+    except FileNotFoundError:
+        return []
+    entries: list[dict[str, Any]] = []
+    with os.scandir(quarantine) as iterator:
+        children = sorted(iterator, key=lambda item: item.name)
+    for child in children:
+        metadata = child.stat(follow_symlinks=False)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("migration transaction quarantine contains a symlink")
+        if stat.S_ISREG(metadata.st_mode):
+            kind = "file"
+        elif stat.S_ISDIR(metadata.st_mode):
+            kind = "directory"
+        else:
+            raise ValueError(
+                "migration transaction quarantine contains an unsupported entry"
+            )
+        entries.append(
+            {
+                "name": child.name,
+                "kind": kind,
+                "st_dev": metadata.st_dev,
+                "st_ino": metadata.st_ino,
+            }
+        )
+    return entries
+
+
 def mark_migration_transaction(
     snapshot_root: Path,
     *,
@@ -2933,6 +3143,7 @@ def mark_migration_transaction(
             "transaction_id": snapshot_root.name,
             "state": state,
             "changed_paths": list(changed_paths or current.get("changed_paths") or []),
+            "retained_quarantine": _transaction_quarantine_inventory(snapshot_root),
             "error": error,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -3060,6 +3271,11 @@ def create_migration_snapshot(
             mode=0o700,
             require_absent=True,
         )
+        secure_snapshot.ensure_directory_exact(
+            f"{transaction_id}/quarantine",
+            mode=0o700,
+            require_absent=True,
+        )
         secure_snapshot.write_exact(
             f"{transaction_id}/approved-plan.json",
             plan_bytes,
@@ -3069,6 +3285,7 @@ def create_migration_snapshot(
         with SecureTargetFS(
             requested_target,
             expected_binding=expected_binding,
+            retirement_root=destination / "quarantine",
         ) as secure_target:
             for relative_text in planned_target_paths(plan):
                 state = secure_target.file_state(relative_text)
@@ -3112,6 +3329,7 @@ def create_migration_snapshot(
             "profile": plan.get("profile"),
             "plan_sha256": plan_sha256,
             "approved_plan_file": "approved-plan.json",
+            "quarantine_directory": "quarantine",
             "target_git_state": plan.get("target_git_state"),
             "planned_paths": planned_target_paths(plan),
             "files": files,
@@ -3210,6 +3428,25 @@ def rollback_migration_snapshot(
                 or state.get("mode") != 0o700
             ):
                 raise ValueError(f"{label} owner, type, or mode is invalid")
+        quarantine_relative = f"{transaction_id}/quarantine"
+        quarantine_state = secure_snapshot.directory_state(quarantine_relative)
+        if quarantine_state.get("kind") == "absent":
+            # Authenticated v1 snapshots created before the retirement protocol
+            # gain an empty, private quarantine before any target mutation.
+            secure_snapshot.ensure_directory_exact(
+                quarantine_relative,
+                mode=0o700,
+                require_absent=True,
+            )
+            quarantine_state = secure_snapshot.directory_state(quarantine_relative)
+        if (
+            quarantine_state.get("kind") != "directory"
+            or quarantine_state.get("uid") != os.getuid()
+            or quarantine_state.get("mode") != 0o700
+        ):
+            raise ValueError(
+                "migration transaction quarantine owner, type, or mode is invalid"
+            )
         plan_bytes = _read_owned_snapshot_file(
             secure_snapshot,
             f"{transaction_id}/approved-plan.json",
@@ -3253,6 +3490,8 @@ def rollback_migration_snapshot(
         raise ValueError("migration snapshot target does not match requested target")
     if snapshot.get("transaction_id") != snapshot_root.name:
         raise ValueError("migration snapshot transaction identity mismatch")
+    if snapshot.get("quarantine_directory") not in {None, "quarantine"}:
+        raise ValueError("migration snapshot quarantine binding is invalid")
     if any(
         receipt.get(field) != snapshot.get(field)
         for field in ("transaction_id", "target", "target_binding", "plan_sha256")
@@ -3378,6 +3617,30 @@ def rollback_migration_snapshot(
             if normalized not in existing_directories:
                 removable_directories.add(normalized)
             parent = parent.parent
+    removable_directory_identities: dict[str, tuple[int, int]] = {}
+    with SecureTargetFS(
+        target,
+        expected_binding=expected_binding,
+    ) as secure_target:
+        for relative_text in sorted(removable_directories):
+            state = secure_target.directory_state(relative_text)
+            if state.get("kind") == "absent":
+                continue
+            identity = state.get("identity")
+            if (
+                state.get("kind") != "directory"
+                or not isinstance(identity, tuple)
+                or len(identity) != 2
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in identity
+                )
+            ):
+                raise ValueError(
+                    "rollback transaction-created directory binding is invalid: "
+                    + relative_text
+                )
+            removable_directory_identities[relative_text] = identity
     changed_paths = [str(item["path"]) for item in files]
     mark_migration_transaction(
         snapshot_root,
@@ -3388,6 +3651,7 @@ def rollback_migration_snapshot(
         with SecureTargetFS(
             target,
             expected_binding=expected_binding,
+            retirement_root=snapshot_root / "quarantine",
         ) as secure_target:
             for item, current_state, data in validated:
                 if item.get("kind") == "absent":
@@ -3397,6 +3661,12 @@ def rollback_migration_snapshot(
                             current_state["sha256"],
                             expected_mode=current_state["mode"],
                         )
+                    continue
+                desired_state = _rollback_file_state(
+                    item.get("sha256"),
+                    item.get("mode"),
+                )
+                if current_state == desired_state:
                     continue
                 secure_target.write_exact(
                     item["path"],
@@ -3417,12 +3687,17 @@ def rollback_migration_snapshot(
         with SecureTargetFS(
             target,
             expected_binding=expected_binding,
+            retirement_root=snapshot_root / "quarantine",
         ) as secure_target:
             secure_target.created_directories.extend(removable_directories)
+            secure_target._created_directory_identities.update(
+                removable_directory_identities
+            )
             unresolved_directories = secure_target.cleanup_created_directories()
             if unresolved_directories:
                 raise ValueError(
-                    "rollback preserved a non-empty transaction-created directory: "
+                    "rollback preserved a non-empty transaction-created directory "
+                    "or unverified replacement in quarantine: "
                     + ", ".join(unresolved_directories)
                 )
             for relative_text in sorted(removable_directories):

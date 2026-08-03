@@ -4731,6 +4731,7 @@ def _apply_canonical_v1_upgrade(
         with migration_kernel.SecureTargetFS(
             target,
             expected_binding=approved_target_binding,
+            retirement_root=snapshot / "quarantine",
         ) as secure_target:
             for relative in sorted(staged):
                 item = write_items[relative]

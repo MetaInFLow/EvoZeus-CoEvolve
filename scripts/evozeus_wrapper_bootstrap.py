@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path, PurePosixPath
 
@@ -576,10 +577,11 @@ def copy_templates(
         relative_artifacts.append((relative, expected, 0o755 if executable else 0o644))
 
     actions: list[str] = []
-    with migration_kernel.SecureTargetFS(target) as secure_target:
+    with migration_kernel.SecureTargetFS(target) as planning_target:
+        approved_target_binding = planning_target.binding
         planned_states: dict[str, dict[str, object]] = {}
         for relative, expected, mode in relative_artifacts:
-            state = secure_target.file_state(relative)
+            state = planning_target.file_state(relative)
             expected_sha256 = "sha256:" + hashlib.sha256(expected).hexdigest()
             if (
                 state["kind"] == "file"
@@ -595,6 +597,18 @@ def copy_templates(
                 )
             planned_states[relative] = state
 
+    retirement_root = Path(
+        tempfile.mkdtemp(
+            prefix=f".{target.name}.evozeus-attachment-",
+            dir=target.parent,
+        )
+    )
+    retirement_root.chmod(0o700)
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=approved_target_binding,
+        retirement_root=retirement_root,
+    ) as secure_target:
         try:
             for relative, expected, mode in relative_artifacts:
                 if planned_states[relative]["kind"] == "file":
@@ -641,17 +655,25 @@ def copy_templates(
                 except Exception as rollback_exc:
                     rollback_errors.append(f"{relative}: {rollback_exc}")
             try:
-                secure_target.cleanup_created_directories()
+                unresolved_directories = secure_target.cleanup_created_directories()
+                if unresolved_directories:
+                    rollback_errors.append(
+                        "created directories preserved in quarantine: "
+                        + ", ".join(unresolved_directories)
+                    )
             except Exception as rollback_exc:
                 rollback_errors.append(f"created directories: {rollback_exc}")
             if rollback_errors:
                 raise ValueError(
                     "Harness attachment failed and rollback_failed; writes may remain: "
                     + "; ".join(rollback_errors)
+                    + f"; quarantine={retirement_root}"
                 ) from exc
             raise ValueError(
-                f"Harness attachment CAS failed; all created artifacts rolled back: {exc}"
+                "Harness attachment CAS failed; all created artifacts rolled back: "
+                f"{exc}; quarantine={retirement_root}"
             ) from exc
+    actions.append(f"retain attachment transaction quarantine {retirement_root}")
     return actions
 
 
