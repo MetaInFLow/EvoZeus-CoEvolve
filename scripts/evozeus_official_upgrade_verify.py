@@ -29,7 +29,6 @@ BUNDLE_PREFIX = "contracts/v1/"
 ALLOWED_OPERATION_TYPES = {
     "create_exact",
     "replace_exact",
-    "managed_block_merge",
     "manifest_patch",
 }
 ALLOWED_BLOB_MODES = {"100644", "100755"}
@@ -176,6 +175,27 @@ class CandidateBlob:
     object_type: str | None
     oid: str | None
     loader: Callable[[], bytes] | None
+
+
+@dataclass(frozen=True)
+class ConstructionBlob:
+    path: str
+    mode: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class ConstructionRevisionEvidence:
+    repository: str
+    revision: str
+    head_sha: str
+    is_ancestor: bool
+    files: dict[str, ConstructionBlob]
+
+
+ConstructionRevisionResolver = Callable[
+    [str, str, str, frozenset[str]], ConstructionRevisionEvidence
+]
 
 
 class CandidateStore:
@@ -487,7 +507,9 @@ def closure_diff(
         elif before.get("kind") == after.get("kind") == "exact":
             operation = "replace_exact"
         elif before.get("kind") == after.get("kind") == "rendered_template":
-            operation = "managed_block_merge"
+            raise VerificationError(
+                f"automatic closure cannot change a rendered surface under protocol v1: {path}"
+            )
         elif before.get("kind") == after.get("kind") == "manifest_state":
             operation = "manifest_patch"
         else:
@@ -704,7 +726,7 @@ def load_profile(
         expected_change_id = (
             ("create" if expected_type == "create_exact" else "replace") + ":" + target_path
             if expected_type in {"create_exact", "replace_exact"}
-            else ("manifest:" if expected_type == "manifest_patch" else "merge:") + target_path
+            else "manifest:" + target_path
         )
         if change_id != expected_change_id:
             raise VerificationError(f"profile change_id is not canonical: {target_path}")
@@ -714,11 +736,6 @@ def load_profile(
             if before is None:
                 raise VerificationError("manifest_patch cannot create a manifest")
             _verify_manifest_patch(operation, before, after)
-        else:
-            raise VerificationError(
-                "managed_block_merge requires a versioned block receipt profile; "
-                "this generic profile does not declare one"
-            )
     if operation_paths != set(changes):
         missing = sorted(set(changes) - operation_paths)
         raise VerificationError("closure diff lacks profile operations: " + ", ".join(missing))
@@ -800,8 +817,18 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
         if profile.get("profile_id") != entry["id"] or profile.get("profile_version") != entry["version"]:
             raise VerificationError("official upgrade current pointer disagrees with profile identity")
         profiles.append(profile)
-    if not any(profile["_verified_to_path"] == current_path for profile in profiles):
-        raise VerificationError("current Harness closure has no verified incoming profile")
+    from_paths: set[str] = set()
+    for profile in profiles:
+        if profile["_verified_to_path"] != current_path:
+            raise VerificationError(
+                "every active official upgrade profile must point directly to the current closure"
+            )
+        from_path = profile["_verified_from_path"]
+        if from_path in from_paths:
+            raise VerificationError(
+                "active official upgrade profiles contain a duplicate from closure"
+            )
+        from_paths.add(from_path)
     return {
         "status": "verified",
         "protocol": f"{protocol['protocol_id']}@{protocol['protocol_version']}",
@@ -814,29 +841,15 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
 
 
 def _immutable_history_prefixes(base: FilesystemStore) -> set[str]:
+    history_root = base.root / "contracts/v1/migrations/history"
     prefixes: set[str] = set()
-    current = load_pointer(
-        base,
-        HISTORY_CURRENT_REL,
-        "using-evozeus-harness-current-closure",
-    )
-    profiles = load_pointer(
-        base,
-        PROFILES_CURRENT_REL,
-        "official-upgrade-current-profiles",
-    )
-    closure_paths = {
-        _bundle_relative(entry["path"], "base closure history path")
-        for entry in current
-    }
-    for entry in profiles:
-        profile_path = _bundle_relative(entry["path"], "base profile path")
-        profile = _json_file(base, profile_path, "base official upgrade profile")
-        for field in ("from_closure", "to_closure"):
-            closure_path, _ = _binding_path(profile.get(field), f"base profile {field}")
-            closure_paths.add(closure_path)
-    for closure_path in closure_paths:
-        prefixes.add(PurePosixPath(closure_path).parent.as_posix() + "/")
+    if not history_root.is_dir():
+        return prefixes
+    for closure_path in history_root.glob("**/closure.json"):
+        if closure_path.is_symlink() or not closure_path.is_file():
+            raise VerificationError("trusted base history contains an unsafe closure path")
+        relative = closure_path.relative_to(base.root).as_posix()
+        prefixes.add(PurePosixPath(relative).parent.as_posix() + "/")
     return prefixes
 
 
@@ -867,9 +880,13 @@ def verify_candidate(
     changes: dict[str, CandidateBlob],
     *,
     head_sha: str,
+    repository: str = "MetaInFLow/EvoZeus-CoEvolve",
+    construction_resolver: ConstructionRevisionResolver | None = None,
 ) -> dict[str, Any]:
     if GIT_OID_PATTERN.fullmatch(head_sha) is None:
         raise VerificationError("candidate head SHA is invalid")
+    if repository != "MetaInFLow/EvoZeus-CoEvolve":
+        raise VerificationError("official upgrade candidate must use the canonical repository")
     base_report = verify_catalog(base)
     immutable_history_prefixes = _immutable_history_prefixes(base)
     for path, change in changes.items():
@@ -910,9 +927,6 @@ def verify_candidate(
         candidate_closure_path,
         expected_sha256=candidate_history["sha256"],
     )
-    if candidate_closure["source"]["construction_revision"] != head_sha:
-        raise VerificationError("candidate closure source revision does not equal PR head")
-
     base_profiles = load_pointer(
         base,
         PROFILES_CURRENT_REL,
@@ -923,28 +937,48 @@ def verify_candidate(
         PROFILES_CURRENT_REL,
         "official-upgrade-current-profiles",
     )
-    if candidate_profiles[: len(base_profiles)] != base_profiles:
-        raise VerificationError("candidate profile pointer rewrites existing profile history")
-    new_profiles = candidate_profiles[len(base_profiles) :]
-    if not new_profiles:
-        raise VerificationError("candidate current closure lacks a new official upgrade profile")
     base_closure_path = _bundle_relative(base_history["path"], "base current closure path")
-    for entry in new_profiles:
+    base_from_paths: set[str] = set()
+    for entry in base_profiles:
+        base_profile_path = _bundle_relative(entry["path"], "base profile path")
+        base_profile = load_profile(
+            base,
+            base_profile_path,
+            load_protocol(base),
+            expected_sha256=entry["sha256"],
+        )
+        base_from_paths.add(base_profile["_verified_from_path"])
+    required_from_paths = {base_closure_path, *base_from_paths}
+    candidate_from_paths: set[str] = set()
+    for entry in candidate_profiles:
         profile_path = _bundle_relative(entry["path"], "candidate profile path")
         if base.exists(profile_path):
-            raise VerificationError(f"candidate profile must use a new immutable path: {profile_path}")
+            raise VerificationError(
+                f"candidate active profile must use a new immutable path: {profile_path}"
+            )
         profile = load_profile(
             candidate,
             profile_path,
             load_protocol(base),
             expected_sha256=entry["sha256"],
         )
-        if profile["_verified_from_path"] != base_closure_path:
-            raise VerificationError("candidate profile does not start at the base current closure")
         if profile["_verified_to_path"] != candidate_closure_path:
             raise VerificationError("candidate profile does not end at the candidate current closure")
+        from_path = profile["_verified_from_path"]
+        if not base.exists(from_path):
+            raise VerificationError(
+                "candidate direct-to-current profile must start at immutable base history"
+            )
+        candidate_from_paths.add(from_path)
+    missing_history = sorted(required_from_paths - candidate_from_paths)
+    if missing_history:
+        raise VerificationError(
+            "candidate direct-to-current profiles do not preserve historical coverage: "
+            + ", ".join(missing_history)
+        )
 
     bound_sources: set[str] = set()
+    construction_sources: set[str] = set()
     for target_path, item in candidate_entries.items():
         source_path = item.get("source_path")
         artifact_relative = item.get("artifact_path")
@@ -960,7 +994,53 @@ def verify_candidate(
             raise VerificationError(
                 f"candidate closure artifact differs from reviewed source: {target_path}"
             )
+        if candidate.mode(artifact_path) != item.get("mode"):
+            raise VerificationError(
+                f"candidate closure artifact mode differs from target mode: {target_path}"
+            )
         bound_sources.add(source_path)
+        if item.get("source_binding") == "construction_revision":
+            construction_sources.add(source_path)
+    revision = candidate_closure["source"]["construction_revision"]
+    if construction_resolver is None:
+        raise VerificationError("candidate construction revision evidence is unavailable")
+    evidence = construction_resolver(
+        repository,
+        revision,
+        head_sha,
+        frozenset(construction_sources),
+    )
+    if (
+        evidence.repository != repository
+        or evidence.revision != revision
+        or evidence.head_sha != head_sha
+        or evidence.is_ancestor is not True
+    ):
+        raise VerificationError(
+            "candidate construction revision is not a verified same-repository ancestor"
+        )
+    if set(evidence.files) != construction_sources:
+        raise VerificationError("candidate construction revision source evidence is incomplete")
+    total_construction_bytes = 0
+    for source_path in sorted(construction_sources):
+        historical = evidence.files[source_path]
+        if historical.path != source_path:
+            raise VerificationError("candidate construction source path identity is invalid")
+        if historical.mode not in ALLOWED_BLOB_MODES:
+            raise VerificationError(
+                f"candidate construction source mode is invalid: {source_path}"
+            )
+        total_construction_bytes += len(historical.data)
+        if len(historical.data) > MAX_BLOB_BYTES or total_construction_bytes > MAX_TOTAL_BLOB_BYTES:
+            raise VerificationError("candidate construction source evidence exceeds size limit")
+        if candidate.read_bytes(source_path) != historical.data:
+            raise VerificationError(
+                f"candidate source differs from construction revision: {source_path}"
+            )
+        if candidate.mode(source_path) != historical.mode:
+            raise VerificationError(
+                f"candidate source mode differs from construction revision: {source_path}"
+            )
     for path, change in changes.items():
         if change.status == "deleted":
             continue
@@ -1044,11 +1124,61 @@ def _github_blob(repository: str, oid: str, token: str) -> bytes:
     return data
 
 
+def _github_construction_revision_resolver(
+    token: str,
+) -> ConstructionRevisionResolver:
+    def resolve(
+        repository: str,
+        revision: str,
+        head_sha: str,
+        source_paths: frozenset[str],
+    ) -> ConstructionRevisionEvidence:
+        if repository != "MetaInFLow/EvoZeus-CoEvolve":
+            raise VerificationError("construction revision repository is not canonical")
+        comparison = _github_json(
+            f"https://api.github.com/repos/{repository}/compare/{revision}...{head_sha}",
+            token,
+        )
+        merge_base = comparison.get("merge_base_commit")
+        is_ancestor = (
+            comparison.get("status") in {"ahead", "identical"}
+            and isinstance(merge_base, dict)
+            and merge_base.get("sha") == revision
+        )
+        tree = _github_tree(repository, revision, token)
+        files: dict[str, ConstructionBlob] = {}
+        for path in sorted(source_paths):
+            item = tree.get(path)
+            if (
+                not isinstance(item, dict)
+                or item.get("type") != "blob"
+                or item.get("mode") not in ALLOWED_BLOB_MODES
+                or not isinstance(item.get("sha"), str)
+            ):
+                raise VerificationError(
+                    f"construction revision source is missing or unsafe: {path}"
+                )
+            files[path] = ConstructionBlob(
+                path=path,
+                mode=item["mode"],
+                data=_github_blob(repository, item["sha"], token),
+            )
+        return ConstructionRevisionEvidence(
+            repository=repository,
+            revision=revision,
+            head_sha=head_sha,
+            is_ancestor=is_ancestor,
+            files=files,
+        )
+
+    return resolve
+
+
 def candidate_from_pull_request(
     event_path: Path,
     repo_root: Path,
     token: str,
-) -> tuple[dict[str, CandidateBlob], str]:
+) -> tuple[dict[str, CandidateBlob], str, str]:
     event = _strict_json(event_path.read_bytes(), "pull_request_target event")
     pull_request = event.get("pull_request")
     if not isinstance(pull_request, dict):
@@ -1069,6 +1199,8 @@ def candidate_from_pull_request(
         raise VerificationError("pull request base repository is invalid")
     if not isinstance(head_repo, str) or REPOSITORY_PATTERN.fullmatch(head_repo) is None:
         raise VerificationError("pull request head repository is invalid")
+    if head_repo != base_repo or base_repo != "MetaInFLow/EvoZeus-CoEvolve":
+        raise VerificationError("official upgrade profile PR must use the canonical repository")
     local_head = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         text=True,
@@ -1098,7 +1230,7 @@ def candidate_from_pull_request(
             oid,
             lambda repository=head_repo, blob_oid=oid: _github_blob(repository, blob_oid, token),
         )
-    return changes, head_sha
+    return changes, head_sha, head_repo
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1122,12 +1254,18 @@ def main(argv: list[str] | None = None) -> int:
             token = os.environ.get("GITHUB_TOKEN", "")
             if not token:
                 raise VerificationError("GITHUB_TOKEN is required for pull_request_target verification")
-            changes, head_sha = candidate_from_pull_request(
+            changes, head_sha, repository = candidate_from_pull_request(
                 args.event,
                 args.repo_root,
                 token,
             )
-            report = verify_candidate(base, changes, head_sha=head_sha)
+            report = verify_candidate(
+                base,
+                changes,
+                head_sha=head_sha,
+                repository=repository,
+                construction_resolver=_github_construction_revision_resolver(token),
+            )
     except (OSError, VerificationError) as exc:
         print(json.dumps({"status": "rejected", "error": str(exc)}, ensure_ascii=False))
         return 1

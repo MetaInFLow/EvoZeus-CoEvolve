@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -45,6 +46,246 @@ def _json_bytes(value: object) -> bytes:
 
 def _base_store() -> verifier.FilesystemStore:
     return verifier.FilesystemStore(ROOT)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_json_bytes(value))
+
+
+def _protocol_v1_base(tmp_path: Path) -> Path:
+    root = tmp_path / "trusted-base"
+    shutil.copytree(
+        ROOT,
+        root,
+        ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+    )
+    protocol_path = root / verifier.PROTOCOL_REL
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["allowed_operation_types"] = [
+        "create_exact",
+        "replace_exact",
+        "manifest_patch",
+    ]
+    _write_json(protocol_path, protocol)
+    protocol_sha256 = _sha256(protocol_path.read_bytes())
+    profile_path = (
+        root / "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["protocol"]["sha256"] = protocol_sha256
+    _write_json(profile_path, profile)
+    pointer_path = root / verifier.PROFILES_CURRENT_REL
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["entries"][0]["sha256"] = _sha256(profile_path.read_bytes())
+    _write_json(pointer_path, pointer)
+    return root
+
+
+def _candidate_star(
+    root: Path,
+) -> tuple[
+    dict[str, verifier.CandidateBlob],
+    verifier.ConstructionRevisionResolver,
+    str,
+]:
+    construction_revision = "a" * 40
+    head_sha = "b" * 40
+    v11_relative = "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json"
+    v12_relative = "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    v11 = json.loads((root / v11_relative).read_text(encoding="utf-8"))
+    v12 = json.loads(json.dumps(v11))
+    v12["closure_version"] = "v1.2.0"
+    v12["source"] = {
+        "repository": "MetaInFLow/EvoZeus-CoEvolve",
+        "construction_revision": construction_revision,
+        "release_status": "release_required_for_apply",
+        "required_release": "v0.16.0",
+    }
+    changes: dict[str, verifier.CandidateBlob] = {}
+    construction_files: dict[str, verifier.ConstructionBlob] = {}
+    skill_target = ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+    skill_source = "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
+    skill_before: dict[str, object] | None = None
+    skill_after: dict[str, object] | None = None
+    for item in v12["files"]:
+        artifact = item.get("artifact_path")
+        if artifact is None:
+            continue
+        old_artifact = (Path(v11_relative).parent / artifact).as_posix()
+        new_artifact = (Path(v12_relative).parent / artifact).as_posix()
+        data = (root / old_artifact).read_bytes()
+        if item["target_path"] == skill_target:
+            skill_before = next(
+                entry for entry in v11["files"] if entry["target_path"] == skill_target
+            )
+            data += b"\n<!-- candidate-harness-v1.2 -->\n"
+            item["sha256"] = _sha256(data)
+            skill_after = item
+            changes[skill_source] = _candidate_blob(skill_source, data)
+        changes[new_artifact] = _candidate_blob(
+            new_artifact,
+            data,
+            status="added",
+            mode=item["mode"],
+        )
+        source_path = item.get("source_path")
+        if source_path is not None and item.get("source_binding") == "construction_revision":
+            source_data = data if source_path == skill_source else (root / source_path).read_bytes()
+            source_mode = (
+                "100755"
+                if (root / source_path).stat().st_mode & 0o100
+                else "100644"
+            )
+            construction_files[source_path] = verifier.ConstructionBlob(
+                path=source_path,
+                mode=source_mode,
+                data=source_data,
+            )
+    assert skill_before is not None and skill_after is not None
+    changes[v12_relative] = _candidate_blob(
+        v12_relative,
+        _json_bytes(v12),
+        status="added",
+    )
+    v12_sha256 = _sha256(_json_bytes(v12))
+    protocol_sha256 = _sha256((root / verifier.PROTOCOL_REL).read_bytes())
+    old_profile = json.loads(
+        (
+            root
+            / "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    direct_v10 = json.loads(json.dumps(old_profile))
+    direct_v10["profile_id"] = "canonical-v1.0-to-v1.2"
+    direct_v10["protocol"]["sha256"] = protocol_sha256
+    direct_v10["to_closure"] = {
+        "path": "migrations/history/harness-skill/v1.2.0/closure.json",
+        "sha256": v12_sha256,
+    }
+    direct_v10["release_axis"]["target_wrapper_to"] = "v0.15.0"
+    direct_v10["release_axis"]["artifact_source_to"]["release"] = "v0.16.0"
+    for operation in direct_v10["operations"]:
+        if operation["target_path"] == skill_target:
+            operation["postimage"] = {
+                "artifact_path": (
+                    "migrations/history/harness-skill/v1.2.0/"
+                    + str(skill_after["artifact_path"])
+                ),
+                "sha256": skill_after["sha256"],
+                "mode": skill_after["mode"],
+            }
+    direct_v11 = {
+        "schema_version": "evozeus.coevolve.official-upgrade-profile.v1",
+        "profile_id": "canonical-v1.1-to-v1.2",
+        "profile_version": "v1.0.0",
+        "protocol": {
+            "path": "migrations/protocols/official-upgrade-protocol-v1.json",
+            "sha256": protocol_sha256,
+        },
+        "from_closure": {
+            "path": "migrations/history/harness-skill/v1.1.0/closure.json",
+            "sha256": _sha256((root / v11_relative).read_bytes()),
+        },
+        "to_closure": {
+            "path": "migrations/history/harness-skill/v1.2.0/closure.json",
+            "sha256": v12_sha256,
+        },
+        "release_axis": {
+            "target_wrapper_from": "v0.15.0",
+            "target_wrapper_to": "v0.15.0",
+            "artifact_source_from": {
+                "kind": "construction_revision",
+                "revision": v11["source"]["construction_revision"],
+                "release": "v0.15.0",
+            },
+            "artifact_source_to": {
+                "kind": "required_release",
+                "release": "v0.16.0",
+                "binding": "contract_bundle.source_revision",
+            },
+        },
+        "automatic": True,
+        "operations": [
+            {
+                "change_id": "replace:" + skill_target,
+                "type": "replace_exact",
+                "target_path": skill_target,
+                "preimage": {
+                    "sha256": skill_before["sha256"],
+                    "mode": skill_before["mode"],
+                },
+                "postimage": {
+                    "artifact_path": (
+                        "migrations/history/harness-skill/v1.2.0/"
+                        + str(skill_after["artifact_path"])
+                    ),
+                    "sha256": skill_after["sha256"],
+                    "mode": skill_after["mode"],
+                },
+            }
+        ],
+        "deferred_rendered_surfaces": old_profile["deferred_rendered_surfaces"],
+        "protected_business_surfaces": old_profile["protected_business_surfaces"],
+        "fallback": old_profile["fallback"],
+    }
+    profile_entries = []
+    for filename, profile in (
+        ("canonical-v1.0-to-v1.2-v1.json", direct_v10),
+        ("canonical-v1.1-to-v1.2-v1.json", direct_v11),
+    ):
+        relative = "contracts/v1/migrations/profiles/" + filename
+        data = _json_bytes(profile)
+        changes[relative] = _candidate_blob(relative, data, status="added")
+        profile_entries.append(
+            {
+                "id": profile["profile_id"],
+                "version": profile["profile_version"],
+                "path": "migrations/profiles/" + filename,
+                "sha256": _sha256(data),
+            }
+        )
+    closure_pointer = {
+        "schema_version": "evozeus.coevolve.current-pointer.v1",
+        "pointer_id": "using-evozeus-harness-current-closure",
+        "entries": [
+            {
+                "id": "using-evozeus-harness",
+                "version": "v1.2.0",
+                "path": "migrations/history/harness-skill/v1.2.0/closure.json",
+                "sha256": v12_sha256,
+            }
+        ],
+    }
+    profile_pointer = {
+        "schema_version": "evozeus.coevolve.current-pointer.v1",
+        "pointer_id": "official-upgrade-current-profiles",
+        "entries": profile_entries,
+    }
+    changes[verifier.HISTORY_CURRENT_REL] = _candidate_blob(
+        verifier.HISTORY_CURRENT_REL,
+        _json_bytes(closure_pointer),
+    )
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(profile_pointer),
+    )
+
+    def resolver(
+        repository: str,
+        revision: str,
+        resolved_head: str,
+        source_paths: frozenset[str],
+    ) -> verifier.ConstructionRevisionEvidence:
+        return verifier.ConstructionRevisionEvidence(
+            repository=repository,
+            revision=revision,
+            head_sha=resolved_head,
+            is_ancestor=True,
+            files={path: construction_files[path] for path in source_paths},
+        )
+
+    return changes, resolver, head_sha
 
 
 def _profile() -> tuple[str, dict[str, object]]:
@@ -445,6 +686,51 @@ def test_github_request_is_get_without_candidate_request_body(
     assert captured[0].get_method() == "GET"
 
 
+def test_github_construction_resolver_binds_compare_tree_and_blob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "a" * 40
+    head_sha = "b" * 40
+    blob_oid = "c" * 40
+    calls: list[str] = []
+
+    def github_json(url: str, _token: str) -> dict[str, object]:
+        calls.append(url)
+        if "/compare/" in url:
+            return {
+                "status": "ahead",
+                "merge_base_commit": {"sha": revision},
+            }
+        return {
+            "truncated": False,
+            "tree": [
+                {
+                    "path": "templates/target/example.txt",
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob_oid,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(verifier, "_github_json", github_json)
+    monkeypatch.setattr(verifier, "_github_blob", lambda *_args: b"trusted\n")
+    resolver = verifier._github_construction_revision_resolver("token")
+
+    evidence = resolver(
+        "MetaInFLow/EvoZeus-CoEvolve",
+        revision,
+        head_sha,
+        frozenset({"templates/target/example.txt"}),
+    )
+
+    assert evidence.is_ancestor is True
+    assert evidence.files["templates/target/example.txt"].mode == "100644"
+    assert evidence.files["templates/target/example.txt"].data == b"trusted\n"
+    assert calls[0].endswith(f"/compare/{revision}...{head_sha}")
+    assert calls[1].endswith(f"/git/trees/{revision}?recursive=1")
+
+
 def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     workflow = (ROOT / verifier.WORKFLOW_REL).read_text(encoding="utf-8")
 
@@ -460,3 +746,169 @@ def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     assert "github.event.pull_request.head" not in workflow
     assert "verify-pull-request" in workflow
     assert "pip install" not in workflow
+
+
+def test_catalog_requires_a_unique_direct_profile_from_each_historical_closure(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    profile_relative = "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
+    duplicate_relative = "contracts/v1/migrations/profiles/duplicate-v1.0-to-v1.1-v1.json"
+    duplicate = json.loads((root / profile_relative).read_text(encoding="utf-8"))
+    duplicate["profile_id"] = "duplicate-v1.0-to-v1.1"
+    _write_json(root / duplicate_relative, duplicate)
+    pointer_path = root / verifier.PROFILES_CURRENT_REL
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["entries"].append(
+        {
+            "id": duplicate["profile_id"],
+            "version": duplicate["profile_version"],
+            "path": "migrations/profiles/" + Path(duplicate_relative).name,
+            "sha256": _sha256((root / duplicate_relative).read_bytes()),
+        }
+    )
+    _write_json(pointer_path, pointer)
+
+    with pytest.raises(verifier.VerificationError, match="duplicate from closure"):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
+
+
+def test_catalog_rejects_an_active_profile_that_does_not_end_at_current(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    current_path = root / verifier.HISTORY_CURRENT_REL
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    v10_relative = "contracts/v1/migrations/history/harness-skill/v1.0.0/closure.json"
+    current["entries"][0] = {
+        "id": "using-evozeus-harness",
+        "version": "v1.0.0",
+        "path": "migrations/history/harness-skill/v1.0.0/closure.json",
+        "sha256": _sha256((root / v10_relative).read_bytes()),
+    }
+    _write_json(current_path, current)
+
+    with pytest.raises(verifier.VerificationError, match="point directly to the current"):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
+
+
+def test_candidate_rotates_to_a_direct_to_current_profile_star(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+
+    report = verifier.verify_candidate(
+        verifier.FilesystemStore(root),
+        changes,
+        head_sha=head_sha,
+        construction_resolver=resolver,
+    )
+
+    assert report["status"] == "verified_candidate"
+    assert report["base_closure_version"] == "v1.1.0"
+    assert report["candidate_closure_version"] == "v1.2.0"
+
+
+def test_candidate_star_must_cover_base_current_and_prior_active_from_closures(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    pointer = json.loads(changes[verifier.PROFILES_CURRENT_REL].loader().decode("utf-8"))
+    pointer["entries"] = pointer["entries"][1:]
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(pointer),
+    )
+
+    with pytest.raises(verifier.VerificationError, match="historical coverage"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize("fault", ["not_ancestor", "wrong_bytes", "wrong_mode"])
+def test_candidate_construction_revision_requires_ancestor_tree_bytes_and_mode(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, valid_resolver, head_sha = _candidate_star(root)
+
+    def faulty_resolver(
+        repository: str,
+        revision: str,
+        resolved_head: str,
+        source_paths: frozenset[str],
+    ) -> verifier.ConstructionRevisionEvidence:
+        evidence = valid_resolver(repository, revision, resolved_head, source_paths)
+        files = dict(evidence.files)
+        if fault in {"wrong_bytes", "wrong_mode"}:
+            path = sorted(files)[0]
+            original = files[path]
+            files[path] = verifier.ConstructionBlob(
+                path=path,
+                mode="100755" if fault == "wrong_mode" and original.mode == "100644" else (
+                    "100644" if fault == "wrong_mode" else original.mode
+                ),
+                data=(original.data + b"drift") if fault == "wrong_bytes" else original.data,
+            )
+        return verifier.ConstructionRevisionEvidence(
+            repository=evidence.repository,
+            revision=evidence.revision,
+            head_sha=evidence.head_sha,
+            is_ancestor=fault != "not_ancestor",
+            files=files,
+        )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="ancestor|differs from construction revision",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=faulty_resolver,
+        )
+
+
+def test_inactive_existing_history_and_profiles_remain_immutable(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    base = verifier.FilesystemStore(root)
+    inactive_closure = (
+        root
+        / "contracts/v1/migrations/history/harness-skill/v0.9.0/closure.json"
+    )
+    inactive_closure.parent.mkdir(parents=True)
+    inactive_closure.write_text("{}\n", encoding="utf-8")
+    prefixes = verifier._immutable_history_prefixes(base)
+
+    assert verifier._protected_candidate_change(
+        base,
+        "contracts/v1/migrations/history/harness-skill/v0.9.0/artifacts/late.md",
+        prefixes,
+    )
+    assert verifier._protected_candidate_change(
+        base,
+        "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
+        prefixes,
+    )
+
+
+def test_protocol_v1_rejects_rendered_surface_changes() -> None:
+    before = {
+        "kind": "rendered_template",
+        "mode": "100644",
+        "ownership": "wrapper_managed",
+        "sha256": "1" * 64,
+        "materialization": {"policy": "preserve_byte_exact_no_auto_upgrade"},
+    }
+    after = {**before, "sha256": "2" * 64}
+
+    with pytest.raises(verifier.VerificationError, match="cannot change a rendered surface"):
+        verifier.closure_diff({"rendered.md": before}, {"rendered.md": after})
