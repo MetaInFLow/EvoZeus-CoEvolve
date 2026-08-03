@@ -1,0 +1,12 @@
+{
+  "schema_version": "evozeus.coevolve.current-pointer.v1",
+  "pointer_id": "official-upgrade-current-profiles",
+  "entries": [
+    {
+      "id": "canonical-v1.0-to-v1.1",
+      "version": "v1.0.0",
+      "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
+      "sha256": "c2bc019bd387a0493df536c2255eb8edf651c1b393a3c8111951f1f53e9822a6"
+    }
+  ]
+}

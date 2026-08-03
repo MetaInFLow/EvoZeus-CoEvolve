@@ -1,27 +1,440 @@
 {
   "schema_version": "evozeus.coevolve.contract-manifest.v1",
   "bundle_id": "evozeus-coevolve",
-  "bundle_version": "v1.1.0",
+  "bundle_version": "v1.2.0",
   "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
-  "source_revision": "v0.14.0",
+  "source_revision": "v0.15.0",
   "runtime_compatibility": {
     "min_inclusive": "0.1.0",
     "max_exclusive": "0.3.0"
   },
+  "trusted_repository_files": [
+    {
+      "path": "requirements-commonmark.lock",
+      "sha256": "41ab63af490a4b68f4e2af84545fb1863511cddcc75c557261ca8c8b2155b4a0",
+      "mode": "100644",
+      "role": "trusted-commonmark-dependency-lock"
+    },
+    {
+      "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
+      "sha256": "46f3cee827c4f5bc613f16b61dd1b2017ef7e82728f25734b9835c57340521b5",
+      "mode": "100644",
+      "role": "trusted-legacy-adapter-implementation"
+    }
+  ],
   "files": [
+    {
+      "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
+      "sha256": "04d410940e61a088cea5fd4d2dac926e5cc4ce63ab11adda000d254544be839f",
+      "mode": "100644",
+      "role": "trusted-legacy-adapter"
+    },
+    {
+      "path": "migrations/adapters/legacy-v0.14-three-section/evolution.md.tpl",
+      "sha256": "5b2094d173d7a4d0acf334c1f0fe52fa92f84408c0cc1e4f72f6c2c875981b04",
+      "mode": "100644",
+      "role": "trusted-legacy-adapter-template"
+    },
+    {
+      "path": "migrations/adapters/legacy-v0.14-three-section/status.md.tpl",
+      "sha256": "14d2a41dba0115a4e41464978568030ecf0c110ad7699efec93cb012d5c9958b",
+      "mode": "100644",
+      "role": "trusted-legacy-adapter-template"
+    },
+    {
+      "path": "migrations/adapters/legacy-v0.14-three-section/wrapper.md.tpl",
+      "sha256": "4fce921ba7e5830039b6749ed36d7de437a0f6396a11d8966d242ea60770f84b",
+      "mode": "100644",
+      "role": "trusted-legacy-adapter-template"
+    },
+    {
+      "path": "migrations/artifacts/using-evozeus-harness-v1.0.0.md",
+      "sha256": "af3f1a58380f5763f5b1bdc25b86c65384efaa40adaca89436ea9dba2accbebe",
+      "mode": "100644",
+      "role": "trusted-migration-artifact"
+    },
+    {
+      "path": "migrations/harness-migration-contract-v1.json",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
+      "mode": "100644",
+      "role": "harness-migration-contract"
+    },
+    {
+      "path": "migrations/history/harness-skill/current.json",
+      "sha256": "126365559574d2c6af5eede4c929bf8e93312d1a0f2da76d5c664749d6c124df",
+      "mode": "100644",
+      "role": "current-target-closure-pointer"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/scripts/evozeus_notice.py",
+      "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+      "sha256": "7b5a6ca032d79e878c4712d9f45e49b0489e4698ea38e97a4e8ad4f9d1af76f8",
+      "mode": "100755",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.codex/hooks.json",
+      "sha256": "21083027f8f5b3b14ac8d11fc048e646621927066ea879fc4a7d0e02edd2f4b8",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+      "sha256": "dcda8952560feead27dfa52e536f5873d5aa5608590650fb5d314795dd708df5",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/audit-rule.md",
+      "sha256": "f59ce7c5adf5de039f1d1f12f696821c1cb9955f88fbbf3a51225f1afc30f539",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/feedback-policy.json",
+      "sha256": "d5d323077fa083ad9f6a492f87387dcd6425f196a1b7b50d7e0a0d4c010dfdec",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/notice-policy.json",
+      "sha256": "b03bf3a14cdb3ded3ad5d4b1ca8d0dc2e5f8e57858a6bb0ef52ec58352c56a73",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+      "sha256": "af3f1a58380f5763f5b1bdc25b86c65384efaa40adaca89436ea9dba2accbebe",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
+      "sha256": "0c51a4f1b8a7a38a20c4c1a37cccb7335fa76936dcd3f815e5276d47078f6aeb",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "sha256": "28c3766659dd11256cb561b7b2892ae11620042699b1c1a244d1c7ddeca85d36",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/pull_request_template.md",
+      "sha256": "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+      "sha256": "454655de1cd97332e109d45a7ec0d03f4697ea51118536920fe5e0a9982e26bd",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/CHANGELOG.md",
+      "sha256": "451ea86ec530a6475e4c938c338979a8c9783d5974f765109e2131b733db003d",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/WRAPPER.md",
+      "sha256": "a6ebad01310e23e7d7be4e9a72a67530963863c9a0804bb72516530d3998ff44",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/_config.yml",
+      "sha256": "9e55dafe410278196555ea43b3718123f521151d6f2bab676a821a35ab4e191a",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/design-doc-template.md",
+      "sha256": "368bf1bffb8c1a2e69f492f075ac472223ca4754acbee2faae855dc21db1972e",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/designs/README.md",
+      "sha256": "30479b1e83eaf456ee2433a75d9bc1e9526263c54294a8580f9427407ad413c9",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/index.md",
+      "sha256": "38e483420af1aa8ed5f6cb2625edeab33474292849ff4e5bbe84410444668a58",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/onboarding.md",
+      "sha256": "64797d20ca82b7236a3e584b53ba747a74d3d624a5a38fcb64bd9561fa423ec8",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/wrapper-migrations/README.md",
+      "sha256": "0e66b384ce6870d61955fc9af7924d85b99e8840a1d205aa96d8d4c8469f1699",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.0.0/closure.json",
+      "sha256": "ca3135a4789167f2901fc91fd663ba8907d46e3ae77378c37dac47785e4c7968",
+      "mode": "100644",
+      "role": "immutable-target-closure"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/generated/harness-skill-v1.0.0-to-v1.1.0.md",
+      "sha256": "c609568fc97c601acb30362ef3566ae047740102223db4bbcc580709b44f81ee",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_notice.py",
+      "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+      "sha256": "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
+      "mode": "100755",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.codex/hooks.json",
+      "sha256": "21083027f8f5b3b14ac8d11fc048e646621927066ea879fc4a7d0e02edd2f4b8",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+      "sha256": "dcda8952560feead27dfa52e536f5873d5aa5608590650fb5d314795dd708df5",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/audit-rule.md",
+      "sha256": "f59ce7c5adf5de039f1d1f12f696821c1cb9955f88fbbf3a51225f1afc30f539",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/feedback-policy.json",
+      "sha256": "d5d323077fa083ad9f6a492f87387dcd6425f196a1b7b50d7e0a0d4c010dfdec",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/notice-policy.json",
+      "sha256": "b03bf3a14cdb3ded3ad5d4b1ca8d0dc2e5f8e57858a6bb0ef52ec58352c56a73",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+      "sha256": "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
+      "sha256": "0c51a4f1b8a7a38a20c4c1a37cccb7335fa76936dcd3f815e5276d47078f6aeb",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "sha256": "28c3766659dd11256cb561b7b2892ae11620042699b1c1a244d1c7ddeca85d36",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/pull_request_template.md",
+      "sha256": "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+      "sha256": "454655de1cd97332e109d45a7ec0d03f4697ea51118536920fe5e0a9982e26bd",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/CHANGELOG.md",
+      "sha256": "451ea86ec530a6475e4c938c338979a8c9783d5974f765109e2131b733db003d",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/WRAPPER.md",
+      "sha256": "a6ebad01310e23e7d7be4e9a72a67530963863c9a0804bb72516530d3998ff44",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/_config.yml",
+      "sha256": "9e55dafe410278196555ea43b3718123f521151d6f2bab676a821a35ab4e191a",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/design-doc-template.md",
+      "sha256": "368bf1bffb8c1a2e69f492f075ac472223ca4754acbee2faae855dc21db1972e",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/designs/README.md",
+      "sha256": "30479b1e83eaf456ee2433a75d9bc1e9526263c54294a8580f9427407ad413c9",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/index.md",
+      "sha256": "38e483420af1aa8ed5f6cb2625edeab33474292849ff4e5bbe84410444668a58",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/onboarding.md",
+      "sha256": "64797d20ca82b7236a3e584b53ba747a74d3d624a5a38fcb64bd9561fa423ec8",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/wrapper-migrations/README.md",
+      "sha256": "0e66b384ce6870d61955fc9af7924d85b99e8840a1d205aa96d8d4c8469f1699",
+      "mode": "100644",
+      "role": "immutable-target-closure-artifact"
+    },
+    {
+      "path": "migrations/history/harness-skill/v1.1.0/closure.json",
+      "sha256": "1a0c5ffbcf91a43487e6cdcbf2158c1255e95690d1cd33ba999ee3fd2757ba22",
+      "mode": "100644",
+      "role": "immutable-target-closure"
+    },
+    {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+      "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+      "mode": "100644",
+      "role": "trusted-legacy-applied-lineage-artifact"
+    },
+    {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+      "sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+      "mode": "100755",
+      "role": "trusted-legacy-source-artifact"
+    },
+    {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/wrapper.json.tpl",
+      "sha256": "c52a5ec7c895fc09f00c2f71d595059c011aa85d6804d8310de377b5821edae4",
+      "mode": "100644",
+      "role": "trusted-legacy-source-artifact"
+    },
+    {
+      "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
+      "sha256": "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346",
+      "mode": "100644",
+      "role": "trusted-legacy-source-envelope"
+    },
+    {
+      "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
+      "sha256": "c2bc019bd387a0493df536c2255eb8edf651c1b393a3c8111951f1f53e9822a6",
+      "mode": "100644",
+      "role": "official-upgrade-profile"
+    },
+    {
+      "path": "migrations/profiles/current.json",
+      "sha256": "b432a9c2346733e76401f57febc720b00f6c14e99a00fb7a20dcfd7ae9dcc8d0",
+      "mode": "100644",
+      "role": "current-official-upgrade-profile-pointer"
+    },
+    {
+      "path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
+      "sha256": "e4abfadcf6691c2646c65bf93c9a9cc7f4d995fff999ea771b6e7a721f830427",
+      "mode": "100644",
+      "role": "supervised-legacy-profile"
+    },
+    {
+      "path": "migrations/protocols/official-upgrade-protocol-v1.json",
+      "sha256": "b4ecf070c779d4f30b860975b595b689b1bc89b57db477d391319e6def4af589",
+      "mode": "100644",
+      "role": "official-upgrade-protocol"
+    },
+    {
+      "path": "migrations/schemas/current-pointer-v1.schema.json",
+      "sha256": "8d9caeba6124723cc55f95c0b412ba7351c90666bda36ed6745930e111449fe7",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/legacy-prompt-adapter-v1.schema.json",
+      "sha256": "db0e46888ebd36635aaab9752389074a3a31cf3ef6f4b7093b2c14a6c738b2a1",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/legacy-source-envelope-v1.schema.json",
+      "sha256": "477bafbf02581b13c7a1aba328c7976d866ad30997e29dcbffc739ab67a5947a",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/official-upgrade-profile-v1.schema.json",
+      "sha256": "bace5bc6991d36f2077030d146fe2574c263ed16c26f6ce86bec61191675f7f5",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/official-upgrade-protocol-v1.schema.json",
+      "sha256": "33dee60e5cc9e4c758f912f7daf763eb7b93e295b3c0e5d08bfeaf89eee76438",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
+      "sha256": "cd52f73b4ab943dd67b7fab1e174f95e26bedff57088ccc74cc8b30960dc2fd0",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
+    {
+      "path": "migrations/schemas/target-closure-v1.schema.json",
+      "sha256": "c8fa698ff44e005caee3ec8e144a285fc9c8baeabeb232a5ce554783f79e4c2e",
+      "mode": "100644",
+      "role": "official-upgrade-json-schema"
+    },
     {
       "path": "schemas/attachment-v1.schema.json",
       "sha256": "0369beb736b828ebadeb8a0d5c5e67163ff845e0b5ffab257859646d7fe293ff",
+      "mode": "100644",
       "role": "json-schema"
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "8b040d5269ad7ab04ad04aa6ec0f4e459d2b291d779daac50f6c1174d5ca4276",
+      "sha256": "ca9e577544ff17debc1e246866456a9c03376ce68452c80e2b805c24917e0417",
+      "mode": "100644",
       "role": "target-template-inventory"
     },
     {
       "path": "user-prompt-lesson-runtime-lifecycle.json",
       "sha256": "7e1f34f2a464124a876c47f9c395f473bc228aadc2d4df7ad04b4eb0cbaa5ba7",
+      "mode": "100644",
       "role": "external-runtime-dependency"
     }
   ]

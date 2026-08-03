@@ -1,0 +1,12 @@
+{
+  "schema_version": "evozeus.coevolve.current-pointer.v1",
+  "pointer_id": "using-evozeus-harness-current-closure",
+  "entries": [
+    {
+      "id": "using-evozeus-harness",
+      "version": "v1.1.0",
+      "path": "migrations/history/harness-skill/v1.1.0/closure.json",
+      "sha256": "1a0c5ffbcf91a43487e6cdcbf2158c1255e95690d1cd33ba999ee3fd2757ba22"
+    }
+  ]
+}

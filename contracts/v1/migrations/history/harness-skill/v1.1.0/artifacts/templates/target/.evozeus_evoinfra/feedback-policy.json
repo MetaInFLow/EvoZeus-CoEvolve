@@ -1,0 +1,39 @@
+{
+  "management_mode": "semi_managed",
+  "strictness": "medium",
+  "audit_rule": ".evozeus-wrapper/policies/audit-rule.md",
+  "capture_evidence_regex": [
+    "EvoZeus · Lesson",
+    "待记录",
+    "LOCAL_PENDING_CONFIRMATION",
+    "Skill Feedback Issue",
+    "created issue",
+    "lesson captured",
+    "经验已上传",
+    "自进化记录"
+  ],
+  "notice_policy": ".evozeus-wrapper/policies/notice-policy.json",
+  "notice_cli": ".evozeus-wrapper/scripts/evozeus_notice.py",
+  "authorization": {
+    "capture": "no_external_write",
+    "issue_submission": "explicit_confirmation_required",
+    "fix_execution": "separate_confirmation_required"
+  },
+  "routing": {
+    "target_skill_issue_when": [
+      "domain_rule_missing",
+      "tool_profile_wrong",
+      "business_process_wrong",
+      "deliverable_gate_wrong"
+    ],
+    "wrapper_issue_when": [
+      "feedback_not_captured",
+      "mode_config_missing",
+      "hook_missing",
+      "cannot_route_issue_owner"
+    ],
+    "both_when": [
+      "target_skill_rule_missing_and_wrapper_failed_to_capture"
+    ]
+  }
+}
