@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     from . import evozeus_harness_migration as migration_kernel
@@ -386,6 +386,143 @@ def validate_migration_contract_source(
     return bundle
 
 
+def _canonical_relative_path(raw: object, label: str) -> str:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise ValueError(f"{label} must be a non-empty POSIX relative path")
+    relative = PurePosixPath(raw)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or any(part in {"", "."} for part in relative.parts)
+        or relative.as_posix() != raw
+    ):
+        raise ValueError(f"{label} is not canonical: {raw}")
+    return raw
+
+
+def current_release_lineage_artifacts(
+    bundle: dict[str, object],
+    target: Path,
+) -> list[tuple[Path, bytes, bool]]:
+    """Materialize closure-owned release lineage for fresh and migrated targets alike."""
+    try:
+        from . import evozeus_official_upgrade_verify as official_verifier
+    except ImportError:
+        import evozeus_official_upgrade_verify as official_verifier
+
+    wrapper_root_raw = bundle.get("wrapper_root")
+    declared_current = bundle.get("current_closure")
+    if not isinstance(wrapper_root_raw, Path) or not isinstance(declared_current, dict):
+        raise ValueError("verified current Harness closure is unavailable")
+    declared_path = _canonical_relative_path(
+        declared_current.get("path"),
+        "verified current Harness closure path",
+    )
+    declared_closure = declared_current.get("closure")
+    if not isinstance(declared_closure, dict):
+        raise ValueError("verified current Harness closure payload is unavailable")
+
+    store = official_verifier.FilesystemStore(wrapper_root_raw)
+    try:
+        catalog = official_verifier.verify_catalog(store)
+        verified_path = _canonical_relative_path(
+            catalog.get("current_closure"),
+            "fresh attachment current Harness closure path",
+        )
+        verified_closure, _ = official_verifier.load_closure(store, verified_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(
+            "fresh attachment current Harness closure failed verification"
+        ) from exc
+    if verified_path != declared_path or verified_closure != declared_closure:
+        raise ValueError(
+            "fresh attachment current Harness closure changed after source verification"
+        )
+
+    closure_version = verified_closure.get("closure_version")
+    contract = bundle.get("contract")
+    official_upgrade = (
+        contract.get("official_upgrade") if isinstance(contract, dict) else None
+    )
+    pointer_relative = (
+        official_upgrade.get("current_closure_pointer")
+        if isinstance(official_upgrade, dict)
+        else None
+    )
+    pointer_relative = _canonical_relative_path(
+        pointer_relative,
+        "current Harness closure pointer path",
+    )
+    if not isinstance(closure_version, str):
+        raise ValueError("current Harness closure version is unavailable")
+    expected_closure_path = (
+        PurePosixPath(migration_kernel.MIGRATION_CONTRACT_BUNDLE_ROOT)
+        / PurePosixPath(pointer_relative).parent
+        / closure_version
+        / "closure.json"
+    ).as_posix()
+    if verified_path != expected_closure_path:
+        raise ValueError(
+            "fresh attachment current Harness closure path is not canonical: "
+            f"expected={expected_closure_path}; actual={verified_path}"
+        )
+
+    lineage: list[tuple[Path, bytes, bool]] = []
+    seen_targets: set[str] = set()
+    for item in verified_closure.get("files", []):
+        if not isinstance(item, dict):
+            raise ValueError("current Harness closure contains an invalid file entry")
+        materialization = item.get("materialization")
+        if (
+            not isinstance(materialization, dict)
+            or materialization.get("generated_release_artifact") is not True
+        ):
+            continue
+        target_path = _canonical_relative_path(
+            item.get("target_path"),
+            "fresh release lineage target path",
+        )
+        if target_path in seen_targets:
+            raise ValueError(f"duplicate fresh release lineage target: {target_path}")
+        seen_targets.add(target_path)
+        if (
+            item.get("kind") != "exact"
+            or item.get("ownership") != "wrapper_managed"
+            or materialization != {
+                "policy": "copy_exact",
+                "generated_release_artifact": True,
+            }
+            or item.get("source_binding") != "generated_release_artifact"
+        ):
+            raise ValueError(
+                f"fresh release lineage contract is invalid: {target_path}"
+            )
+        mode = item.get("mode")
+        if mode not in {"100644", "100755"}:
+            raise ValueError(f"fresh release lineage mode is invalid: {target_path}")
+        artifact_relative = _canonical_relative_path(
+            item.get("artifact_path"),
+            "fresh release lineage artifact path",
+        )
+        artifact_path = (
+            PurePosixPath(verified_path).parent / PurePosixPath(artifact_relative)
+        ).as_posix()
+        artifact_bytes = store.read_bytes(artifact_path)
+        expected_sha256 = item.get("sha256")
+        actual_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        if expected_sha256 != actual_sha256:
+            raise ValueError(
+                "fresh release lineage artifact digest mismatch: "
+                f"{artifact_path}"
+            )
+        if store.mode(artifact_path) != mode:
+            raise ValueError(
+                f"fresh release lineage artifact mode mismatch: {artifact_path}"
+            )
+        lineage.append((target / target_path, artifact_bytes, mode == "100755"))
+    return lineage
+
+
 def copy_templates(
     target: Path,
     replacements: dict[str, str],
@@ -427,6 +564,7 @@ def copy_templates(
     for entry in governed["contract_files"]:
         source = _safe_source_file(bundle_root, entry["source"], "contract source")
         expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
+    expected_artifacts.extend(current_release_lineage_artifacts(bundle, target))
     relative_artifacts: list[tuple[str, bytes, int]] = []
     seen_destinations: set[str] = set()
     for destination, expected, executable in expected_artifacts:

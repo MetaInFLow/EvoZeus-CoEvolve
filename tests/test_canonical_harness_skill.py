@@ -6,6 +6,7 @@ import json
 import os
 from datetime import date
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -210,6 +211,105 @@ def test_fresh_attach_writes_one_canonical_harness_skill_and_compact_entry(tmp_p
     plan = plan_target_layout_migration(target, latest_version=WRAPPER_VERSION)
     assert plan["decision"] == "no_migration_required"
     assert plan["migration_required"] is False
+
+
+def test_fresh_attach_materializes_complete_current_release_lineage(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "skill"
+    target.mkdir()
+    prepare_fresh_target(target)
+
+    bundle = trusted_development_bundle()
+    current = bundle["current_closure"]
+    closure = current["closure"]
+    closure_path = Path(bundle["wrapper_root"]) / current["path"]
+    lineage = [
+        item
+        for item in closure["files"]
+        if item.get("materialization", {}).get("generated_release_artifact") is True
+    ]
+
+    assert lineage
+    for item in lineage:
+        destination = target / item["target_path"]
+        artifact = closure_path.parent / item["artifact_path"]
+        assert destination.is_file() and not destination.is_symlink()
+        assert destination.read_bytes() == artifact.read_bytes()
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == item["sha256"]
+        assert (
+            "100755" if destination.stat().st_mode & 0o100 else "100644"
+        ) == item["mode"]
+
+    lineage_text = "\n".join(
+        (target / item["target_path"]).read_text(encoding="utf-8")
+        for item in lineage
+    )
+    assert "deterministic release artifact" in lineage_text
+    assert "Apply receipts record target-specific" in lineage_text
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["pointer", "closure", "artifact", "artifact_mode"],
+)
+def test_fresh_attach_rejects_tampered_current_release_lineage_before_any_write(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    source_root = tmp_path / "source"
+    shutil.copytree(ROOT / "contracts", source_root / "contracts")
+    bundle = migration_kernel.load_migration_contract(source_root)
+    bundle["source_trust"] = {
+        **bundle["source_trust"],
+        "status": "trusted_release",
+        "reasons": [],
+    }
+    current = bundle["current_closure"]
+    closure_path = source_root / current["path"]
+    if tamper == "pointer":
+        pointer_relative = bundle["contract"]["official_upgrade"]["current_closure_pointer"]
+        pointer_path = Path(bundle["bundle_root"]) / pointer_relative
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        pointer["entries"][0]["sha256"] = "0" * 64
+        pointer_path.write_text(json.dumps(pointer, indent=2) + "\n", encoding="utf-8")
+    elif tamper == "closure":
+        closure = json.loads(closure_path.read_text(encoding="utf-8"))
+        closure["state"]["harness_skill_version"] = "v9.9.9"
+        closure_path.write_text(json.dumps(closure, indent=2) + "\n", encoding="utf-8")
+    else:
+        closure = current["closure"]
+        lineage = next(
+            item
+            for item in closure["files"]
+            if item.get("materialization", {}).get("generated_release_artifact") is True
+        )
+        artifact = closure_path.parent / lineage["artifact_path"]
+        if tamper == "artifact":
+            artifact.write_bytes(artifact.read_bytes() + b"tampered\n")
+        else:
+            artifact.chmod(0o755)
+
+    target = tmp_path / "target"
+    target.mkdir()
+    owner_file = target / "OWNER.md"
+    owner_file.write_text("owner bytes\n", encoding="utf-8")
+
+    expected_error = (
+        "fresh release lineage artifact mode mismatch"
+        if tamper == "artifact_mode"
+        else "current Harness closure failed verification"
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        copy_templates(
+            target,
+            replacements(),
+            force=False,
+            _migration_bundle=bundle,
+        )
+
+    assert owner_file.read_text(encoding="utf-8") == "owner bytes\n"
+    assert sorted(path.name for path in target.iterdir()) == ["OWNER.md"]
 
 
 def test_attach_rejects_an_existing_incompatible_harness_skill_before_any_write(
