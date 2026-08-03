@@ -12,7 +12,7 @@
   },
   "to_closure": {
     "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-    "sha256": "1a0c5ffbcf91a43487e6cdcbf2158c1255e95690d1cd33ba999ee3fd2757ba22"
+    "sha256": "600bb4147e979b3f1dc81a6dc472456fa2ad83c1871ba86bbcc00c32fd23ece9"
   },
   "release_axis": {
     "target_wrapper_from": "v0.14.0",
