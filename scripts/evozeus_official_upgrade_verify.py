@@ -441,12 +441,13 @@ def load_closure(
             if kind == "exact" and materialization.get("policy") != "copy_exact":
                 raise VerificationError(f"exact closure path lacks copy_exact policy: {target_path}")
             if kind == "rendered_template" and (
-                materialization.get("policy") != "render_with_install_receipt"
+                materialization.get("policy") != "render_at_fresh_attach"
                 or materialization.get("without_receipt") != "preserve_byte_exact"
-                or materialization.get("migration_policy") != "receipt_gated_preserve_exact"
+                or materialization.get("migration_policy")
+                != "preserve_byte_exact_no_auto_upgrade"
             ):
                 raise VerificationError(
-                    f"rendered closure path lacks receipt-gated preservation: {target_path}"
+                    f"rendered closure path lacks explicit no-auto-upgrade policy: {target_path}"
                 )
             source_path = item.get("source_path")
             source_binding = item.get("source_binding")
@@ -754,7 +755,7 @@ def load_profile(
         if not isinstance(item, dict):
             raise VerificationError("deferred rendered surface is invalid")
         path = _safe_relative(item.get("target_path"), "deferred rendered surface")
-        if item.get("policy") != "receipt_gated_preserve_exact":
+        if item.get("policy") != "preserve_byte_exact_no_auto_upgrade":
             raise VerificationError(f"rendered surface policy is unsafe: {path}")
         if item.get("version_fact_source") != ".evozeus-wrapper/wrapper.json":
             raise VerificationError(f"rendered surface version source is invalid: {path}")
@@ -763,7 +764,7 @@ def load_profile(
         deferred_paths.add(path)
     if deferred_paths != rendered_unchanged:
         raise VerificationError(
-            "profile must enumerate every receipt-gated unchanged rendered surface"
+            "profile must enumerate every unchanged rendered surface excluded from auto-upgrade"
         )
     if profile.get("protected_business_surfaces") != [
         {"selector": "manifest.instruction_surface", "rule": "byte_exact"}
