@@ -41,6 +41,64 @@ def _bootstrap_trusted_sources() -> dict:
 
     script = lexical_absolute(__file__)
     scripts_dir = script.rsplit("/", 1)[0]
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    directory_flag = getattr(posix, "O_DIRECTORY", 0)
+    close_on_exec = getattr(posix, "O_CLOEXEC", 0)
+    if nofollow == 0 or directory_flag == 0:
+        raise RuntimeError("trusted source bootstrap requires no-follow directory traversal")
+
+    entrypoint_parent = posix.open(
+        "/",
+        posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+    )
+    try:
+        for component in script.split("/")[1:-1]:
+            next_parent = posix.open(
+                component,
+                posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+                dir_fd=entrypoint_parent,
+            )
+            posix.close(entrypoint_parent)
+            entrypoint_parent = next_parent
+        entrypoint_descriptor = posix.open(
+            script.rsplit("/", 1)[1],
+            posix.O_RDONLY | nofollow | close_on_exec,
+            dir_fd=entrypoint_parent,
+        )
+        try:
+            entrypoint_metadata = posix.fstat(entrypoint_descriptor)
+            named_entrypoint = posix.stat(
+                script.rsplit("/", 1)[1],
+                dir_fd=entrypoint_parent,
+                follow_symlinks=False,
+            )
+            if (
+                entrypoint_metadata.st_mode & 0o170000 != 0o100000
+                or entrypoint_metadata.st_nlink != 1
+                or (
+                    entrypoint_metadata.st_dev,
+                    entrypoint_metadata.st_ino,
+                    entrypoint_metadata.st_mode,
+                )
+                != (
+                    named_entrypoint.st_dev,
+                    named_entrypoint.st_ino,
+                    named_entrypoint.st_mode,
+                )
+            ):
+                raise RuntimeError(
+                    "trusted source entrypoint must be one canonical regular file"
+                )
+        finally:
+            posix.close(entrypoint_descriptor)
+    except OSError as exc:
+        posix.close(entrypoint_parent)
+        raise RuntimeError(
+            "trusted source entrypoint path contains a symlink or alias"
+        ) from exc
+    except BaseException:
+        posix.close(entrypoint_parent)
+        raise
     system_roots = {
         lexical_absolute(sys.base_prefix),
         lexical_absolute(sys.prefix),
@@ -55,11 +113,12 @@ def _bootstrap_trusted_sources() -> dict:
         )
     ]
     guard_path = scripts_dir + "/evozeus_source_guard.py"
-    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
-    nofollow = getattr(posix, "O_NOFOLLOW", 0)
-    if nofollow == 0:
-        raise RuntimeError("trusted source bootstrap requires O_NOFOLLOW")
-    descriptor = posix.open(guard_path, flags | nofollow)
+    flags = posix.O_RDONLY | close_on_exec
+    descriptor = posix.open(
+        "evozeus_source_guard.py",
+        flags | nofollow,
+        dir_fd=entrypoint_parent,
+    )
     try:
         metadata = posix.fstat(descriptor)
         if metadata.st_mode & 0o170000 != 0o100000:
@@ -91,9 +150,26 @@ def _bootstrap_trusted_sources() -> dict:
             raise RuntimeError("trusted source bootstrap changed while reading")
     finally:
         posix.close(descriptor)
+        posix.close(entrypoint_parent)
     namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
     exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
-    return namespace["bootstrap"](__file__, original_sys_path)
+    canonical_module_name = "scripts.evozeus_official_upgrade_verify"
+    current_module = sys.modules.get(canonical_module_name)
+    imported_canonically = (
+        __name__ == canonical_module_name
+        and current_module is not None
+        and current_module.__dict__ is globals()
+    )
+    if imported_canonically:
+        del sys.modules[canonical_module_name]
+    try:
+        return namespace["bootstrap"](__file__, original_sys_path)
+    finally:
+        if imported_canonically:
+            unexpected = sys.modules.get(canonical_module_name)
+            if unexpected is not None and unexpected is not current_module:
+                raise RuntimeError("trusted source bootstrap replaced its entrypoint")
+            sys.modules[canonical_module_name] = current_module
 
 
 _TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()
@@ -206,6 +282,174 @@ DATA_CANDIDATE_PATHS = (MIGRATION_CONTRACT_REL,)
 HARNESS_HISTORY_ROOT = "contracts/v1/migrations/history/harness-skill"
 NOTICE_TARGET_PATH = ".evozeus-wrapper/scripts/evozeus_notice.py"
 NOTICE_SOURCE_PATH = "scripts/evozeus_notice.py"
+
+# Protocol v1 entered the repository through one source-first bootstrap.  The
+# source Commit installs these reviewed trust anchors while intentionally
+# leaving the active contract catalog absent.  A later PR may add exactly the
+# 50 data paths below once, before v0.15.0 exists.  After that PR lands the
+# ordinary immutable-history verifier takes over and this base shape no longer
+# matches.  Keep this policy in trusted source code: candidate data must never
+# be able to widen it.
+INITIAL_BOOTSTRAP_RELEASE = "v0.15.0"
+INITIAL_BOOTSTRAP_BASE_FILES = {
+    CONTRACT_MANIFEST_REL: (
+        "a8894a4225ab3543cf36431a41920c1e2f67d002880eae309c9704b85d2ecbc1",
+        "100644",
+    ),
+    "contracts/v1/target-template-inventory.json": (
+        "8b040d5269ad7ab04ad04aa6ec0f4e459d2b291d779daac50f6c1174d5ca4276",
+        "100644",
+    ),
+}
+INITIAL_BOOTSTRAP_TARGET_INVENTORY_SHA256 = (
+    "ca9e577544ff17debc1e246866456a9c03376ce68452c80e2b805c24917e0417"
+)
+INITIAL_BOOTSTRAP_SOURCE_ANCHORS = {
+    LEGACY_ADAPTER_REL: (
+        "04d410940e61a088cea5fd4d2dac926e5cc4ce63ab11adda000d254544be839f",
+        "100644",
+    ),
+    "contracts/v1/migrations/adapters/legacy-v0.14-three-section/evolution.md.tpl": (
+        "5b2094d173d7a4d0acf334c1f0fe52fa92f84408c0cc1e4f72f6c2c875981b04",
+        "100644",
+    ),
+    "contracts/v1/migrations/adapters/legacy-v0.14-three-section/status.md.tpl": (
+        "14d2a41dba0115a4e41464978568030ecf0c110ad7699efec93cb012d5c9958b",
+        "100644",
+    ),
+    "contracts/v1/migrations/adapters/legacy-v0.14-three-section/wrapper.md.tpl": (
+        "4fce921ba7e5830039b6749ed36d7de437a0f6396a11d8966d242ea60770f84b",
+        "100644",
+    ),
+    "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/scripts/evozeus_wrapper_preflight.py": (
+        "7b5a6ca032d79e878c4712d9f45e49b0489e4698ea38e97a4e8ad4f9d1af76f8",
+        "100755",
+    ),
+    "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py": (
+        "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
+        "100755",
+    ),
+    BUNDLE_PREFIX + LEGACY_APPLIED_LINEAGE_ARTIFACT_REL: (
+        "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+        "100644",
+    ),
+    LEGACY_PREFLIGHT_ARTIFACT_REL: (
+        "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+        "100755",
+    ),
+    "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/artifacts/wrapper.json.tpl": (
+        "c52a5ec7c895fc09f00c2f71d595059c011aa85d6804d8310de377b5821edae4",
+        "100644",
+    ),
+    LEGACY_ENVELOPE_REL: (
+        "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346",
+        "100644",
+    ),
+    PROTOCOL_REL: (
+        "b4ecf070c779d4f30b860975b595b689b1bc89b57db477d391319e6def4af589",
+        "100644",
+    ),
+    "contracts/v1/migrations/schemas/current-pointer-v1.schema.json": (
+        "8d9caeba6124723cc55f95c0b412ba7351c90666bda36ed6745930e111449fe7",
+        "100644",
+    ),
+    LEGACY_ADAPTER_SCHEMA_REL: (
+        "db0e46888ebd36635aaab9752389074a3a31cf3ef6f4b7093b2c14a6c738b2a1",
+        "100644",
+    ),
+    LEGACY_ENVELOPE_SCHEMA_REL: (
+        "477bafbf02581b13c7a1aba328c7976d866ad30997e29dcbffc739ab67a5947a",
+        "100644",
+    ),
+    "contracts/v1/migrations/schemas/official-upgrade-profile-v1.schema.json": (
+        "bace5bc6991d36f2077030d146fe2574c263ed16c26f6ce86bec61191675f7f5",
+        "100644",
+    ),
+    "contracts/v1/migrations/schemas/official-upgrade-protocol-v1.schema.json": (
+        "33dee60e5cc9e4c758f912f7daf763eb7b93e295b3c0e5d08bfeaf89eee76438",
+        "100644",
+    ),
+    LEGACY_PROFILE_SCHEMA_REL: (
+        "cd52f73b4ab943dd67b7fab1e174f95e26bedff57088ccc74cc8b30960dc2fd0",
+        "100644",
+    ),
+    "contracts/v1/migrations/schemas/target-closure-v1.schema.json": (
+        "c8fa698ff44e005caee3ec8e144a285fc9c8baeabeb232a5ce554783f79e4c2e",
+        "100644",
+    ),
+}
+INITIAL_BOOTSTRAP_REPOSITORY_ANCHORS = {
+    COMMONMARK_LOCK_REL: (
+        "41ab63af490a4b68f4e2af84545fb1863511cddcc75c557261ca8c8b2155b4a0",
+        "100644",
+    ),
+    LEGACY_ADAPTER_IMPLEMENTATION_REL: (
+        "46f3cee827c4f5bc613f16b61dd1b2017ef7e82728f25734b9835c57340521b5",
+        "100644",
+    ),
+    "scripts/evozeus_wrapper_preflight.py": (
+        "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
+        "100755",
+    ),
+    "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md": (
+        "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
+        "100644",
+    ),
+}
+INITIAL_BOOTSTRAP_DATA_PATHS = frozenset(
+    {
+        CONTRACT_MANIFEST_REL,
+        "contracts/v1/migrations/artifacts/using-evozeus-harness-v1.0.0.md",
+        MIGRATION_CONTRACT_REL,
+        HISTORY_CURRENT_REL,
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/scripts/evozeus_notice.py",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.codex/hooks.json",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/audit-rule.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/feedback-policy.json",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/notice-policy.json",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/pull_request_template.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/CHANGELOG.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/WRAPPER.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/_config.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/design-doc-template.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/designs/README.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/index.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/onboarding.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/artifacts/templates/target/docs/wrapper-migrations/README.md",
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/closure.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/generated/harness-skill-v1.0.0-to-v1.1.0.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_notice.py",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.codex/hooks.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/audit-rule.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/feedback-policy.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/notice-policy.json",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/pull_request_template.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/CHANGELOG.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/WRAPPER.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/_config.yml",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/design-doc-template.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/designs/README.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/index.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/onboarding.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/artifacts/templates/target/docs/wrapper-migrations/README.md",
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json",
+        "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
+        PROFILES_CURRENT_REL,
+        "contracts/v1/migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
+        "contracts/v1/target-template-inventory.json",
+    }
+)
 DECLARED_EXECUTABLE_MODE_POLICY = "set_declared_executable"
 ALLOWED_OPERATION_TYPES = {
     "create_exact",
@@ -500,6 +744,7 @@ class ConstructionRevisionEvidence:
 ConstructionRevisionResolver = Callable[
     [str, str, str, frozenset[str]], ConstructionRevisionEvidence
 ]
+ReleasePublicationResolver = Callable[[str, str], bool]
 
 
 class CandidateStore:
@@ -558,6 +803,114 @@ class CandidateStore:
             else:
                 paths.add(path)
         return paths
+
+
+def _verify_exact_source_file(
+    store: FilesystemStore,
+    path: str,
+    expected: tuple[str, str],
+    *,
+    label: str,
+) -> None:
+    expected_sha256, expected_mode = expected
+    actual_sha256 = _sha256(store.read_bytes(path))
+    actual_mode = store.mode(path)
+    if actual_sha256 != expected_sha256 or actual_mode != expected_mode:
+        raise VerificationError(
+            f"{label} differs: {path}: "
+            f"expected={expected_sha256}/{expected_mode}; "
+            f"actual={actual_sha256}/{actual_mode}"
+        )
+
+
+def _initial_bootstrap_source_shape(store: FilesystemStore) -> bool:
+    return store.exists(PROTOCOL_REL) and not store.exists(HISTORY_CURRENT_REL)
+
+
+def verify_initial_bootstrap_source(store: FilesystemStore) -> dict[str, Any]:
+    """Verify the exact source-only state that may receive protocol v1 data once."""
+    for path, expected in INITIAL_BOOTSTRAP_BASE_FILES.items():
+        _verify_exact_source_file(
+            store,
+            path,
+            expected,
+            label="initial bootstrap base file",
+        )
+    for path, expected in INITIAL_BOOTSTRAP_SOURCE_ANCHORS.items():
+        _verify_exact_source_file(
+            store,
+            path,
+            expected,
+            label="initial bootstrap source anchor",
+        )
+    for path, expected in INITIAL_BOOTSTRAP_REPOSITORY_ANCHORS.items():
+        _verify_exact_source_file(
+            store,
+            path,
+            expected,
+            label="initial bootstrap repository anchor",
+        )
+    for path in sorted(INITIAL_BOOTSTRAP_DATA_PATHS - set(INITIAL_BOOTSTRAP_BASE_FILES)):
+        if store.exists(path):
+            raise VerificationError(
+                f"initial bootstrap data path is already active: {path}"
+            )
+
+    migration_root = store.root / "contracts/v1/migrations"
+    if not migration_root.is_dir() or migration_root.is_symlink():
+        raise VerificationError("initial bootstrap migration root is missing or unsafe")
+    actual_anchors: set[str] = set()
+    for candidate in migration_root.rglob("*"):
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise VerificationError(
+                "initial bootstrap migration tree contains a symlink: "
+                + candidate.relative_to(store.root).as_posix()
+            )
+        if candidate.is_file():
+            actual_anchors.add(candidate.relative_to(store.root).as_posix())
+    if actual_anchors != set(INITIAL_BOOTSTRAP_SOURCE_ANCHORS):
+        missing = sorted(set(INITIAL_BOOTSTRAP_SOURCE_ANCHORS) - actual_anchors)
+        extra = sorted(actual_anchors - set(INITIAL_BOOTSTRAP_SOURCE_ANCHORS))
+        raise VerificationError(
+            "initial bootstrap source anchor inventory differs: "
+            f"missing={missing}; extra={extra}"
+        )
+    load_protocol(store)
+    return {
+        "status": "verified_initial_source",
+        "release_must_be_absent": INITIAL_BOOTSTRAP_RELEASE,
+        "source_anchors": len(INITIAL_BOOTSTRAP_SOURCE_ANCHORS),
+        "expected_data_paths": len(INITIAL_BOOTSTRAP_DATA_PATHS),
+    }
+
+
+def _verify_initial_bootstrap_change_set(
+    changes: dict[str, CandidateBlob],
+) -> None:
+    actual_paths = set(changes)
+    if actual_paths != set(INITIAL_BOOTSTRAP_DATA_PATHS):
+        missing = sorted(set(INITIAL_BOOTSTRAP_DATA_PATHS) - actual_paths)
+        extra = sorted(actual_paths - set(INITIAL_BOOTSTRAP_DATA_PATHS))
+        raise VerificationError(
+            "initial bootstrap candidate must contain the exact data path set: "
+            f"missing={missing}; extra={extra}"
+        )
+    for path, change in changes.items():
+        expected_status = (
+            "modified" if path in INITIAL_BOOTSTRAP_BASE_FILES else "added"
+        )
+        if (
+            change.status != expected_status
+            or change.mode != "100644"
+            or change.object_type != "blob"
+            or change.loader is None
+        ):
+            raise VerificationError(
+                "initial bootstrap candidate path has an invalid Git state: "
+                f"{path}: expected={expected_status}/100644/blob; "
+                f"actual={change.status}/{change.mode}/{change.object_type}"
+            )
 
 
 def _json_file(store: BlobStore, relative: str, label: str) -> dict[str, Any]:
@@ -685,6 +1038,7 @@ def classify_candidate_changes(
             path in AUTHORITY_ROTATION_PATHS
             or path.startswith(AUTHORITY_ROTATION_PREFIXES)
             or path.startswith(protected_legacy_prefixes)
+            or path in INITIAL_BOOTSTRAP_SOURCE_ANCHORS
         )
         has_authority = has_authority or is_authority
         # Protocols and schemas live below the migration root but are authority,
@@ -3139,6 +3493,295 @@ def _legacy_trust_anchor_projection(contract: dict[str, Any]) -> list[dict[str, 
     return projection
 
 
+def _verify_initial_current_closure_sources(
+    candidate: CandidateStore,
+) -> str:
+    current = load_pointer(
+        candidate,
+        HISTORY_CURRENT_REL,
+        "using-evozeus-harness-current-closure",
+    )[0]
+    if current["version"] != "v1.1.0":
+        raise VerificationError(
+            "initial bootstrap candidate current closure must be v1.1.0"
+        )
+    closure_path = _bundle_relative(
+        current["path"],
+        "initial bootstrap current closure path",
+    )
+    closure, entries = load_closure(
+        candidate,
+        closure_path,
+        expected_sha256=current["sha256"],
+    )
+    if (
+        closure.get("closure_version") != "v1.1.0"
+        or closure.get("source", {}).get("release_status")
+        != "release_required_for_apply"
+        or closure.get("source", {}).get("required_release")
+        != INITIAL_BOOTSTRAP_RELEASE
+    ):
+        raise VerificationError(
+            "initial bootstrap current closure release binding is invalid"
+        )
+    for target_path, item in entries.items():
+        source_path = item.get("source_path")
+        artifact_relative = item.get("artifact_path")
+        if source_path is None or artifact_relative is None:
+            continue
+        source_path = _safe_relative(
+            source_path,
+            f"initial bootstrap source for {target_path}",
+        )
+        source_binding = item.get("source_binding")
+        if source_binding not in {"construction_revision", "required_release"}:
+            raise VerificationError(
+                f"initial bootstrap source binding is invalid: {target_path}"
+            )
+        artifact_path = _relative_to_document(
+            closure_path,
+            artifact_relative,
+            f"initial bootstrap artifact for {target_path}",
+        )
+        if candidate.read_bytes(source_path) != candidate.read_bytes(artifact_path):
+            raise VerificationError(
+                f"initial bootstrap current artifact differs from source: {target_path}"
+            )
+        if candidate.mode(source_path) != candidate.mode(artifact_path):
+            raise VerificationError(
+                f"initial bootstrap current artifact mode differs from source: {target_path}"
+            )
+    return closure_path
+
+
+def _initial_bootstrap_manifest_role(relative: str) -> str:
+    fixed = {
+        "schemas/attachment-v1.schema.json": "json-schema",
+        "target-template-inventory.json": "target-template-inventory",
+        "user-prompt-lesson-runtime-lifecycle.json": "external-runtime-dependency",
+        "migrations/artifacts/using-evozeus-harness-v1.0.0.md": (
+            "trusted-migration-artifact"
+        ),
+        "migrations/harness-migration-contract-v1.json": (
+            "harness-migration-contract"
+        ),
+        "migrations/history/harness-skill/current.json": (
+            "current-target-closure-pointer"
+        ),
+        "migrations/profiles/current.json": (
+            "current-official-upgrade-profile-pointer"
+        ),
+        "migrations/profiles/canonical-v1.0-to-v1.1-v1.json": (
+            "official-upgrade-profile"
+        ),
+        "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json": (
+            "supervised-legacy-profile"
+        ),
+        "migrations/protocols/official-upgrade-protocol-v1.json": (
+            "official-upgrade-protocol"
+        ),
+        "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json": (
+            "trusted-legacy-adapter"
+        ),
+        "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md": (
+            "trusted-legacy-applied-lineage-artifact"
+        ),
+        "migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py": (
+            "trusted-legacy-source-artifact"
+        ),
+        "migrations/history/legacy-wrapper/v0.14.0/artifacts/wrapper.json.tpl": (
+            "trusted-legacy-source-artifact"
+        ),
+        "migrations/history/legacy-wrapper/v0.14.0/envelope.json": (
+            "trusted-legacy-source-envelope"
+        ),
+    }
+    if relative in fixed:
+        return fixed[relative]
+    if relative.startswith(
+        "migrations/adapters/legacy-v0.14-three-section/"
+    ):
+        return "trusted-legacy-adapter-template"
+    if relative.startswith("migrations/schemas/"):
+        return "official-upgrade-json-schema"
+    if relative.startswith("migrations/history/harness-skill/"):
+        return (
+            "immutable-target-closure"
+            if relative.endswith("/closure.json")
+            else "immutable-target-closure-artifact"
+        )
+    raise VerificationError(
+        f"initial bootstrap manifest contains an unclassified path: {relative}"
+    )
+
+
+def _verify_initial_bootstrap_manifest(candidate: CandidateStore) -> None:
+    manifest_files = _contract_manifest_files(
+        candidate,
+        "initial bootstrap contract manifest",
+        candidate=True,
+    )
+    expected_paths = {
+        "schemas/attachment-v1.schema.json",
+        "target-template-inventory.json",
+        "user-prompt-lesson-runtime-lifecycle.json",
+        *(
+            path.removeprefix(BUNDLE_PREFIX)
+            for path in INITIAL_BOOTSTRAP_SOURCE_ANCHORS
+        ),
+        *(
+            path.removeprefix(BUNDLE_PREFIX)
+            for path in INITIAL_BOOTSTRAP_DATA_PATHS
+            if path.startswith(BUNDLE_PREFIX) and path != CONTRACT_MANIFEST_REL
+        ),
+    }
+    if set(manifest_files) != expected_paths:
+        missing = sorted(expected_paths - set(manifest_files))
+        extra = sorted(set(manifest_files) - expected_paths)
+        raise VerificationError(
+            "initial bootstrap contract manifest inventory differs: "
+            f"missing={missing}; extra={extra}"
+        )
+    for relative, item in manifest_files.items():
+        expected_role = _initial_bootstrap_manifest_role(relative)
+        if item.get("role") != expected_role:
+            raise VerificationError(
+                "initial bootstrap contract manifest role differs: "
+                f"{relative}: expected={expected_role}; actual={item.get('role')}"
+            )
+    _verify_contract_manifest_digests(
+        candidate,
+        manifest_files,
+        "initial bootstrap contract manifest",
+    )
+    repository_files = _contract_manifest_repository_files(
+        candidate,
+        "initial bootstrap contract manifest",
+    )
+    if repository_files != {
+        COMMONMARK_LOCK_REL: {
+            "sha256": INITIAL_BOOTSTRAP_REPOSITORY_ANCHORS[COMMONMARK_LOCK_REL][0],
+            "mode": "100644",
+            "role": "trusted-commonmark-dependency-lock",
+        },
+        LEGACY_ADAPTER_IMPLEMENTATION_REL: {
+            "sha256": INITIAL_BOOTSTRAP_REPOSITORY_ANCHORS[
+                LEGACY_ADAPTER_IMPLEMENTATION_REL
+            ][0],
+            "mode": "100644",
+            "role": "trusted-legacy-adapter-implementation",
+        },
+    }:
+        raise VerificationError(
+            "initial bootstrap trusted repository manifest differs"
+        )
+    _verify_contract_manifest_repository_digests(
+        candidate,
+        repository_files,
+        "initial bootstrap contract manifest",
+    )
+
+
+def verify_initial_bootstrap_candidate(
+    base: FilesystemStore,
+    changes: dict[str, CandidateBlob],
+    *,
+    head_sha: str,
+    repository: str,
+    construction_resolver: ConstructionRevisionResolver | None,
+    release_publication_resolver: ReleasePublicationResolver | None,
+) -> dict[str, Any]:
+    """Verify the single source-first protocol-v1 catalog activation."""
+    source_report = verify_initial_bootstrap_source(base)
+    _verify_initial_bootstrap_change_set(changes)
+    if repository != "MetaInFLow/EvoZeus-CoEvolve":
+        raise VerificationError(
+            "initial bootstrap candidate must use the canonical repository"
+        )
+    if GIT_OID_PATTERN.fullmatch(head_sha) is None:
+        raise VerificationError("initial bootstrap candidate head SHA is invalid")
+    if release_publication_resolver is None:
+        raise VerificationError(
+            "initial bootstrap requires official release publication evidence"
+        )
+    if release_publication_resolver(repository, INITIAL_BOOTSTRAP_RELEASE):
+        raise VerificationError(
+            "initial bootstrap expired because the official release or tag exists: "
+            + INITIAL_BOOTSTRAP_RELEASE
+        )
+    if construction_resolver is None:
+        raise VerificationError(
+            "initial bootstrap construction revision evidence is unavailable"
+        )
+
+    candidate = CandidateStore(base, changes)
+    inventory_path = "contracts/v1/target-template-inventory.json"
+    if (
+        _sha256(candidate.read_bytes(inventory_path))
+        != INITIAL_BOOTSTRAP_TARGET_INVENTORY_SHA256
+        or candidate.mode(inventory_path) != "100644"
+    ):
+        raise VerificationError(
+            "initial bootstrap target template inventory differs from the reviewed data"
+        )
+    _verify_initial_bootstrap_manifest(candidate)
+    catalog = verify_catalog(candidate)
+    if (
+        catalog.get("status") != "verified"
+        or catalog.get("current_closure_version") != "v1.1.0"
+        or catalog.get("profiles")
+        != ["canonical-v1.0-to-v1.1@v1.0.0"]
+    ):
+        raise VerificationError(
+            "initial bootstrap candidate does not activate the exact v1.1 catalog"
+        )
+    supervised = catalog.get("supervised_legacy_profiles")
+    if (
+        not isinstance(supervised, list)
+        or len(supervised) != 1
+        or supervised[0].get("identity")
+        != "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0"
+        or supervised[0].get("active_for_current") is not True
+        or supervised[0].get("runtime_apply") != "trusted_kernel_exact_apply"
+    ):
+        raise VerificationError(
+            "initial bootstrap candidate supervised profile is not exact"
+        )
+    manifest = _contract_manifest_document(
+        candidate,
+        "initial bootstrap contract manifest",
+    )
+    if (
+        manifest.get("bundle_version") != "v1.2.0"
+        or manifest.get("source_revision") != INITIAL_BOOTSTRAP_RELEASE
+    ):
+        raise VerificationError(
+            "initial bootstrap candidate release manifest is invalid"
+        )
+    current_closure_path = _verify_initial_current_closure_sources(candidate)
+    history = verify_repository_history(
+        candidate,
+        head_sha=head_sha,
+        construction_resolver=construction_resolver,
+    )
+    if history.get("immutable_closures") != 2:
+        raise VerificationError(
+            "initial bootstrap candidate must activate exactly two immutable closures"
+        )
+    return {
+        **catalog,
+        "status": "verified_initial_candidate",
+        "classification": "data_candidate",
+        "candidate_head": head_sha,
+        "candidate_files_executed": False,
+        "base_state": source_report["status"],
+        "candidate_paths": len(changes),
+        "current_closure": current_closure_path,
+        "repository_history": history,
+        "release_absence_verified": INITIAL_BOOTSTRAP_RELEASE,
+    }
+
+
 def verify_candidate(
     base: FilesystemStore,
     changes: dict[str, CandidateBlob],
@@ -3146,11 +3789,21 @@ def verify_candidate(
     head_sha: str,
     repository: str = "MetaInFLow/EvoZeus-CoEvolve",
     construction_resolver: ConstructionRevisionResolver | None = None,
+    release_publication_resolver: ReleasePublicationResolver | None = None,
 ) -> dict[str, Any]:
     if GIT_OID_PATTERN.fullmatch(head_sha) is None:
         raise VerificationError("candidate head SHA is invalid")
     if repository != "MetaInFLow/EvoZeus-CoEvolve":
         raise VerificationError("official upgrade candidate must use the canonical repository")
+    if _initial_bootstrap_source_shape(base):
+        return verify_initial_bootstrap_candidate(
+            base,
+            changes,
+            head_sha=head_sha,
+            repository=repository,
+            construction_resolver=construction_resolver,
+            release_publication_resolver=release_publication_resolver,
+        )
     base_protocol = load_protocol(base)
     base_report = verify_catalog(base)
     immutable_history_prefixes = _immutable_history_prefixes(base)
@@ -3533,6 +4186,7 @@ def verify_classified_pull_request(
     head_sha: str,
     repository: str,
     construction_resolver: ConstructionRevisionResolver,
+    release_publication_resolver: ReleasePublicationResolver | None = None,
 ) -> dict[str, Any]:
     classification = classify_candidate_changes(load_protocol(base), changes)
     if classification == "not_applicable":
@@ -3556,6 +4210,7 @@ def verify_classified_pull_request(
         head_sha=head_sha,
         repository=repository,
         construction_resolver=construction_resolver,
+        release_publication_resolver=release_publication_resolver,
     )
     report["classification"] = classification
     return report
@@ -3585,6 +4240,69 @@ def _github_json(url: str, token: str) -> dict[str, Any]:
     if len(data) > MAX_BLOB_BYTES * 2:
         raise VerificationError("GitHub API response exceeds verifier limit")
     return _strict_json(data, "GitHub API response")
+
+
+def _github_resource_exists(url: str, token: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "api.github.com"
+        or parsed.port not in {None, 443}
+    ):
+        raise VerificationError("GitHub API URL is not fixed to api.github.com")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "EvoZeus-official-upgrade-verifier",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            final = urllib.parse.urlsplit(response.geturl())
+            if (
+                final.scheme != "https"
+                or final.hostname != "api.github.com"
+                or final.port not in {None, 443}
+            ):
+                raise VerificationError(
+                    "GitHub API redirected away from api.github.com"
+                )
+            response.read(1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise VerificationError(f"GitHub API request failed: HTTP {exc.code}") from exc
+    except (OSError, urllib.error.URLError) as exc:
+        raise VerificationError(f"GitHub API request failed: {exc}") from exc
+    return True
+
+
+def _github_release_publication_resolver(
+    token: str,
+) -> ReleasePublicationResolver:
+    def resolve(repository: str, release: str) -> bool:
+        if (
+            repository != "MetaInFLow/EvoZeus-CoEvolve"
+            or SEMVER_PATTERN.fullmatch(release) is None
+        ):
+            raise VerificationError(
+                "initial bootstrap release publication identity is invalid"
+            )
+        encoded = urllib.parse.quote(release, safe="")
+        tag_exists = _github_resource_exists(
+            f"https://api.github.com/repos/{repository}/git/ref/tags/{encoded}",
+            token,
+        )
+        release_exists = _github_resource_exists(
+            f"https://api.github.com/repos/{repository}/releases/tags/{encoded}",
+            token,
+        )
+        return tag_exists or release_exists
+
+    return resolve
 
 
 def _github_tree(repository: str, oid: str, token: str) -> dict[str, dict[str, str]]:
@@ -3864,25 +4582,31 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base = FilesystemStore(args.repo_root)
         if args.command == "verify-base":
-            report = verify_catalog(base)
-            head = subprocess.run(
-                ["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
-                text=True,
-                capture_output=True,
-                check=False,
-                env=_git_read_environment(),
-            )
-            head_sha = head.stdout.strip()
-            if head.returncode != 0 or GIT_OID_PATTERN.fullmatch(head_sha) is None:
-                raise VerificationError("repository HEAD cannot be resolved")
-            history = verify_repository_history(
-                base,
-                head_sha=head_sha,
-                construction_resolver=_local_construction_revision_resolver(
-                    args.repo_root
-                ),
-            )
-            report["repository_history"] = history
+            if _initial_bootstrap_source_shape(base):
+                report = verify_initial_bootstrap_source(base)
+            else:
+                report = verify_catalog(base)
+                head = subprocess.run(
+                    ["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=_git_read_environment(),
+                )
+                head_sha = head.stdout.strip()
+                if (
+                    head.returncode != 0
+                    or GIT_OID_PATTERN.fullmatch(head_sha) is None
+                ):
+                    raise VerificationError("repository HEAD cannot be resolved")
+                history = verify_repository_history(
+                    base,
+                    head_sha=head_sha,
+                    construction_resolver=_local_construction_revision_resolver(
+                        args.repo_root
+                    ),
+                )
+                report["repository_history"] = history
         elif args.command == "verify-release":
             report = verify_release(
                 args.repo_root,
@@ -3904,6 +4628,9 @@ def main(argv: list[str] | None = None) -> int:
                 head_sha=head_sha,
                 repository=repository,
                 construction_resolver=_github_construction_revision_resolver(token),
+                release_publication_resolver=(
+                    _github_release_publication_resolver(token)
+                ),
             )
     except (OSError, VerificationError) as exc:
         print(json.dumps({"status": "rejected", "error": str(exc)}, ensure_ascii=False))

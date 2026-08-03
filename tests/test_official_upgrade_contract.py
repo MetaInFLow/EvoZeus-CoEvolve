@@ -102,6 +102,242 @@ def _protocol_v1_base(tmp_path: Path) -> Path:
     return root
 
 
+def _initial_bootstrap_source_base(tmp_path: Path) -> Path:
+    root = _protocol_v1_base(tmp_path)
+    base_manifest = {
+        "schema_version": "evozeus.coevolve.contract-manifest.v1",
+        "bundle_id": "evozeus-coevolve",
+        "bundle_version": "v1.1.0",
+        "source_repository": "MetaInFLow/EvoZeus-CoEvolve",
+        "source_revision": "v0.14.0",
+        "runtime_compatibility": {
+            "min_inclusive": "0.1.0",
+            "max_exclusive": "0.3.0",
+        },
+        "files": [
+            {
+                "path": "schemas/attachment-v1.schema.json",
+                "sha256": "0369beb736b828ebadeb8a0d5c5e67163ff845e0b5ffab257859646d7fe293ff",
+                "role": "json-schema",
+            },
+            {
+                "path": "target-template-inventory.json",
+                "sha256": "8b040d5269ad7ab04ad04aa6ec0f4e459d2b291d779daac50f6c1174d5ca4276",
+                "role": "target-template-inventory",
+            },
+            {
+                "path": "user-prompt-lesson-runtime-lifecycle.json",
+                "sha256": "7e1f34f2a464124a876c47f9c395f473bc228aadc2d4df7ad04b4eb0cbaa5ba7",
+                "role": "external-runtime-dependency",
+            },
+        ],
+    }
+    base_inventory = {
+        "schema_version": "evozeus.coevolve.target-template-inventory.v1",
+        "inventory_version": "v1.0.0",
+        "modes": {
+            "external-sidecar": {"target_writes": False, "files": []},
+            "governed-sidecar": {
+                "target_writes": True,
+                "availability": "compatibility-only",
+                "source_root": "templates/target",
+                "source_tree_sha256": (
+                    "sha256:8cad988e88bb0896a0aa1903e36e84b7197fbb81fe2364978ea29a8e7dc5b2f2"
+                ),
+                "files": [
+                    ".codex/hooks.json",
+                    ".codex/hooks/evozeus_wrapper_start_check.py",
+                    ".evozeus_evoinfra/audit-rule.md",
+                    ".evozeus_evoinfra/feedback-policy.json",
+                    ".evozeus_evoinfra/notice-policy.json",
+                    ".github/ISSUE_TEMPLATE/config.yml",
+                    ".github/ISSUE_TEMPLATE/skill-feedback.yml",
+                    ".github/pull_request_template.md",
+                    ".github/workflows/evozeus-wrapper-preflight.yml",
+                    "CHANGELOG.md",
+                    "WRAPPER.md",
+                    "docs/_config.yml",
+                    "docs/design-doc-template.md",
+                    "docs/designs/README.md",
+                    "docs/index.md",
+                    "docs/onboarding.md",
+                    "docs/wrapper-migrations/README.md",
+                ],
+            },
+        },
+    }
+    _write_json(root / verifier.CONTRACT_MANIFEST_REL, base_manifest)
+    _write_json(root / "contracts/v1/target-template-inventory.json", base_inventory)
+    for relative in sorted(
+        verifier.INITIAL_BOOTSTRAP_DATA_PATHS
+        - set(verifier.INITIAL_BOOTSTRAP_BASE_FILES)
+    ):
+        path = root / relative
+        if path.exists():
+            path.unlink()
+    return root
+
+
+def _initial_bootstrap_changes() -> dict[str, verifier.CandidateBlob]:
+    changes: dict[str, verifier.CandidateBlob] = {}
+    for relative in sorted(verifier.INITIAL_BOOTSTRAP_DATA_PATHS):
+        path = ROOT / relative
+        changes[relative] = _candidate_blob(
+            relative,
+            path.read_bytes(),
+            status=(
+                "modified"
+                if relative in verifier.INITIAL_BOOTSTRAP_BASE_FILES
+                else "added"
+            ),
+            mode=_filesystem_mode(path),
+        )
+    return changes
+
+
+def _reclose_initial_bootstrap_candidate(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+) -> None:
+    frozen_preflight = (
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/"
+        "artifacts/scripts/evozeus_wrapper_preflight.py"
+    )
+    trusted_preflight_sha256 = verifier.INITIAL_BOOTSTRAP_SOURCE_ANCHORS[
+        frozen_preflight
+    ][0]
+    assert _sha256((root / frozen_preflight).read_bytes()) == trusted_preflight_sha256
+
+    def replace_json(path: str, payload: object) -> None:
+        previous = changes[path]
+        changes[path] = _candidate_blob(
+            path,
+            _json_bytes(payload),
+            status=previous.status,
+            mode=previous.mode,
+        )
+
+    inventory_path = "contracts/v1/target-template-inventory.json"
+    inventory_blob = changes[inventory_path]
+    assert inventory_blob.loader is not None
+    inventory = json.loads(inventory_blob.loader().decode("utf-8"))
+    external_preflight = next(
+        item
+        for item in inventory["modes"]["governed-sidecar"]["external_sources"]
+        if item["source"] == "scripts/evozeus_wrapper_preflight.py"
+    )
+    external_preflight["sha256"] = trusted_preflight_sha256
+    replace_json(inventory_path, inventory)
+
+    closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json"
+    )
+    closure_blob = changes[closure_path]
+    assert closure_blob.loader is not None
+    closure = json.loads(closure_blob.loader().decode("utf-8"))
+    closure_preflight = next(
+        item
+        for item in closure["files"]
+        if item["target_path"]
+        == ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    closure_preflight["sha256"] = trusted_preflight_sha256
+    closure_data = _json_bytes(closure)
+    closure_sha256 = _sha256(closure_data)
+    replace_json(closure_path, closure)
+
+    history_blob = changes[verifier.HISTORY_CURRENT_REL]
+    assert history_blob.loader is not None
+    history = json.loads(history_blob.loader().decode("utf-8"))
+    history["entries"][0]["sha256"] = closure_sha256
+    replace_json(verifier.HISTORY_CURRENT_REL, history)
+
+    canonical_profile_path = (
+        "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
+    )
+    canonical_blob = changes[canonical_profile_path]
+    assert canonical_blob.loader is not None
+    canonical = json.loads(canonical_blob.loader().decode("utf-8"))
+    canonical["to_closure"]["sha256"] = closure_sha256
+    canonical_preflight = next(
+        item
+        for item in canonical["operations"]
+        if item["target_path"]
+        == ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    canonical_preflight["postimage"]["sha256"] = trusted_preflight_sha256
+    canonical_data = _json_bytes(canonical)
+    canonical_sha256 = _sha256(canonical_data)
+    replace_json(canonical_profile_path, canonical)
+
+    profiles_blob = changes[verifier.PROFILES_CURRENT_REL]
+    assert profiles_blob.loader is not None
+    profiles = json.loads(profiles_blob.loader().decode("utf-8"))
+    profiles["entries"][0]["sha256"] = canonical_sha256
+    replace_json(verifier.PROFILES_CURRENT_REL, profiles)
+
+    legacy_profile_path = (
+        "contracts/v1/migrations/profiles/"
+        "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+    )
+    legacy_blob = changes[legacy_profile_path]
+    assert legacy_blob.loader is not None
+    legacy = json.loads(legacy_blob.loader().decode("utf-8"))
+    legacy_preflight = next(
+        item
+        for item in legacy["operations"]
+        if item["target_path"]
+        == ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    legacy_preflight["postimage"]["sha256"] = trusted_preflight_sha256
+    replace_json(legacy_profile_path, legacy)
+    _bind_candidate_manifest(root, changes)
+
+
+def _initial_bootstrap_construction_resolver(
+    base: verifier.FilesystemStore,
+    changes: dict[str, verifier.CandidateBlob],
+) -> verifier.ConstructionRevisionResolver:
+    candidate = verifier.CandidateStore(base, changes)
+    closures = {
+        payload["source"]["construction_revision"]: (path, payload)
+        for path in candidate.canonical_harness_closure_paths()
+        for payload in [json.loads(candidate.read_bytes(path).decode("utf-8"))]
+    }
+
+    def resolve(
+        repository: str,
+        revision: str,
+        head_sha: str,
+        source_paths: frozenset[str],
+    ) -> verifier.ConstructionRevisionEvidence:
+        closure_path, closure = closures[revision]
+        entries = {
+            item["source_path"]: item
+            for item in closure["files"]
+            if item.get("source_binding") == "construction_revision"
+        }
+        closure_root = Path(closure_path).parent
+        files = {}
+        for source_path in source_paths:
+            item = entries[source_path]
+            artifact_path = (closure_root / item["artifact_path"]).as_posix()
+            files[source_path] = verifier.ConstructionBlob(
+                path=source_path,
+                mode=candidate.mode(artifact_path) or "",
+                data=candidate.read_bytes(artifact_path),
+            )
+        return verifier.ConstructionRevisionEvidence(
+            repository=repository,
+            revision=revision,
+            head_sha=head_sha,
+            is_ancestor=True,
+            files=files,
+        )
+
+    return resolve
+
+
 def _candidate_contract_role(relative: str) -> str:
     if relative.startswith("migrations/history/"):
         return (
@@ -2047,6 +2283,35 @@ def test_github_construction_resolver_binds_compare_tree_and_blob(
     assert calls[1].endswith(f"/git/trees/{revision}?recursive=1")
 
 
+@pytest.mark.parametrize(
+    ("published_endpoints", "expected"),
+    [
+        (set(), False),
+        ({"git/ref/tags"}, True),
+        ({"releases/tags"}, True),
+    ],
+)
+def test_initial_bootstrap_release_resolver_expires_on_tag_or_release(
+    monkeypatch: pytest.MonkeyPatch,
+    published_endpoints: set[str],
+    expected: bool,
+) -> None:
+    calls: list[str] = []
+
+    def resource_exists(url: str, token: str) -> bool:
+        assert token == "token"
+        calls.append(url)
+        return any(endpoint in url for endpoint in published_endpoints)
+
+    monkeypatch.setattr(verifier, "_github_resource_exists", resource_exists)
+    resolver = verifier._github_release_publication_resolver("token")
+
+    assert resolver("MetaInFLow/EvoZeus-CoEvolve", "v0.15.0") is expected
+    assert len(calls) == 2
+    assert calls[0].endswith("/git/ref/tags/v0.15.0")
+    assert calls[1].endswith("/releases/tags/v0.15.0")
+
+
 def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     workflow = (ROOT / verifier.WORKFLOW_REL).read_text(encoding="utf-8")
 
@@ -2211,6 +2476,235 @@ def test_unknown_migration_data_cannot_fall_through_as_an_ordinary_pr() -> None:
             head_sha="5" * 40,
             repository="MetaInFLow/EvoZeus-CoEvolve",
             construction_resolver=must_not_resolve,
+        )
+
+
+def test_source_only_initial_bootstrap_state_is_verified_without_active_catalog(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    store = verifier.FilesystemStore(root)
+
+    report = verifier.verify_initial_bootstrap_source(store)
+    exit_code = verifier.main(["verify-base", "--repo-root", str(root)])
+    cli_report = json.loads(capsys.readouterr().out)
+
+    assert report == {
+        "status": "verified_initial_source",
+        "release_must_be_absent": "v0.15.0",
+        "source_anchors": 18,
+        "expected_data_paths": 50,
+    }
+    assert exit_code == 0
+    assert cli_report == report
+
+
+def test_initial_bootstrap_executable_anchors_are_source_authority() -> None:
+    protocol = verifier.load_protocol(_base_store())
+    executable_paths = {
+        path
+        for path, (_digest, mode) in verifier.INITIAL_BOOTSTRAP_SOURCE_ANCHORS.items()
+        if mode == "100755"
+    }
+
+    assert len(executable_paths) == 3
+    for path in executable_paths:
+        changes = {
+            path: _candidate_blob(
+                path,
+                (ROOT / path).read_bytes(),
+                mode="100755",
+            )
+        }
+        assert verifier.classify_candidate_changes(protocol, changes) == (
+            "rotation_required"
+        )
+
+
+def test_initial_bootstrap_candidate_activates_exact_50_path_catalog_once(
+    tmp_path: Path,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    base = verifier.FilesystemStore(root)
+    changes = _initial_bootstrap_changes()
+    _reclose_initial_bootstrap_candidate(root, changes)
+
+    report = verifier.verify_classified_pull_request(
+        base,
+        changes,
+        head_sha="b" * 40,
+        repository="MetaInFLow/EvoZeus-CoEvolve",
+        construction_resolver=_initial_bootstrap_construction_resolver(
+            base,
+            changes,
+        ),
+        release_publication_resolver=lambda repository, release: False,
+    )
+
+    assert report["status"] == "verified_initial_candidate"
+    assert report["classification"] == "data_candidate"
+    assert report["base_state"] == "verified_initial_source"
+    assert report["candidate_paths"] == 50
+    assert report["candidate_files_executed"] is False
+    assert report["release_absence_verified"] == "v0.15.0"
+    assert report["repository_history"]["immutable_closures"] == 2
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing", "exact data path set"),
+        ("extra", "exact data path set"),
+        ("wrong_status", "invalid Git state"),
+        ("wrong_mode", "invalid Git state"),
+        ("executable_in_data", "must be split"),
+    ],
+)
+def test_initial_bootstrap_candidate_rejects_any_non_exact_change_set(
+    tmp_path: Path,
+    fault: str,
+    message: str,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    base = verifier.FilesystemStore(root)
+    changes = _initial_bootstrap_changes()
+    path = verifier.MIGRATION_CONTRACT_REL
+    original = changes[path]
+    assert original.loader is not None
+    if fault == "missing":
+        del changes[path]
+    elif fault == "extra":
+        changes["contracts/v1/migrations/unreviewed.json"] = _candidate_blob(
+            "contracts/v1/migrations/unreviewed.json",
+            b"{}\n",
+            status="added",
+        )
+    elif fault == "wrong_status":
+        changes[path] = _candidate_blob(path, original.loader(), status="modified")
+    elif fault == "wrong_mode":
+        changes[path] = _candidate_blob(
+            path,
+            original.loader(),
+            status="added",
+            mode="100755",
+        )
+    elif fault == "executable_in_data":
+        executable = next(
+            anchor
+            for anchor, (_digest, mode) in (
+                verifier.INITIAL_BOOTSTRAP_SOURCE_ANCHORS.items()
+            )
+            if mode == "100755"
+        )
+        changes[executable] = _candidate_blob(
+            executable,
+            (root / executable).read_bytes(),
+            status="modified",
+            mode="100755",
+        )
+    else:
+        raise AssertionError(f"unknown fault: {fault}")
+
+    with pytest.raises(verifier.VerificationError, match=message):
+        verifier.verify_classified_pull_request(
+            base,
+            changes,
+            head_sha="b" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("invalid change sets fail before construction evidence")
+            ),
+            release_publication_resolver=lambda repository, release: False,
+        )
+
+
+def test_initial_bootstrap_rejects_anchor_drift_and_expires_after_release(
+    tmp_path: Path,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    anchor = root / verifier.LEGACY_PREFLIGHT_ARTIFACT_REL
+    anchor.write_bytes(anchor.read_bytes() + b"\n# drift\n")
+
+    with pytest.raises(verifier.VerificationError, match="source anchor differs"):
+        verifier.verify_initial_bootstrap_source(verifier.FilesystemStore(root))
+
+    root = _initial_bootstrap_source_base(tmp_path / "published")
+    base = verifier.FilesystemStore(root)
+    changes = _initial_bootstrap_changes()
+    with pytest.raises(verifier.VerificationError, match="bootstrap expired"):
+        verifier.verify_classified_pull_request(
+            base,
+            changes,
+            head_sha="b" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=_initial_bootstrap_construction_resolver(
+                base,
+                changes,
+            ),
+            release_publication_resolver=lambda repository, release: True,
+        )
+
+
+def test_initial_bootstrap_target_inventory_is_fixed_source_reviewed_data(
+    tmp_path: Path,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    base = verifier.FilesystemStore(root)
+    changes = _initial_bootstrap_changes()
+    _reclose_initial_bootstrap_candidate(root, changes)
+    inventory = "contracts/v1/target-template-inventory.json"
+    changes[inventory] = _candidate_blob(
+        inventory,
+        b'{"schema_version":"forged"}\n',
+        status="modified",
+    )
+
+    with pytest.raises(verifier.VerificationError, match="inventory differs"):
+        verifier.verify_classified_pull_request(
+            base,
+            changes,
+            head_sha="b" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("inventory drift fails before construction evidence")
+            ),
+            release_publication_resolver=lambda repository, release: False,
+        )
+
+
+def test_initial_bootstrap_manifest_roles_are_fixed_by_reviewed_source(
+    tmp_path: Path,
+) -> None:
+    root = _initial_bootstrap_source_base(tmp_path)
+    base = verifier.FilesystemStore(root)
+    changes = _initial_bootstrap_changes()
+    _reclose_initial_bootstrap_candidate(root, changes)
+    original = changes[verifier.CONTRACT_MANIFEST_REL]
+    assert original.loader is not None
+    manifest = json.loads(original.loader().decode("utf-8"))
+    entry = next(
+        item
+        for item in manifest["files"]
+        if item["path"] == "migrations/protocols/official-upgrade-protocol-v1.json"
+    )
+    entry["role"] = "unreviewed-authority"
+    changes[verifier.CONTRACT_MANIFEST_REL] = _candidate_blob(
+        verifier.CONTRACT_MANIFEST_REL,
+        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        status="modified",
+    )
+
+    with pytest.raises(verifier.VerificationError, match="manifest role differs"):
+        verifier.verify_classified_pull_request(
+            base,
+            changes,
+            head_sha="b" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("manifest role drift fails before construction evidence")
+            ),
+            release_publication_resolver=lambda repository, release: False,
         )
 
 
