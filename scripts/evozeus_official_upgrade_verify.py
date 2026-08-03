@@ -61,8 +61,7 @@ AUTHORITY_ROTATION_PATHS = (
     *sorted(PROTECTED_MIGRATION_CONSUMER_PATHS),
 )
 DATA_CANDIDATE_PREFIXES = (
-    "contracts/v1/migrations/history/",
-    "contracts/v1/migrations/profiles/",
+    "contracts/v1/migrations/",
 )
 DATA_CANDIDATE_PATHS = (MIGRATION_CONTRACT_REL,)
 ALLOWED_OPERATION_TYPES = {
@@ -413,16 +412,30 @@ def classify_candidate_changes(
     if not isinstance(candidate_policy, dict):
         raise VerificationError("official upgrade candidate policy is missing")
     # load_protocol has already required exact agreement with these constants.
+    has_authority = False
+    has_data = False
     for path in changes:
         _safe_relative(path, "candidate changed path")
-        if path in AUTHORITY_ROTATION_PATHS or path.startswith(
+        is_authority = path in AUTHORITY_ROTATION_PATHS or path.startswith(
             AUTHORITY_ROTATION_PREFIXES
-        ):
-            return "rotation_required"
-    if any(
-        path in DATA_CANDIDATE_PATHS or path.startswith(DATA_CANDIDATE_PREFIXES)
-        for path in changes
-    ):
+        )
+        has_authority = has_authority or is_authority
+        # Protocols and schemas live below the migration root but are authority,
+        # never candidate data. Every other migration path fails into the strict
+        # data verifier, including paths unknown to the current protocol.
+        is_data = not is_authority and (
+            path in DATA_CANDIDATE_PATHS
+            or path.startswith(DATA_CANDIDATE_PREFIXES)
+        )
+        has_data = has_data or is_data
+    if has_authority and has_data:
+        raise VerificationError(
+            "rotation_required: authority/consumer changes and migration data "
+            "must be split into source-first and data-only pull requests"
+        )
+    if has_authority:
+        return "rotation_required"
+    if has_data:
         return "data_candidate"
     return "not_applicable"
 

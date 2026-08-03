@@ -50,8 +50,7 @@
         "scripts/evozeus_wrapper_lifecycle.py"
       ],
       "data_candidate_prefixes": [
-        "contracts/v1/migrations/history/",
-        "contracts/v1/migrations/profiles/"
+        "contracts/v1/migrations/"
       ],
       "data_candidate_paths": [
         "contracts/v1/migrations/harness-migration-contract-v1.json"

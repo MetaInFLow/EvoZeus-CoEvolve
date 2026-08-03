@@ -15,7 +15,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "fa98d61768b25dd7fa5dbb491c5b665572e24672d20d5b8d18fdff7eb1e917cf"
+PROTOCOL_SHA256 = "97e255b1fff2afd33e2d5b4254ea1220504b510221b17e26d0912f6e8646b783"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 
 
@@ -1522,6 +1522,104 @@ def test_authority_or_consumer_pull_request_requires_source_rotation(
     assert report["classification"] == "rotation_required"
     assert report["candidate_files_executed"] is False
     assert "data-only migration PR" in report["next_step"]
+
+
+@pytest.mark.parametrize(
+    "data_path",
+    [
+        verifier.HISTORY_CURRENT_REL,
+        "contracts/v1/migrations/profiles/future-v1.json",
+    ],
+)
+def test_authority_and_migration_data_must_be_split_into_two_pull_requests(
+    data_path: str,
+) -> None:
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("mixed authority/data PR must stop before candidate history")
+
+    changes = {
+        verifier.VERIFIER_REL: _candidate_blob(
+            verifier.VERIFIER_REL,
+            b"trusted source rotation\n",
+        ),
+        data_path: _candidate_blob(data_path, b"{}\n"),
+    }
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="rotation_required.*source-first and data-only",
+    ):
+        verifier.verify_classified_pull_request(
+            _base_store(),
+            changes,
+            head_sha="3" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=must_not_resolve,
+        )
+
+
+def test_mixed_authority_and_data_cli_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    changes = {
+        "scripts/evozeus_wrapper_lifecycle.py": _candidate_blob(
+            "scripts/evozeus_wrapper_lifecycle.py",
+            b"trusted consumer rotation\n",
+        ),
+        verifier.HISTORY_CURRENT_REL: _candidate_blob(
+            verifier.HISTORY_CURRENT_REL,
+            b"{}\n",
+        ),
+    }
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(
+        verifier,
+        "candidate_from_pull_request",
+        lambda *_args: (
+            changes,
+            "4" * 40,
+            "MetaInFLow/EvoZeus-CoEvolve",
+        ),
+    )
+
+    exit_code = verifier.main(
+        [
+            "verify-pull-request",
+            "--repo-root",
+            str(ROOT),
+            "--event",
+            str(tmp_path / "unused-event.json"),
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["status"] == "rejected"
+    assert "rotation_required" in output["error"]
+
+
+def test_unknown_migration_data_cannot_fall_through_as_an_ordinary_pr() -> None:
+    path = "contracts/v1/migrations/unknown-candidate-data.json"
+    changes = {path: _candidate_blob(path, b"{}\n", status="added")}
+    protocol = verifier.load_protocol(_base_store())
+
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("unknown data must fail before history resolution")
+
+    assert verifier.classify_candidate_changes(protocol, changes) == "data_candidate"
+    with pytest.raises(
+        verifier.VerificationError,
+        match="manifest does not exactly enumerate",
+    ):
+        verifier.verify_classified_pull_request(
+            _base_store(),
+            changes,
+            head_sha="5" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=must_not_resolve,
+        )
 
 
 def test_main_uat_and_release_workflows_explicitly_run_history_gate() -> None:
