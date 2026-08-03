@@ -4,7 +4,7 @@
   "profile_version": "v1.0.0",
   "protocol": {
     "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-    "sha256": "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce"
+    "sha256": "824a592275cdf95ee5c7cf2841fda5695bf0ba57b2faa7d441261ee2a72767c3"
   },
   "from_closure": {
     "path": "migrations/history/harness-skill/v1.0.0/closure.json",

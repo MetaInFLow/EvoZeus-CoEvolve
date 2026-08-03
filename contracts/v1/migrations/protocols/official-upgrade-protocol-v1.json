@@ -20,7 +20,12 @@
       "contracts/v1/migrations/protocols/",
       "contracts/v1/migrations/schemas/",
       "contracts/v1/migrations/history/*/v*/",
-      "scripts/evozeus_official_upgrade_verify.py"
+      "contracts/v1/migrations/profiles/*-v*.json",
+      "scripts/evozeus_official_upgrade_verify.py",
+      "scripts/evozeus_harness_migration.py",
+      "scripts/evozeus_wrapper.py",
+      "scripts/evozeus_wrapper_global_hook.py",
+      "scripts/evozeus_wrapper_lifecycle.py"
     ],
     "reject_symlinks": true,
     "reject_submodules": true,
@@ -30,6 +35,7 @@
     "protected_business_surfaces": "byte_exact",
     "rendered_without_receipt": "preserve_byte_exact",
     "ledger": "deterministic_no_date_no_self_reference",
+    "ledger_history": "one_current_hop_plus_zero_or_more_prior_records",
     "unknown_or_scattered": "manual_migration_required_zero_write"
   }
 }

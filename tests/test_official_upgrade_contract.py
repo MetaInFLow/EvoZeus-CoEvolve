@@ -15,7 +15,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce"
+PROTOCOL_SHA256 = "824a592275cdf95ee5c7cf2841fda5695bf0ba57b2faa7d441261ee2a72767c3"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 
 
@@ -161,6 +161,12 @@ def _candidate_star(
         "release_status": "release_required_for_apply",
         "required_release": "v0.16.0",
     }
+    v12["state"] = {
+        **v12["state"],
+        "target_wrapper_version": "v0.16.0",
+        "contract_bundle_version": "v1.3.0",
+        "harness_skill_version": "v1.2.0",
+    }
     changes: dict[str, verifier.CandidateBlob] = {}
     construction_files: dict[str, verifier.ConstructionBlob] = {}
     skill_target = ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
@@ -168,6 +174,12 @@ def _candidate_star(
     skill_before: dict[str, object] | None = None
     skill_after: dict[str, object] | None = None
     for item in v12["files"]:
+        if item["target_path"] == ".evozeus-wrapper/wrapper.json":
+            item["owned_state"] = {
+                **item["owned_state"],
+                "wrapper_version": "v0.16.0",
+                "harness_skill_version": "v1.2.0",
+            }
         artifact = item.get("artifact_path")
         if artifact is None:
             continue
@@ -206,6 +218,39 @@ def _candidate_star(
                 mode=source_mode,
                 data=source_data,
             )
+    current_ledger_target = (
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.1.0-to-v1.2.0.md"
+    )
+    current_ledger_artifact = (
+        "artifacts/generated/harness-skill-v1.1.0-to-v1.2.0.md"
+    )
+    current_ledger_data = (
+        b"# Harness Skill migration v1.1.0 to v1.2.0\n\n"
+        b"This deterministic ledger records the exact current Harness hop.\n"
+    )
+    current_ledger_entry = {
+        "target_path": current_ledger_target,
+        "kind": "exact",
+        "mode": "100644",
+        "ownership": "wrapper_managed",
+        "artifact_path": current_ledger_artifact,
+        "sha256": _sha256(current_ledger_data),
+        "materialization": {
+            "policy": "copy_exact",
+            "generated_release_artifact": True,
+        },
+        "source_binding": "generated_release_artifact",
+    }
+    v12["files"].append(current_ledger_entry)
+    v12["files"] = sorted(v12["files"], key=lambda item: item["target_path"])
+    changes[(Path(v12_relative).parent / current_ledger_artifact).as_posix()] = (
+        _candidate_blob(
+            (Path(v12_relative).parent / current_ledger_artifact).as_posix(),
+            current_ledger_data,
+            status="added",
+        )
+    )
     assert skill_before is not None and skill_after is not None
     changes[v12_relative] = _candidate_blob(
         v12_relative,
@@ -227,7 +272,7 @@ def _candidate_star(
         "path": "migrations/history/harness-skill/v1.2.0/closure.json",
         "sha256": v12_sha256,
     }
-    direct_v10["release_axis"]["target_wrapper_to"] = "v0.15.0"
+    direct_v10["release_axis"]["target_wrapper_to"] = "v0.16.0"
     direct_v10["release_axis"]["artifact_source_to"]["release"] = "v0.16.0"
     for operation in direct_v10["operations"]:
         if operation["target_path"] == skill_target:
@@ -239,6 +284,34 @@ def _candidate_star(
                 "sha256": skill_after["sha256"],
                 "mode": skill_after["mode"],
             }
+        if operation["target_path"] == ".evozeus-wrapper/wrapper.json":
+            for action in operation["patch"]:
+                if action["field"] == "wrapper_version":
+                    action["value"] = "v0.16.0"
+                if action["field"] == "harness_skill_version":
+                    action["value"] = "v1.2.0"
+    current_ledger_operation = {
+        "change_id": "create:" + current_ledger_target,
+        "type": "create_exact",
+        "target_path": current_ledger_target,
+        "preimage": {"state": "absent"},
+        "postimage": {
+            "artifact_path": (
+                "migrations/history/harness-skill/v1.2.0/"
+                + current_ledger_artifact
+            ),
+            "sha256": current_ledger_entry["sha256"],
+            "mode": "100644",
+        },
+    }
+    old_ledger_index = next(
+        index
+        for index, operation in enumerate(direct_v10["operations"])
+        if operation["target_path"].endswith(
+            "harness-skill-v1.0.0-to-v1.1.0.md"
+        )
+    )
+    direct_v10["operations"].insert(old_ledger_index + 1, current_ledger_operation)
     direct_v11 = {
         "schema_version": "evozeus.coevolve.official-upgrade-profile.v1",
         "profile_id": "canonical-v1.1-to-v1.2",
@@ -257,7 +330,7 @@ def _candidate_star(
         },
         "release_axis": {
             "target_wrapper_from": "v0.15.0",
-            "target_wrapper_to": "v0.15.0",
+            "target_wrapper_to": "v0.16.0",
             "artifact_source_from": {
                 "kind": "construction_revision",
                 "revision": v11["source"]["construction_revision"],
@@ -287,7 +360,31 @@ def _candidate_star(
                     "sha256": skill_after["sha256"],
                     "mode": skill_after["mode"],
                 },
-            }
+            },
+            current_ledger_operation,
+            {
+                "change_id": "manifest:.evozeus-wrapper/wrapper.json",
+                "type": "manifest_patch",
+                "target_path": ".evozeus-wrapper/wrapper.json",
+                "encoding": "utf-8-json-indent-2-lf",
+                "preserve_unlisted_fields": True,
+                "preconditions": {
+                    "wrapper_version": "v0.15.0",
+                    "harness_skill_version": "v1.1.0",
+                },
+                "patch": [
+                    {
+                        "action": "replace",
+                        "field": "wrapper_version",
+                        "value": "v0.16.0",
+                    },
+                    {
+                        "action": "replace",
+                        "field": "harness_skill_version",
+                        "value": "v1.2.0",
+                    },
+                ],
+            },
         ],
         "deferred_rendered_surfaces": old_profile["deferred_rendered_surfaces"],
         "protected_business_surfaces": old_profile["protected_business_surfaces"],
@@ -428,6 +525,64 @@ def _bind_candidate_bundle_source(
     return source_path
 
 
+def _attempt_to_bind_protected_consumer_as_skill_source(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+    protected_path: str,
+) -> None:
+    closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    )
+    closure_blob = changes[closure_path]
+    assert closure_blob.loader is not None
+    closure = json.loads(closure_blob.loader().decode("utf-8"))
+    skill_target = ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+    skill_entry = next(
+        item for item in closure["files"] if item["target_path"] == skill_target
+    )
+    artifact_path = (Path(closure_path).parent / skill_entry["artifact_path"]).as_posix()
+    artifact_blob = changes[artifact_path]
+    assert artifact_blob.loader is not None
+    original_source = skill_entry["source_path"]
+    skill_entry["source_path"] = protected_path
+    changes.pop(original_source)
+    changes[protected_path] = _candidate_blob(protected_path, artifact_blob.loader())
+
+    closure_data = _json_bytes(closure)
+    closure_sha256 = _sha256(closure_data)
+    changes[closure_path] = _candidate_blob(closure_path, closure_data, status="added")
+    history_pointer = json.loads(
+        changes[verifier.HISTORY_CURRENT_REL].loader().decode("utf-8")
+    )
+    history_pointer["entries"][0]["sha256"] = closure_sha256
+    changes[verifier.HISTORY_CURRENT_REL] = _candidate_blob(
+        verifier.HISTORY_CURRENT_REL,
+        _json_bytes(history_pointer),
+    )
+    profile_pointer = json.loads(
+        changes[verifier.PROFILES_CURRENT_REL].loader().decode("utf-8")
+    )
+    for entry in profile_pointer["entries"]:
+        profile_path = "contracts/v1/" + entry["path"]
+        profile_blob = changes[profile_path]
+        assert profile_blob.loader is not None
+        profile = json.loads(profile_blob.loader().decode("utf-8"))
+        profile["to_closure"]["sha256"] = closure_sha256
+        profile_data = _json_bytes(profile)
+        changes[profile_path] = _candidate_blob(
+            profile_path,
+            profile_data,
+            status=profile_blob.status,
+            mode=profile_blob.mode,
+        )
+        entry["sha256"] = _sha256(profile_data)
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(profile_pointer),
+    )
+    _bind_candidate_manifest(root, changes)
+
+
 def _relocate_candidate_closure(
     root: Path,
     changes: dict[str, verifier.CandidateBlob],
@@ -517,6 +672,68 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
         "profiles": ["canonical-v1.0-to-v1.1@v1.0.0"],
     }
     assert _sha256((ROOT / verifier.PROTOCOL_REL).read_bytes()) == PROTOCOL_SHA256
+
+    profile_path, _ = _profile()
+    profile = verifier.load_profile(
+        _base_store(),
+        profile_path,
+        verifier.load_protocol(_base_store()),
+    )
+    assert profile["migration_records"] == [
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.0.0-to-v1.1.0.md"
+    ]
+    assert profile["current_migration_record"] == profile["migration_records"][0]
+
+
+def test_protocol_declares_the_exact_protected_code_and_cumulative_ledger_policy() -> None:
+    protocol = verifier.load_protocol(_base_store())
+
+    assert set(protocol["candidate_policy"]["protected_base_paths"]) == set(
+        verifier.PROTECTED_BASE_PATH_DECLARATIONS
+    )
+    assert (
+        protocol["target_policy"]["ledger_history"]
+        == "one_current_hop_plus_zero_or_more_prior_records"
+    )
+
+
+def test_migration_ledger_uses_closure_axis_and_sorts_operations_deterministically() -> None:
+    prior_record = (
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.0.0-to-v1.1.0.md"
+    )
+    current_record = (
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.1.0-to-v1.2.0.md"
+    )
+    operations = [
+        {"type": "create_exact", "target_path": current_record},
+        {"type": "create_exact", "target_path": prior_record},
+    ]
+    generated_entry = {
+        "kind": "exact",
+        "materialization": {"generated_release_artifact": True},
+        "source_binding": "generated_release_artifact",
+    }
+
+    records = verifier._verified_profile_migration_records(
+        operations,
+        {
+            "closure_version": "v1.0.0",
+            "state": {"harness_skill_version": "v9.0.0"},
+        },
+        {
+            "closure_version": "v1.2.0",
+            "state": {"harness_skill_version": "v9.0.0"},
+        },
+        {
+            prior_record: generated_entry,
+            current_record: generated_entry,
+        },
+    )
+
+    assert records == [prior_record, current_record]
 
 
 @pytest.mark.parametrize("version", ["v1.0.0", "v1.1.0"])
@@ -948,11 +1165,11 @@ def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     assert "pull_request_target:" in workflow
     for protected_path in (
         "contracts/v1/migrations/**",
-        "contracts/v1/manifest.json",
         "scripts/evozeus_official_upgrade_verify.py",
         ".github/workflows/evozeus-official-upgrade-profile.yml",
     ):
         assert f'      - "{protected_path}"\n' in workflow
+    assert '      - "contracts/v1/manifest.json"\n' not in workflow
     assert "permissions:\n  contents: read\n" in workflow
     assert "pull-requests:" not in workflow
     assert (
@@ -1026,6 +1243,83 @@ def test_candidate_rotates_to_a_direct_to_current_profile_star(
     assert report["status"] == "verified_candidate"
     assert report["base_closure_version"] == "v1.1.0"
     assert report["candidate_closure_version"] == "v1.2.0"
+
+    candidate = verifier.CandidateStore(verifier.FilesystemStore(root), changes)
+    profiles = {}
+    for entry in verifier.load_pointer(
+        candidate,
+        verifier.PROFILES_CURRENT_REL,
+        "official-upgrade-current-profiles",
+    ):
+        path = "contracts/v1/" + entry["path"]
+        profile = verifier.load_profile(
+            candidate,
+            path,
+            verifier.load_protocol(candidate),
+            expected_sha256=entry["sha256"],
+        )
+        profiles[profile["profile_id"]] = profile
+    old_record = (
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.0.0-to-v1.1.0.md"
+    )
+    current_record = (
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.1.0-to-v1.2.0.md"
+    )
+    assert profiles["canonical-v1.0-to-v1.2"]["migration_records"] == [
+        old_record,
+        current_record,
+    ]
+    assert profiles["canonical-v1.1-to-v1.2"]["migration_records"] == [
+        current_record
+    ]
+    assert {
+        profile["current_migration_record"] for profile in profiles.values()
+    } == {current_record}
+
+
+def test_candidate_rejects_an_unbound_non_migration_change(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    changes["docs/unbound-runtime-note.md"] = _candidate_blob(
+        "docs/unbound-runtime-note.md",
+        b"unbound\n",
+        status="added",
+    )
+
+    with pytest.raises(verifier.VerificationError, match="derived official-upgrade closure"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_candidate_cannot_change_the_migration_consumer_even_when_closure_bound(
+    tmp_path: Path,
+    bound: bool,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    path = "scripts/evozeus_wrapper_lifecycle.py"
+    if bound:
+        _attempt_to_bind_protected_consumer_as_skill_source(root, changes, path)
+    else:
+        changes[path] = _candidate_blob(path, b"malicious consumer change\n")
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="trusted base authority or migration consumer",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
 
 
 def test_candidate_construction_source_mode_must_equal_closure_mode(
@@ -1159,6 +1453,28 @@ def test_candidate_contract_json_rejects_non_finite_constants(
     )
 
     with pytest.raises(verifier.VerificationError, match="non-finite JSON constant"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_contract_json_rejects_exponent_overflow(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    manifest_blob = changes[CONTRACT_MANIFEST_REL]
+    assert manifest_blob.loader is not None
+    manifest_data = manifest_blob.loader()
+    identity = b'"bundle_id": "evozeus-coevolve"'
+    assert identity in manifest_data
+    changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+        CONTRACT_MANIFEST_REL,
+        manifest_data.replace(identity, b'"bundle_id": 1e400', 1),
+    )
+
+    with pytest.raises(verifier.VerificationError, match="non-finite JSON number"):
         verifier.verify_candidate(
             verifier.FilesystemStore(root),
             changes,

@@ -246,17 +246,17 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "a0834cca51372b3e16d1b3ab8fc65c8c6d393e1f55018b40b7758eed73062481",
+      "sha256": "4cbf7cffb2cdf6a68073d7780d3aa3293d41eeffc02b5a2a7ef76fc0dfc10685",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "d18d9f699a4040ba438347d6785deab59273b83b1dcbef7299893a6066983b1d",
+      "sha256": "40d7815c56fca571dac12f4d7c57e2018734973ed2957b0e8a9c7476e9da96a0",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-      "sha256": "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce",
+      "sha256": "824a592275cdf95ee5c7cf2841fda5695bf0ba57b2faa7d441261ee2a72767c3",
       "role": "official-upgrade-protocol"
     },
     {
@@ -271,7 +271,7 @@
     },
     {
       "path": "migrations/schemas/official-upgrade-protocol-v1.schema.json",
-      "sha256": "64490b798820112250b039c686ef1979528e0f49e0fd21531f06172b2d0937b1",
+      "sha256": "b16d9a6d80070ddcb16a05b2c36f1053dba8f0e972b628761733b9388d25cb78",
       "role": "official-upgrade-json-schema"
     },
     {

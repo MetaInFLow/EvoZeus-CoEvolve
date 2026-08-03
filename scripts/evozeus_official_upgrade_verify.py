@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -27,6 +28,23 @@ CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
 BUNDLE_PREFIX = "contracts/v1/"
+PROTECTED_MIGRATION_CONSUMER_PATHS = frozenset(
+    {
+        "scripts/evozeus_harness_migration.py",
+        "scripts/evozeus_wrapper.py",
+        "scripts/evozeus_wrapper_global_hook.py",
+        "scripts/evozeus_wrapper_lifecycle.py",
+    }
+)
+PROTECTED_BASE_PATH_DECLARATIONS = (
+    WORKFLOW_REL,
+    "contracts/v1/migrations/protocols/",
+    "contracts/v1/migrations/schemas/",
+    "contracts/v1/migrations/history/*/v*/",
+    "contracts/v1/migrations/profiles/*-v*.json",
+    VERIFIER_REL,
+    *sorted(PROTECTED_MIGRATION_CONSUMER_PATHS),
+)
 ALLOWED_OPERATION_TYPES = {
     "create_exact",
     "replace_exact",
@@ -36,6 +54,11 @@ ALLOWED_BLOB_MODES = {"100644", "100755"}
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OID_PATTERN = re.compile(r"[0-9a-f]{40}")
 SEMVER_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+LEDGER_TARGET_PATTERN = re.compile(
+    r"\.evozeus-wrapper/docs/migrations/harness-skill-"
+    r"(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-to-"
+    r"(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\.md"
+)
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MAX_BLOB_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 32 * 1024 * 1024
@@ -131,6 +154,18 @@ def _strict_json(value: bytes, label: str) -> dict[str, Any]:
         )
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise VerificationError(f"{label} is invalid UTF-8 JSON: {exc}") from exc
+
+    def reject_non_finite_numbers(item: object) -> None:
+        if isinstance(item, float) and not math.isfinite(item):
+            raise VerificationError(f"{label} contains a non-finite JSON number")
+        if isinstance(item, dict):
+            for nested in item.values():
+                reject_non_finite_numbers(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                reject_non_finite_numbers(nested)
+
+    reject_non_finite_numbers(parsed)
     if not isinstance(parsed, dict):
         raise VerificationError(f"{label} must be a JSON object")
     return parsed
@@ -300,6 +335,10 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError("official upgrade candidate policy is missing")
     if candidate.get("execution_model") != "trusted_base_verifier_candidate_blobs_as_data":
         raise VerificationError("candidate execution model is unsafe")
+    if candidate.get("protected_base_paths") != list(PROTECTED_BASE_PATH_DECLARATIONS):
+        raise VerificationError(
+            "candidate protected base path declaration disagrees with the verifier"
+        )
     if any(candidate.get(field) is not True for field in (
         "reject_symlinks",
         "reject_submodules",
@@ -313,6 +352,11 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError("rendered template preservation policy is invalid")
     if target.get("ledger") != "deterministic_no_date_no_self_reference":
         raise VerificationError("migration ledger determinism policy is invalid")
+    if (
+        target.get("ledger_history")
+        != "one_current_hop_plus_zero_or_more_prior_records"
+    ):
+        raise VerificationError("migration ledger history policy is invalid")
     if target.get("unknown_or_scattered") != "manual_migration_required_zero_write":
         raise VerificationError("unknown/scattered fallback policy is invalid")
     return protocol
@@ -474,11 +518,38 @@ def load_closure(
                     raise VerificationError(
                         f"generated closure artifact binding is invalid: {target_path}"
                     )
+                ledger_match = LEDGER_TARGET_PATTERN.fullmatch(target_path)
+                if ledger_match is None:
+                    raise VerificationError(
+                        f"generated migration ledger path is not canonical: {target_path}"
+                    )
+                record_from, record_to = ledger_match.groups()
+                if _semver(record_to, "migration ledger to version") <= _semver(
+                    record_from,
+                    "migration ledger from version",
+                ):
+                    raise VerificationError(
+                        f"generated migration ledger does not advance: {target_path}"
+                    )
+                expected_artifact_path = (
+                    PurePosixPath(relative).parent
+                    / "artifacts/generated"
+                    / PurePosixPath(target_path).name
+                ).as_posix()
+                if artifact_path != expected_artifact_path:
+                    raise VerificationError(
+                        "generated migration ledger artifact path is not canonical: "
+                        f"expected={expected_artifact_path}; actual={artifact_path}"
+                    )
                 artifact_bytes = store.read_bytes(artifact_path)
                 if re.search(rb"\b20[0-9]{2}-[0-9]{2}-[0-9]{2}\b", artifact_bytes):
                     raise VerificationError(f"generated migration ledger contains a date: {target_path}")
                 if b"plan_sha256" in artifact_bytes or b"closure_sha256" in artifact_bytes:
                     raise VerificationError(f"generated migration ledger is self-referential: {target_path}")
+            elif LEDGER_TARGET_PATTERN.fullmatch(target_path) is not None:
+                raise VerificationError(
+                    f"migration ledger lacks generated release identity: {target_path}"
+                )
         else:
             raise VerificationError(f"target closure file kind is invalid: {target_path}")
         by_path[target_path] = item
@@ -635,6 +706,84 @@ def _verify_manifest_patch(
         raise VerificationError("manifest_patch effect does not equal the target closure state")
 
 
+def _verified_profile_migration_records(
+    operations: list[dict[str, Any]],
+    from_closure: dict[str, Any],
+    to_closure: dict[str, Any],
+    to_entries: dict[str, dict[str, Any]],
+) -> list[str]:
+    from_version = from_closure.get("closure_version")
+    current_version = to_closure.get("closure_version")
+    _semver(from_version, "profile migration record from closure version")
+    _semver(current_version, "profile migration record current closure version")
+
+    parsed_records: list[tuple[tuple[int, int, int], tuple[int, int, int], str, str, str]] = []
+    for operation in operations:
+        target_path = operation["target_path"]
+        match = LEDGER_TARGET_PATTERN.fullmatch(target_path)
+        if match is None:
+            if "/docs/migrations/harness-skill-" in target_path:
+                raise VerificationError(
+                    f"profile migration ledger path is not canonical: {target_path}"
+                )
+            continue
+        if operation.get("type") != "create_exact":
+            raise VerificationError(
+                f"profile migration ledger must use create_exact: {target_path}"
+            )
+        closure_entry = to_entries.get(target_path)
+        materialization = (
+            closure_entry.get("materialization")
+            if isinstance(closure_entry, dict)
+            else None
+        )
+        if (
+            not isinstance(closure_entry, dict)
+            or closure_entry.get("kind") != "exact"
+            or not isinstance(materialization, dict)
+            or materialization.get("generated_release_artifact") is not True
+            or closure_entry.get("source_binding") != "generated_release_artifact"
+        ):
+            raise VerificationError(
+                f"profile migration ledger is not closure-bound generated data: {target_path}"
+            )
+        record_from, record_to = match.groups()
+        from_semver = _semver(
+            record_from,
+            "profile migration record from version",
+        )
+        to_semver = _semver(record_to, "profile migration record to version")
+        if to_semver <= from_semver:
+            raise VerificationError(
+                f"profile migration record does not advance: {target_path}"
+            )
+        parsed_records.append(
+            (from_semver, to_semver, target_path, record_from, record_to)
+        )
+    if not parsed_records:
+        raise VerificationError(
+            "official upgrade profile must contain at least one generated migration record"
+        )
+    parsed_records.sort(key=lambda item: (item[0], item[1], item[2]))
+    records = [item[2] for item in parsed_records]
+    if len(records) != len(set(records)):
+        raise VerificationError("official upgrade profile migration records are duplicated")
+    expected_from = from_version
+    for _, _, _, record_from, record_to in parsed_records:
+        if record_from != expected_from:
+            raise VerificationError(
+                "profile migration records are not one contiguous cumulative chain: "
+                f"expected_from={expected_from}; actual_from={record_from}"
+            )
+        expected_from = record_to
+    if expected_from != current_version:
+        raise VerificationError(
+            "profile migration record chain does not end at the current closure version: "
+            f"expected={current_version}; actual={expected_from}"
+        )
+    return records
+
+
 def load_profile(
     store: BlobStore,
     relative: str,
@@ -750,6 +899,12 @@ def load_profile(
     if operation_paths != set(changes):
         missing = sorted(set(changes) - operation_paths)
         raise VerificationError("closure diff lacks profile operations: " + ", ".join(missing))
+    migration_records = _verified_profile_migration_records(
+        operations,
+        from_closure,
+        to_closure,
+        to_entries,
+    )
     rendered_unchanged = {
         path
         for path, item in from_entries.items()
@@ -790,6 +945,8 @@ def load_profile(
     profile["_verified_to_path"] = to_path
     profile["_verified_from_closure"] = from_closure
     profile["_verified_to_closure"] = to_closure
+    profile["migration_records"] = migration_records
+    profile["current_migration_record"] = migration_records[-1]
     return profile
 
 
@@ -829,6 +986,7 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
             raise VerificationError("official upgrade current pointer disagrees with profile identity")
         profiles.append(profile)
     from_paths: set[str] = set()
+    historical_from_versions: list[tuple[tuple[int, int, int], str]] = []
     for profile in profiles:
         if profile["_verified_to_path"] != current_path:
             raise VerificationError(
@@ -840,6 +998,36 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
                 "active official upgrade profiles contain a duplicate from closure"
             )
         from_paths.add(from_path)
+        from_closure = profile["_verified_from_closure"]
+        historical_from_versions.append(
+            (
+                _semver(from_closure["closure_version"], "historical from closure version"),
+                from_closure["closure_version"],
+            )
+        )
+    current_version = current_closure["closure_version"]
+    highest_historical_version = max(historical_from_versions)[1]
+    expected_current_record = (
+        ".evozeus-wrapper/docs/migrations/"
+        f"harness-skill-{highest_historical_version}-to-{current_version}.md"
+    )
+    common_records = set(profiles[0]["migration_records"])
+    for profile in profiles:
+        records = profile.get("migration_records")
+        current_record = profile.get("current_migration_record")
+        if (
+            not isinstance(records, list)
+            or records.count(expected_current_record) != 1
+            or current_record != expected_current_record
+        ):
+            raise VerificationError(
+                "every direct-to-current profile must contain exactly one shared current-hop record"
+            )
+        common_records.intersection_update(records)
+    if common_records != {expected_current_record}:
+        raise VerificationError(
+            "direct-to-current profiles must share only the current-hop migration record"
+        )
     return {
         "status": "verified",
         "protocol": f"{protocol['protocol_id']}@{protocol['protocol_version']}",
@@ -869,6 +1057,8 @@ def _protected_candidate_change(
     path: str,
     immutable_history_prefixes: set[str],
 ) -> bool:
+    if path in PROTECTED_MIGRATION_CONSUMER_PATHS:
+        return True
     if path in {VERIFIER_REL, WORKFLOW_REL}:
         return True
     if path.startswith("contracts/v1/migrations/protocols/"):
@@ -1061,6 +1251,10 @@ def verify_candidate(
     immutable_history_prefixes = _immutable_history_prefixes(base)
     for path, change in changes.items():
         _safe_relative(path, "candidate changed path")
+        if path in PROTECTED_MIGRATION_CONSUMER_PATHS:
+            raise VerificationError(
+                f"candidate modifies trusted base authority or migration consumer: {path}"
+            )
         if _protected_candidate_change(base, path, immutable_history_prefixes):
             raise VerificationError(f"candidate modifies trusted base authority or history: {path}")
         if change.status != "deleted" and (
@@ -1112,6 +1306,12 @@ def verify_candidate(
         candidate_closure_path,
         expected_sha256=candidate_history["sha256"],
     )
+    expected_candidate_changes = {
+        CONTRACT_MANIFEST_REL,
+        HISTORY_CURRENT_REL,
+        PROFILES_CURRENT_REL,
+        candidate_closure_path,
+    }
     _require_candidate_manifest_role(
         candidate_manifest_files,
         HISTORY_CURRENT_REL,
@@ -1136,6 +1336,19 @@ def verify_candidate(
                 artifact_relative,
                 "candidate closure artifact path",
             )
+            artifact_root = PurePosixPath(candidate_closure_path).parent / "artifacts"
+            if not PurePosixPath(artifact_path).is_relative_to(artifact_root):
+                raise VerificationError(
+                    "candidate closure artifact is outside its immutable version: "
+                    f"{artifact_path}"
+                )
+            artifact_change = changes.get(artifact_path)
+            if artifact_change is None or artifact_change.status != "added":
+                raise VerificationError(
+                    "candidate closure artifact must be a newly added immutable blob: "
+                    f"{artifact_path}"
+                )
+            expected_candidate_changes.add(artifact_path)
             _require_candidate_manifest_role(
                 candidate_manifest_files,
                 artifact_path,
@@ -1181,6 +1394,12 @@ def verify_candidate(
             raise VerificationError(
                 f"candidate active profile must use a new immutable path: {profile_path}"
             )
+        profile_change = changes.get(profile_path)
+        if profile_change is None or profile_change.status != "added":
+            raise VerificationError(
+                f"candidate active profile must be a newly added blob: {profile_path}"
+            )
+        expected_candidate_changes.add(profile_path)
         profile = load_profile(
             candidate,
             profile_path,
@@ -1251,6 +1470,8 @@ def verify_candidate(
                 f"candidate closure artifact mode differs from target mode: {target_path}"
             )
         bound_sources.add(source_path)
+        if source_path in changes:
+            expected_candidate_changes.add(source_path)
         if source_path.startswith(BUNDLE_PREFIX):
             relative_source = source_path.removeprefix(BUNDLE_PREFIX)
             if relative_source not in base_manifest_files:
@@ -1278,6 +1499,23 @@ def verify_candidate(
         candidate_manifest_files,
         expected_new_manifest_roles,
     )
+    actual_candidate_changes = set(changes)
+    missing_candidate_changes = sorted(
+        expected_candidate_changes - actual_candidate_changes
+    )
+    if missing_candidate_changes:
+        raise VerificationError(
+            "candidate omits paths required by the derived official-upgrade closure: "
+            + ", ".join(missing_candidate_changes)
+        )
+    unexpected_candidate_changes = sorted(
+        actual_candidate_changes - expected_candidate_changes
+    )
+    if unexpected_candidate_changes:
+        raise VerificationError(
+            "candidate changed path is outside the derived official-upgrade closure: "
+            + ", ".join(unexpected_candidate_changes)
+        )
     revision = candidate_closure["source"]["construction_revision"]
     if construction_resolver is None:
         raise VerificationError("candidate construction revision evidence is unavailable")

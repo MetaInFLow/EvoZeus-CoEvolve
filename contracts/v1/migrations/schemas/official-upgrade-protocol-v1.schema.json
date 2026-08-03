@@ -81,12 +81,14 @@
         "protected_business_surfaces",
         "rendered_without_receipt",
         "ledger",
+        "ledger_history",
         "unknown_or_scattered"
       ],
       "properties": {
         "protected_business_surfaces": { "const": "byte_exact" },
         "rendered_without_receipt": { "const": "preserve_byte_exact" },
         "ledger": { "const": "deterministic_no_date_no_self_reference" },
+        "ledger_history": { "const": "one_current_hop_plus_zero_or_more_prior_records" },
         "unknown_or_scattered": { "const": "manual_migration_required_zero_write" }
       }
     }

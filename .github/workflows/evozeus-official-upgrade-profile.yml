@@ -5,7 +5,6 @@ on:
     types: [opened, reopened, synchronize]
     paths:
       - "contracts/v1/migrations/**"
-      - "contracts/v1/manifest.json"
       - "scripts/evozeus_official_upgrade_verify.py"
       - ".github/workflows/evozeus-official-upgrade-profile.yml"
 
