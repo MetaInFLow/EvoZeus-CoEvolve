@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import urllib.request
@@ -10,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import evozeus_official_upgrade_verify as verifier
 
@@ -2951,12 +2953,118 @@ def test_release_git_gate_rejects_tag_outside_trusted_main(tmp_path: Path) -> No
         )
 
 
-def test_release_workflow_runs_gate_before_writes_and_discloses_pending_ruleset() -> None:
-    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+def _release_workflow() -> tuple[str, dict[str, object]]:
+    text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    document = yaml.load(text, Loader=yaml.BaseLoader)
+    assert isinstance(document, dict)
+    return text, document
 
-    verify_index = workflow.index("verify-release")
-    assert verify_index < workflow.index("git archive")
-    assert verify_index < workflow.index("gh release")
-    assert "refs/remotes/origin/main" in workflow
-    assert "ruleset enforcement is pending explicit" in workflow
-    assert "does not claim that it is configured" in workflow
+
+def test_release_workflow_is_manual_main_only_and_read_by_default() -> None:
+    text, workflow = _release_workflow()
+    trigger = workflow["on"]
+    jobs = workflow["jobs"]
+    assert isinstance(trigger, dict)
+    assert isinstance(jobs, dict)
+
+    assert set(trigger) == {"workflow_dispatch"}
+    dispatch = trigger["workflow_dispatch"]
+    assert dispatch["inputs"]["tag"] == {
+        "description": "Existing SemVer tag to verify and publish (vMAJOR.MINOR.PATCH)",
+        "required": "true",
+        "type": "string",
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(jobs) == {"verify", "publish"}
+    assert jobs["verify"]["permissions"] == {"contents": "read"}
+    assert jobs["publish"]["permissions"] == {"contents": "write"}
+    assert jobs["publish"]["needs"] == "verify"
+    for job_name in ("verify", "publish"):
+        condition = jobs[job_name]["if"]
+        assert "github.ref == 'refs/heads/main'" in condition
+        assert "endsWith(github.workflow_ref, '@refs/heads/main')" in condition
+    dispatch_gate = jobs["verify"]["steps"][0]["run"]
+    assert 'test "${GITHUB_REF}" = "refs/heads/main"' in dispatch_gate
+    assert 'test "${GITHUB_WORKFLOW_REF}" = "${EXPECTED_WORKFLOW_REF}"' in dispatch_gate
+    assert "release tag must use vMAJOR.MINOR.PATCH" in dispatch_gate
+    assert "rulesets and required checks remain pending explicit user" in text
+    assert "does not claim that they are configured" in text
+
+
+def test_release_verify_job_pins_actions_and_orders_read_only_verification() -> None:
+    _text, workflow = _release_workflow()
+    jobs = workflow["jobs"]
+    verify = jobs["verify"]
+    publish = jobs["publish"]
+    all_steps = [*verify["steps"], *publish["steps"]]
+    action_uses = [step["uses"] for step in all_steps if "uses" in step]
+
+    assert set(action_uses) == {
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    }
+    assert len(action_uses) == 3
+    assert all(
+        re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", action) is not None
+        for action in action_uses
+    )
+    checkout = next(step for step in verify["steps"] if "actions/checkout@" in step.get("uses", ""))
+    assert checkout["with"] == {
+        "ref": "refs/tags/${{ inputs.tag }}",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
+    step_names = [step["name"] for step in verify["steps"]]
+    assert step_names.index("Verify release trust boundary") < step_names.index(
+        "Run repository tests after release verification"
+    )
+    assert step_names.index("Run repository tests after release verification") < step_names.index(
+        "Build immutable release payload"
+    )
+    assert step_names.index("Build immutable release payload") < step_names.index(
+        "Upload immutable release payload"
+    )
+    release_gate = next(
+        step for step in verify["steps"] if step["name"] == "Verify release trust boundary"
+    )["run"]
+    assert "verify-release" in release_gate
+    assert "refs/remotes/origin/main" in release_gate
+    assert verify["outputs"] == {
+        "archive_sha256": "${{ steps.package.outputs.archive_sha256 }}",
+        "artifact_id": "${{ steps.upload.outputs.artifact-id }}",
+        "artifact_name": "${{ steps.package.outputs.artifact_name }}",
+    }
+
+
+def test_release_publish_job_only_publishes_verified_exact_payload() -> None:
+    _text, workflow = _release_workflow()
+    publish = workflow["jobs"]["publish"]
+    steps = publish["steps"]
+
+    assert all("actions/checkout@" not in step.get("uses", "") for step in steps)
+    publish_commands = "\n".join(step.get("run", "") for step in steps)
+    assert "git archive" not in publish_commands
+    assert "python" not in publish_commands
+    assert "pytest" not in publish_commands
+    assert "pip install" not in publish_commands
+    download = steps[0]
+    assert download["uses"] == (
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+    )
+    assert download["with"]["artifact-ids"] == "${{ needs.verify.outputs.artifact_id }}"
+    verify_index = next(index for index, step in enumerate(steps) if step.get("id") == "verify_payload")
+    publish_index = next(
+        index for index, step in enumerate(steps) if "gh release" in step.get("run", "")
+    )
+    assert verify_index < publish_index
+    payload_gate = steps[verify_index]["run"]
+    assert "EXPECTED_ARCHIVE_SHA256" in payload_gate
+    assert "EXPECTED_ARTIFACT_ID" in payload_gate
+    assert "EXPECTED_FILES" in payload_gate
+    assert "ACTUAL_ENTRY_COUNT" in payload_gate
+    assert "shasum -a 256" in payload_gate
+    publish_run = steps[publish_index]["run"]
+    assert steps[publish_index]["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert "gh release create" in publish_run
+    assert "gh release upload" in publish_run

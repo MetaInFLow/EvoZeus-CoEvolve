@@ -1,46 +1,182 @@
 name: Release archive
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to verify and publish (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   RELEASE_NOTES_DIR: docs/releases
 
+# External main/tag rulesets and required checks remain pending explicit user
+# authorization; this workflow does not claim that they are configured.
 jobs:
-  release:
+  verify:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          endsWith(github.workflow_ref, '@refs/heads/main') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      archive_sha256: ${{ steps.package.outputs.archive_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Verify trusted manual dispatch
+        env:
+          EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/release.yml@refs/heads/main
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          test "${GITHUB_WORKFLOW_REF}" = "${EXPECTED_WORKFLOW_REF}"
+          if [[ ! "${REQUESTED_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release tag must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+      - name: Checkout requested tag without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
-      # Required external main-branch ruleset enforcement is pending explicit
-      # user authorization; this workflow does not claim that it is configured.
+          persist-credentials: false
       - name: Verify release trust boundary
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
           python scripts/evozeus_official_upgrade_verify.py verify-release \
             --repo-root . \
-            --tag "${GITHUB_REF_NAME}" \
+            --tag "${REQUESTED_TAG}" \
             --main-ref refs/remotes/origin/main
-      - name: Verify tag
-        run: test "$(git describe --tags --exact-match)" = "${GITHUB_REF_NAME}"
-      - name: Verify release notes
-        run: test -s "${RELEASE_NOTES_DIR}/${GITHUB_REF_NAME}.md"
-      - name: Verify repository
+      - name: Run repository tests after release verification
         run: |
           python -m pip install --upgrade pip pytest pydantic pyyaml
           python -m pytest -q
           python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .
-      - name: Build immutable source archive
-        run: |
-          git archive --format=tar.gz --prefix="EvoZeus-CoEvolve-${GITHUB_REF_NAME}/" -o "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz" "${GITHUB_REF_NAME}"
-          shasum -a 256 "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz" > "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz.sha256"
-      - name: Create or update GitHub Release
+      - name: Build immutable release payload
+        id: package
         env:
-          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --title "EvoZeus-CoEvolve ${GITHUB_REF_NAME}" --notes-file "${RELEASE_NOTES_DIR}/${GITHUB_REF_NAME}.md"
-          gh release upload "${GITHUB_REF_NAME}" "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz" "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz.sha256" --clobber
+          set -euo pipefail
+          PAYLOAD_DIR="$(mktemp -d "${RUNNER_TEMP}/evozeus-release.XXXXXX")"
+          ARCHIVE="evozeus-coevolve-${REQUESTED_TAG}.tar.gz"
+          CHECKSUM="${ARCHIVE}.sha256"
+          NOTES="release-notes-${REQUESTED_TAG}.md"
+          NOTES_SOURCE="${RELEASE_NOTES_DIR}/${REQUESTED_TAG}.md"
+          ARTIFACT_NAME="evozeus-release-${REQUESTED_TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          NOTES_METADATA="$(git ls-tree "${REQUESTED_TAG}" -- "${NOTES_SOURCE}")"
+          test -n "${NOTES_METADATA}"
+          read -r NOTES_MODE NOTES_TYPE NOTES_OID NOTES_PATH <<< "${NOTES_METADATA}"
+          test "${NOTES_MODE}" = "100644"
+          test "${NOTES_TYPE}" = "blob"
+          test "${NOTES_PATH}" = "${NOTES_SOURCE}"
+          git show "${REQUESTED_TAG}:${NOTES_SOURCE}" > "${PAYLOAD_DIR}/${NOTES}"
+          test -s "${PAYLOAD_DIR}/${NOTES}"
+
+          git archive \
+            --format=tar.gz \
+            --prefix="EvoZeus-CoEvolve-${REQUESTED_TAG}/" \
+            -o "${PAYLOAD_DIR}/${ARCHIVE}" \
+            "${REQUESTED_TAG}"
+          ARCHIVE_SHA256="$(shasum -a 256 "${PAYLOAD_DIR}/${ARCHIVE}" | awk '{print $1}')"
+          printf '%s  %s\n' "${ARCHIVE_SHA256}" "${ARCHIVE}" > "${PAYLOAD_DIR}/${CHECKSUM}"
+
+          {
+            printf 'archive_name=%s\n' "${ARCHIVE}"
+            printf 'archive_sha256=%s\n' "${ARCHIVE_SHA256}"
+            printf 'artifact_name=%s\n' "${ARTIFACT_NAME}"
+            printf 'checksum_name=%s\n' "${CHECKSUM}"
+            printf 'notes_name=%s\n' "${NOTES}"
+            printf 'payload_dir=%s\n' "${PAYLOAD_DIR}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Upload immutable release payload
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.payload_dir }}/${{ steps.package.outputs.archive_name }}
+            ${{ steps.package.outputs.payload_dir }}/${{ steps.package.outputs.checksum_name }}
+            ${{ steps.package.outputs.payload_dir }}/${{ steps.package.outputs.notes_name }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: verify
+    if: >-
+      ${{ needs.verify.result == 'success' &&
+          github.ref == 'refs/heads/main' &&
+          endsWith(github.workflow_ref, '@refs/heads/main') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified payload by artifact identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          path: ${{ runner.temp }}/release-payload
+          merge-multiple: true
+      - name: Verify downloaded digest, identity, and exact file set
+        id: verify_payload
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_NAME: ${{ needs.verify.outputs.artifact_name }}
+          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${REQUESTED_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            exit 1
+          fi
+          test "${#EXPECTED_ARCHIVE_SHA256}" -eq 64
+          [[ "${EXPECTED_ARCHIVE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${EXPECTED_ARTIFACT_ID}" =~ ^[0-9]+$ ]]
+          test "${EXPECTED_ARTIFACT_NAME}" = \
+            "evozeus-release-${REQUESTED_TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          ARCHIVE="evozeus-coevolve-${REQUESTED_TAG}.tar.gz"
+          CHECKSUM="${ARCHIVE}.sha256"
+          NOTES="release-notes-${REQUESTED_TAG}.md"
+          EXPECTED_FILES="$(printf '%s\n' "${ARCHIVE}" "${CHECKSUM}" "${NOTES}" | LC_ALL=C sort)"
+          ACTUAL_FILES="$(find "${PAYLOAD_DIR}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          ACTUAL_ENTRY_COUNT="$(find "${PAYLOAD_DIR}" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+          test "${ACTUAL_FILES}" = "${EXPECTED_FILES}"
+          test "${ACTUAL_ENTRY_COUNT}" -eq 3
+          test -s "${PAYLOAD_DIR}/${NOTES}"
+
+          ACTUAL_ARCHIVE_SHA256="$(shasum -a 256 "${PAYLOAD_DIR}/${ARCHIVE}" | awk '{print $1}')"
+          test "${ACTUAL_ARCHIVE_SHA256}" = "${EXPECTED_ARCHIVE_SHA256}"
+          read -r RECORDED_SHA256 RECORDED_ARCHIVE < "${PAYLOAD_DIR}/${CHECKSUM}"
+          test "${RECORDED_SHA256}" = "${EXPECTED_ARCHIVE_SHA256}"
+          test "${RECORDED_ARCHIVE}" = "${ARCHIVE}"
+      - name: Publish GitHub Release from verified payload
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD_DIR: ${{ runner.temp }}/release-payload
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="evozeus-coevolve-${REQUESTED_TAG}.tar.gz"
+          CHECKSUM="${ARCHIVE}.sha256"
+          NOTES="release-notes-${REQUESTED_TAG}.md"
+          gh release view "${REQUESTED_TAG}" >/dev/null 2>&1 || \
+            gh release create "${REQUESTED_TAG}" \
+              --title "EvoZeus-CoEvolve ${REQUESTED_TAG}" \
+              --notes-file "${PAYLOAD_DIR}/${NOTES}"
+          gh release upload "${REQUESTED_TAG}" \
+            "${PAYLOAD_DIR}/${ARCHIVE}" \
+            "${PAYLOAD_DIR}/${CHECKSUM}" \
+            --clobber
