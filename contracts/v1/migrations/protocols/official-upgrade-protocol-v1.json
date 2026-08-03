@@ -5,7 +5,6 @@
   "allowed_operation_types": [
     "create_exact",
     "replace_exact",
-    "managed_block_merge",
     "manifest_patch"
   ],
   "authority": {

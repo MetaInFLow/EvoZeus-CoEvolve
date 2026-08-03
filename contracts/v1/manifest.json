@@ -21,7 +21,7 @@
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "160238b2dd4af0760c385187e83d32dd8e364bfdf3a3fbb27dc090590fa29093",
+      "sha256": "c0d1854884697bb40299a82c9fca3e5b443cba5cc7894f12b4cc8fe1b9d83253",
       "role": "current-target-closure-pointer"
     },
     {
@@ -126,7 +126,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.0.0/closure.json",
-      "sha256": "5a3407a02cf594243e8cf1c472e185713a9fcc32c90cb1b465c68a5b696cab64",
+      "sha256": "5492db366d9a2ef4a35a40545887e94eb459695a5cfc8ae29d64f8523f7f55ac",
       "role": "immutable-target-closure"
     },
     {
@@ -241,22 +241,22 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "1a19b08ebc4cd146aa6dcc79cc0a9e75fcb1ad4a0cf5d09f5d946188f229ed34",
+      "sha256": "1158b9e1124f1c722e32c403f1203b22f6912df34769d486c0ec8b45cf500554",
       "role": "immutable-target-closure"
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "bc2d25b3d1d0c133f138065b4d57ebaaaa2d309e02dcb89a2c33d62ded95b01e",
+      "sha256": "a0834cca51372b3e16d1b3ab8fc65c8c6d393e1f55018b40b7758eed73062481",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "e4b682c54bfc774cb8671763bcc4a4fd9126e2a3fb40418820d43f0ce9afe213",
+      "sha256": "d18d9f699a4040ba438347d6785deab59273b83b1dcbef7299893a6066983b1d",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-      "sha256": "83f1957eb416ec8bc8f14c9a6d5cf8a476ce2fd03cea49a26f18d262ce8b3519",
+      "sha256": "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce",
       "role": "official-upgrade-protocol"
     },
     {
@@ -266,17 +266,17 @@
     },
     {
       "path": "migrations/schemas/official-upgrade-profile-v1.schema.json",
-      "sha256": "277f09e2e8068499f5f20fd64ff07fa0e528acf92f34df043619b57adf714533",
+      "sha256": "bace5bc6991d36f2077030d146fe2574c263ed16c26f6ce86bec61191675f7f5",
       "role": "official-upgrade-json-schema"
     },
     {
       "path": "migrations/schemas/official-upgrade-protocol-v1.schema.json",
-      "sha256": "ad831842861b65faad43ef3b514c7b16bd49816b007e383f75b0d75f4e865064",
+      "sha256": "64490b798820112250b039c686ef1979528e0f49e0fd21531f06172b2d0937b1",
       "role": "official-upgrade-json-schema"
     },
     {
       "path": "migrations/schemas/target-closure-v1.schema.json",
-      "sha256": "7d2b2861411332e88b0cf2a58b27fbd6333100c05f937e30f587fe4505cf8180",
+      "sha256": "23a0b3b01f00550b034a7e9b18fa6a113af69a5efd054025ad024d52823082ab",
       "role": "official-upgrade-json-schema"
     },
     {

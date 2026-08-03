@@ -25,14 +25,13 @@
     },
     "allowed_operation_types": {
       "type": "array",
-      "minItems": 4,
-      "maxItems": 4,
+      "minItems": 3,
+      "maxItems": 3,
       "uniqueItems": true,
       "items": {
         "enum": [
           "create_exact",
           "replace_exact",
-          "managed_block_merge",
           "manifest_patch"
         ]
       }

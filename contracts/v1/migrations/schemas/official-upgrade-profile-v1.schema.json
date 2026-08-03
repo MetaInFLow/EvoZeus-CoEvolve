@@ -46,7 +46,12 @@
           "properties": {
             "kind": { "const": "construction_revision" },
             "revision": { "pattern": "^[0-9a-f]{40}$" },
-            "release": { "type": "null" }
+            "release": {
+              "anyOf": [
+                { "type": "null" },
+                { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" }
+              ]
+            }
           }
         },
         "artifact_source_to": {
@@ -74,7 +79,6 @@
             "enum": [
               "create_exact",
               "replace_exact",
-              "managed_block_merge",
               "manifest_patch"
             ]
           },
@@ -90,7 +94,7 @@
         "required": ["target_path", "policy", "version_fact_source"],
         "properties": {
           "target_path": { "$ref": "#/$defs/relativePath" },
-          "policy": { "const": "receipt_gated_preserve_exact" },
+          "policy": { "const": "preserve_byte_exact_no_auto_upgrade" },
           "version_fact_source": { "const": ".evozeus-wrapper/wrapper.json" }
         }
       }

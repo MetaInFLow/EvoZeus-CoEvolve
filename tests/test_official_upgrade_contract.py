@@ -14,7 +14,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "83f1957eb416ec8bc8f14c9a6d5cf8a476ce2fd03cea49a26f18d262ce8b3519"
+PROTOCOL_SHA256 = "40421d4f89f853a872f47c85d2a71a52c239292ac41e8de284fc18c8861d9fce"
 
 
 def _sha256(value: bytes) -> str:
@@ -232,7 +232,7 @@ def test_migration_contract_postimage_hash_is_locked_across_profile_and_closure(
     assert wrapper_state["migration_contract"]["sha256"] == f"sha256:{contract_sha256}"
 
 
-def test_every_rendered_surface_is_receipt_gated_and_deferred() -> None:
+def test_rendered_surfaces_are_explicitly_excluded_from_automatic_upgrade() -> None:
     _, profile = _profile()
     v10 = json.loads(
         (BUNDLE / "migrations/history/harness-skill/v1.0.0/closure.json").read_text()
@@ -252,7 +252,6 @@ def test_every_rendered_surface_is_receipt_gated_and_deferred() -> None:
         ".evozeus-wrapper/docs/_config.yml",
         ".evozeus-wrapper/docs/index.md",
         ".github/ISSUE_TEMPLATE/config.yml",
-        ".github/workflows/evozeus-wrapper-preflight.yml",
     }
     assert {
         item["target_path"]
@@ -267,10 +266,19 @@ def test_every_rendered_surface_is_receipt_gated_and_deferred() -> None:
         for item in closure["files"]:
             if item["target_path"] in rendered:
                 assert item["materialization"] == {
-                    "policy": "render_with_install_receipt",
+                    "policy": "render_at_fresh_attach",
                     "without_receipt": "preserve_byte_exact",
-                    "migration_policy": "receipt_gated_preserve_exact",
+                    "migration_policy": "preserve_byte_exact_no_auto_upgrade",
                 }
+    for closure in (v10, v11):
+        workflow = next(
+            item
+            for item in closure["files"]
+            if item["target_path"]
+            == ".github/workflows/evozeus-wrapper-preflight.yml"
+        )
+        assert workflow["kind"] == "exact"
+        assert workflow["materialization"] == {"policy": "copy_exact"}
 
 
 @pytest.mark.parametrize("operation_type", ["delete", "rename", "shell", "copy"])

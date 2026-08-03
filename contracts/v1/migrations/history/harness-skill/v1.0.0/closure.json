@@ -36,9 +36,9 @@
       "artifact_path": "artifacts/templates/target/CHANGELOG.md",
       "sha256": "451ea86ec530a6475e4c938c338979a8c9783d5974f765109e2131b733db003d",
       "materialization": {
-        "policy": "render_with_install_receipt",
+        "policy": "render_at_fresh_attach",
         "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
       },
       "source_path": "templates/target/CHANGELOG.md",
       "source_binding": "construction_revision"
@@ -51,9 +51,9 @@
       "artifact_path": "artifacts/templates/target/WRAPPER.md",
       "sha256": "a6ebad01310e23e7d7be4e9a72a67530963863c9a0804bb72516530d3998ff44",
       "materialization": {
-        "policy": "render_with_install_receipt",
+        "policy": "render_at_fresh_attach",
         "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
       },
       "source_path": "templates/target/WRAPPER.md",
       "source_binding": "construction_revision"
@@ -75,9 +75,9 @@
       "artifact_path": "artifacts/templates/target/docs/_config.yml",
       "sha256": "9e55dafe410278196555ea43b3718123f521151d6f2bab676a821a35ab4e191a",
       "materialization": {
-        "policy": "render_with_install_receipt",
+        "policy": "render_at_fresh_attach",
         "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
       },
       "source_path": "templates/target/docs/_config.yml",
       "source_binding": "construction_revision"
@@ -116,9 +116,9 @@
       "artifact_path": "artifacts/templates/target/docs/index.md",
       "sha256": "38e483420af1aa8ed5f6cb2625edeab33474292849ff4e5bbe84410444668a58",
       "materialization": {
-        "policy": "render_with_install_receipt",
+        "policy": "render_at_fresh_attach",
         "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
       },
       "source_path": "templates/target/docs/index.md",
       "source_binding": "construction_revision"
@@ -276,9 +276,9 @@
       "artifact_path": "artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
       "sha256": "0c51a4f1b8a7a38a20c4c1a37cccb7335fa76936dcd3f815e5276d47078f6aeb",
       "materialization": {
-        "policy": "render_with_install_receipt",
+        "policy": "render_at_fresh_attach",
         "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
       },
       "source_path": "templates/target/.github/ISSUE_TEMPLATE/config.yml",
       "source_binding": "construction_revision"
@@ -311,15 +311,13 @@
     },
     {
       "target_path": ".github/workflows/evozeus-wrapper-preflight.yml",
-      "kind": "rendered_template",
+      "kind": "exact",
       "mode": "100644",
       "ownership": "wrapper_managed",
       "artifact_path": "artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
       "sha256": "454655de1cd97332e109d45a7ec0d03f4697ea51118536920fe5e0a9982e26bd",
       "materialization": {
-        "policy": "render_with_install_receipt",
-        "without_receipt": "preserve_byte_exact",
-        "migration_policy": "receipt_gated_preserve_exact"
+        "policy": "copy_exact"
       },
       "source_path": "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
       "source_binding": "construction_revision"

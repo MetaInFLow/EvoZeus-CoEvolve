@@ -93,8 +93,7 @@
                 "enum": [
                   "copy_exact",
                   "must_be_absent",
-                  "render_with_install_receipt",
-                  "preserve_byte_exact_without_receipt",
+                  "render_at_fresh_attach",
                   "manifest_owned_state"
                 ]
               }
