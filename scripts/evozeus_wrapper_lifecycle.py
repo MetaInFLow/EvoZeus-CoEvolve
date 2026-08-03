@@ -4647,6 +4647,10 @@ def _apply_canonical_v1_upgrade(
     migration_bundle: dict[str, Any],
     snapshot_root: Path | None,
 ) -> dict[str, Any]:
+    approved_target_binding = (plan.get("target_git_state") or {}).get(
+        "target_binding"
+    )
+    migration_kernel.verify_target_binding(target, approved_target_binding)
     allowed_paths = {item["path"] for item in plan["write_set"]}
     approved_profile = _approved_automatic_profile(
         migration_bundle,
@@ -4706,7 +4710,10 @@ def _apply_canonical_v1_upgrade(
         snapshot_root=snapshot_root,
     )
     protected_before: dict[str, bytes] = {}
-    with migration_kernel.SecureTargetFS(target) as secure_target:
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=approved_target_binding,
+    ) as secure_target:
         for item in plan["protected_business_surfaces"]:
             protected_before[item["path"]] = secure_target.read_exact(
                 item["path"],
@@ -4721,7 +4728,10 @@ def _apply_canonical_v1_upgrade(
     try:
         migration_kernel.verify_plan_preimages(target, plan)
         write_items = {item["path"]: item for item in plan["write_set"]}
-        with migration_kernel.SecureTargetFS(target) as secure_target:
+        with migration_kernel.SecureTargetFS(
+            target,
+            expected_binding=approved_target_binding,
+        ) as secure_target:
             for relative in sorted(staged):
                 item = write_items[relative]
                 changed_files.append(relative)

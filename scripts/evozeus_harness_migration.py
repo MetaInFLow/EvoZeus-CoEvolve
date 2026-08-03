@@ -6,6 +6,7 @@ import ctypes
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -40,6 +41,7 @@ SNAPSHOT_ANCHOR_SCHEMA_VERSION = (
 SNAPSHOT_TRANSACTION_SCHEMA_VERSION = (
     "evozeus.coevolve.harness-migration-transaction.v1"
 )
+TARGET_BINDING_SCHEMA_VERSION = "evozeus.target-root-binding.v1"
 OFFICIAL_SOURCE_REPOSITORY = "MetaInFLow/EvoZeus-CoEvolve"
 OFFICIAL_SOURCE_URLS = {
     "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git",
@@ -162,8 +164,111 @@ def canonical_json_sha256(value: object) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return sha256_bytes(encoded)
+
+
+def _strict_json_value(value: Any, label: str) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"invalid {label}: non-finite JSON number")
+    if isinstance(value, dict):
+        for item in value.values():
+            _strict_json_value(item, label)
+    elif isinstance(value, list):
+        for item in value:
+            _strict_json_value(item, label)
+    return value
+
+
+def _strict_json_loads(data: str, label: str) -> Any:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"invalid {label}: duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"invalid {label}: non-finite JSON number: {value}")
+
+    value = json.loads(
+        data,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_constant,
+    )
+    return _strict_json_value(value, label)
+
+
+def _target_binding(target: Path) -> dict[str, Any]:
+    if os.name != "posix" or not all(
+        hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
+    ):
+        raise ValueError("target binding requires POSIX dirfd/O_NOFOLLOW support")
+    lexical = Path(os.path.abspath(os.fspath(target.expanduser())))
+    try:
+        canonical = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"target root cannot be resolved: {lexical}: {exc}") from exc
+    flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        descriptor = os.open(canonical, flags)
+    except OSError as exc:
+        raise ValueError(f"target root cannot be opened safely: {canonical}: {exc}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        named = os.lstat(canonical)
+        rebound = lexical.resolve(strict=True)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or stat.S_ISLNK(named.st_mode)
+            or rebound != canonical
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise ValueError("target root identity changed while binding")
+        return {
+            "schema_version": TARGET_BINDING_SCHEMA_VERSION,
+            "lexical_path": str(lexical),
+            "canonical_path": str(canonical),
+            "root_st_dev": opened.st_dev,
+            "root_st_ino": opened.st_ino,
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _validated_target_binding(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("schema_version") != (
+        TARGET_BINDING_SCHEMA_VERSION
+    ):
+        raise ValueError("target root binding is missing or unsupported")
+    if any(
+        not isinstance(value.get(field), str) or not value.get(field)
+        for field in ("lexical_path", "canonical_path")
+    ) or any(
+        not isinstance(value.get(field), int) or isinstance(value.get(field), bool)
+        for field in ("root_st_dev", "root_st_ino")
+    ):
+        raise ValueError("target root binding fields are invalid")
+    return dict(value)
+
+
+def verify_target_binding(target: Path, expected: object) -> dict[str, Any]:
+    approved = _validated_target_binding(expected)
+    actual = _target_binding(target)
+    if actual != approved:
+        raise ValueError(
+            "target root binding changed after planning: "
+            f"expected={approved}; actual={actual}"
+        )
+    return actual
 
 
 def _target_inventory(root: Path) -> list[dict[str, Any]]:
@@ -185,6 +290,8 @@ def _target_inventory(root: Path) -> list[dict[str, Any]]:
             item: dict[str, Any] = {
                 "path": relative.as_posix(),
                 "mode": stat.S_IMODE(metadata.st_mode),
+                "st_dev": metadata.st_dev,
+                "st_ino": metadata.st_ino,
             }
             if stat.S_ISLNK(metadata.st_mode):
                 item.update({"kind": "symlink", "target": os.readlink(child.path)})
@@ -198,6 +305,14 @@ def _target_inventory(root: Path) -> list[dict[str, Any]]:
                 try:
                     descriptor = os.open(child.path, flags)
                     try:
+                        opened = os.fstat(descriptor)
+                        if (opened.st_dev, opened.st_ino) != (
+                            metadata.st_dev,
+                            metadata.st_ino,
+                        ):
+                            raise ValueError(
+                                f"target inventory identity changed: {relative}"
+                            )
                         data = b""
                         while True:
                             chunk = os.read(descriptor, 1024 * 1024)
@@ -226,7 +341,8 @@ def _target_inventory(root: Path) -> list[dict[str, Any]]:
 
 
 def target_git_state(target: Path) -> dict[str, Any]:
-    target = target.expanduser().resolve()
+    binding = _target_binding(target)
+    target = Path(binding["canonical_path"])
     head = _git(target, "rev-parse", "HEAD")
     tree = _git(target, "rev-parse", "HEAD^{tree}")
     index = _git_bytes(target, "ls-files", "--stage", "-z")
@@ -240,7 +356,8 @@ def target_git_state(target: Path) -> dict[str, Any]:
     if any(result.returncode != 0 for result in (head, tree, index, status_result)):
         raise ValueError("target Git identity/status cannot be collected")
     inventory = _target_inventory(target)
-    return {
+    state = {
+        "target_binding": binding,
         "head_commit": head.stdout.strip(),
         "head_tree_oid": tree.stdout.strip(),
         "index_sha256": f"sha256:{sha256_bytes(index.stdout)}",
@@ -249,6 +366,8 @@ def target_git_state(target: Path) -> dict[str, Any]:
         "inventory_sha256": f"sha256:{canonical_json_sha256(inventory)}",
         "inventory_entries": len(inventory),
     }
+    verify_target_binding(Path(binding["lexical_path"]), binding)
+    return state
 
 
 def verify_target_git_state(target: Path, plan: dict[str, Any]) -> None:
@@ -281,11 +400,15 @@ def _unplanned_target_inventory(target: Path, plan: dict[str, Any]) -> list[dict
 
 def capture_post_apply_baseline(target: Path, plan: dict[str, Any]) -> dict[str, Any]:
     """Bind Git identity and every byte outside the approved mutation footprint."""
-    target = target.expanduser().resolve()
-    git_state = target_git_state(target)
-    inventory = _unplanned_target_inventory(target, plan)
+    requested_target = Path(os.path.abspath(os.fspath(target.expanduser())))
+    git_state = target_git_state(requested_target)
+    inventory = _unplanned_target_inventory(
+        Path(git_state["target_binding"]["canonical_path"]),
+        plan,
+    )
     return {
         "schema_version": "evozeus.target-post-apply-baseline.v1",
+        "target_binding": git_state["target_binding"],
         "head_commit": git_state["head_commit"],
         "head_tree_oid": git_state["head_tree_oid"],
         "index_sha256": git_state["index_sha256"],
@@ -344,18 +467,26 @@ def _approved_changed_paths(plan: dict[str, Any]) -> list[str]:
 
 def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
     """Require the final target delta to equal the approved mutation set exactly."""
-    target = target.expanduser().resolve()
+    requested_target = Path(os.path.abspath(os.fspath(target.expanduser())))
     baseline = plan.get("post_apply_baseline")
     if not isinstance(baseline, dict) or baseline.get("schema_version") != (
         "evozeus.target-post-apply-baseline.v1"
     ):
         raise ValueError("migration plan is missing the post-apply target baseline")
-    current_git = target_git_state(target)
+    expected_binding = (plan.get("target_git_state") or {}).get("target_binding")
+    binding = verify_target_binding(requested_target, expected_binding)
+    target = Path(binding["canonical_path"])
+    if baseline.get("target_binding") != expected_binding:
+        raise ValueError("post-apply target baseline binding differs from the plan")
+    current_git = target_git_state(requested_target)
     for field in ("head_commit", "head_tree_oid", "index_sha256"):
         if current_git.get(field) != baseline.get(field):
             raise ValueError(f"post-apply target {field} changed outside the plan")
 
-    with SecureTargetFS(target) as secure_target:
+    with SecureTargetFS(
+        requested_target,
+        expected_binding=expected_binding,
+    ) as secure_target:
         for item in plan.get("protected_business_surfaces", []):
             current = secure_target.file_state(item.get("path"))
             if current.get("sha256") != item.get("preimage_sha256"):
@@ -407,12 +538,13 @@ def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
             "post-apply Git changed set differs from approved mutations: "
             f"expected={expected_changed}; actual={actual_changed}"
         )
+    verify_target_binding(requested_target, expected_binding)
 
 
 def _json_object(path: Path, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = _strict_json_loads(path.read_text(encoding="utf-8"), label)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid {label}: {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"invalid {label}: expected a JSON object: {path}")
@@ -421,8 +553,8 @@ def _json_object(path: Path, label: str) -> dict[str, Any]:
 
 def _json_bytes_object(data: bytes, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(data.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        value = _strict_json_loads(data.decode("utf-8"), label)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid {label}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"invalid {label}: expected a JSON object")
@@ -514,8 +646,17 @@ def _github_api_json(url: str, headers: dict[str, str]) -> dict[str, Any] | None
                 or final_url.port not in {None, 443}
             ):
                 return None
-            value = json.loads(response.read().decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, urllib.error.URLError):
+            value = _strict_json_loads(
+                response.read().decode("utf-8"),
+                "GitHub API response",
+            )
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+        urllib.error.URLError,
+    ):
         return None
     return value if isinstance(value, dict) else None
 
@@ -661,8 +802,11 @@ def _release_source_trust(
                         "working contract bundle manifest differs from the declared release artifact"
                     )
                 try:
-                    tagged_manifest = json.loads(tagged_manifest_bytes.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                    tagged_manifest = _strict_json_loads(
+                        tagged_manifest_bytes.decode("utf-8"),
+                        "tagged contract bundle manifest",
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                     tagged_manifest = None
                 if tagged_manifest != bundle_manifest:
                     reasons.append("release tag contract bundle manifest identity is invalid")
@@ -1500,12 +1644,19 @@ def _target_path(target: Path, raw: object) -> Path:
 class SecureTargetFS:
     """Root-dirfd anchored target I/O with no-follow traversal and exact CAS."""
 
-    def __init__(self, target: Path, *, directory_mode: int = 0o755):
+    def __init__(
+        self,
+        target: Path,
+        *,
+        directory_mode: int = 0o755,
+        expected_binding: dict[str, Any] | None = None,
+    ):
         if os.name != "posix" or not all(
             hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW")
         ):
             raise ValueError("secure target mutation requires POSIX dirfd/O_NOFOLLOW support")
-        self.target = target.expanduser().resolve()
+        lexical = Path(os.path.abspath(os.fspath(target.expanduser())))
+        self.target = lexical.resolve(strict=True)
         metadata = os.lstat(self.target)
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError("secure target root must be a non-symlink directory")
@@ -1522,6 +1673,23 @@ class SecureTargetFS:
         if (opened.st_dev, opened.st_ino) != self._root_identity:
             os.close(self._root_fd)
             raise ValueError("secure target root changed while opening")
+        actual_binding = {
+            "schema_version": TARGET_BINDING_SCHEMA_VERSION,
+            "lexical_path": str(lexical),
+            "canonical_path": str(self.target),
+            "root_st_dev": opened.st_dev,
+            "root_st_ino": opened.st_ino,
+        }
+        if expected_binding is not None:
+            approved_binding = _validated_target_binding(expected_binding)
+            if actual_binding != approved_binding:
+                os.close(self._root_fd)
+                self._root_fd = -1
+                raise ValueError(
+                    "secure target root differs from the approved plan binding: "
+                    f"expected={approved_binding}; actual={actual_binding}"
+                )
+        self.binding = actual_binding
         self.created_directories: list[str] = []
 
     def close(self) -> None:
@@ -1665,19 +1833,89 @@ class SecureTargetFS:
         name: str,
         expected_identity: tuple[int, int],
     ) -> None:
-        if cls._named_identity(parent_fd, name) != expected_identity:
-            raise ValueError("secure target cleanup identity changed")
-        os.unlink(name, dir_fd=parent_fd)
+        """Atomically isolate a cleanup candidate before removing its random name."""
+        prefix = (
+            ".evozeus-tmp-"
+            if name.startswith(".evozeus-tmp-")
+            else ".evozeus-quarantine-"
+        )
+        isolated_name = cls._unique_private_name(parent_fd, prefix)
+        try:
+            _atomic_rename_noreplace_same_directory(
+                parent_fd,
+                name,
+                isolated_name,
+            )
+        except BaseException as exc:
+            raise ValueError(
+                "secure target cleanup_required: candidate could not be isolated"
+            ) from exc
+
+        try:
+            isolated_identity = cls._named_identity(parent_fd, isolated_name)
+        except BaseException as exc:
+            raise ValueError(
+                "secure target cleanup_required: isolated candidate is unsafe; "
+                f"preserved={isolated_name}"
+            ) from exc
+        if isolated_identity != expected_identity:
+            restored = cls._restore_isolated_cleanup_name(
+                parent_fd,
+                isolated_name,
+                name,
+            )
+            state = "restored" if restored else f"preserved={isolated_name}"
+            raise ValueError(
+                "secure target cleanup_required: candidate identity changed; "
+                f"state={state}"
+            )
+        try:
+            os.unlink(isolated_name, dir_fd=parent_fd)
+        except BaseException as exc:
+            restored = cls._restore_isolated_cleanup_name(
+                parent_fd,
+                isolated_name,
+                name,
+            )
+            if restored:
+                raise
+            raise ValueError(
+                "secure target cleanup_required: isolated candidate could not be "
+                f"removed; preserved={isolated_name}"
+            ) from exc
 
     @staticmethod
-    def _unique_quarantine_name(parent_fd: int) -> str:
+    def _unique_private_name(parent_fd: int, prefix: str) -> str:
         for _attempt in range(32):
-            name = f".evozeus-quarantine-{uuid.uuid4().hex}"
+            name = f"{prefix}{uuid.uuid4().hex}"
             try:
                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
                 return name
-        raise ValueError("secure target could not allocate a quarantine path")
+        raise ValueError("secure target could not allocate a private cleanup path")
+
+    @staticmethod
+    def _restore_isolated_cleanup_name(
+        parent_fd: int,
+        isolated_name: str,
+        original_name: str,
+    ) -> bool:
+        try:
+            _atomic_rename_noreplace_same_directory(
+                parent_fd,
+                isolated_name,
+                original_name,
+            )
+        except (OSError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _unique_quarantine_name(parent_fd: int) -> str:
+        return SecureTargetFS._unique_private_name(
+            parent_fd,
+            ".evozeus-quarantine-",
+        )
 
     @staticmethod
     def _open_unique_staging_file(parent_fd: int) -> tuple[str, int, tuple[int, int]]:
@@ -1862,7 +2100,7 @@ class SecureTargetFS:
                 f"secure target published identity changed: {relative.as_posix()}"
             )
 
-    def _cleanup_created_directory_paths(self, paths: list[str]) -> None:
+    def _cleanup_created_directory_paths(self, paths: list[str]) -> list[str]:
         removed: set[str] = set()
         for relative_text in sorted(
             set(paths),
@@ -1897,6 +2135,7 @@ class SecureTargetFS:
             self.created_directories = [
                 path for path in self.created_directories if path not in removed
             ]
+        return sorted(set(paths) - removed)
 
     def file_state(self, raw: object) -> dict[str, Any]:
         descriptors, name, relative = self._open_parent(
@@ -1937,6 +2176,8 @@ class SecureTargetFS:
                 "sha256": f"sha256:{sha256_bytes(data)}",
                 "mode": stat.S_IMODE(metadata.st_mode),
                 "uid": metadata.st_uid,
+                "st_dev": metadata.st_dev,
+                "st_ino": metadata.st_ino,
             }
         finally:
             self._close_descriptors(descriptors)
@@ -2054,7 +2295,11 @@ class SecureTargetFS:
                     expected_data=data,
                     expected_mode=mode,
                 )
-                os.unlink(staging_name, dir_fd=parent_fd)
+                self._unlink_named_identity(
+                    parent_fd,
+                    staging_name,
+                    staging_identity,
+                )
             else:
                 self._verified_replace_preimage(
                     parent_fd,
@@ -2234,7 +2479,8 @@ class SecureTargetFS:
                     quarantine_name = None
                 state = "restored" if recovered else "quarantined"
                 raise ValueError(
-                    "secure target remove cleanup failed after quarantine: "
+                    "secure target cleanup_required: remove cleanup failed after "
+                    "quarantine: "
                     f"{relative.as_posix()}; state={state}; recovery={recovery}"
                 ) from exc
             quarantine_name = None
@@ -2242,8 +2488,8 @@ class SecureTargetFS:
         finally:
             self._close_descriptors(descriptors)
 
-    def cleanup_created_directories(self) -> None:
-        self._cleanup_created_directory_paths(self.created_directories)
+    def cleanup_created_directories(self) -> list[str]:
+        return self._cleanup_created_directory_paths(self.created_directories)
 
     def directory_state(self, raw: object) -> dict[str, Any]:
         relative = _safe_relative_path(raw, "secure directory")
@@ -2380,6 +2626,7 @@ def canonical_plan_bytes(plan: dict[str, Any]) -> bytes:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -2401,7 +2648,9 @@ def planned_target_paths(plan: dict[str, Any]) -> list[str]:
 
 
 def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
-    target = target.expanduser().resolve()
+    expected_binding = (plan.get("target_git_state") or {}).get("target_binding")
+    requested_target = Path(os.path.abspath(os.fspath(target.expanduser())))
+    verify_target_binding(requested_target, expected_binding)
     if plan.get("decision") != "automatic_migration_available":
         raise ValueError(
             f"migration plan is not writable: decision={plan.get('decision')}"
@@ -2422,7 +2671,7 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
             "migration plan digest mismatch: "
             f"expected={expected_plan_sha256}; actual={actual_plan_sha256}"
         )
-    verify_target_git_state(target, plan)
+    verify_target_git_state(requested_target, plan)
     operation_sets: dict[str, list[dict[str, Any]]] = {}
     for field in ("write_set", "delete_set", "move_set"):
         entries = plan.get(field)
@@ -2509,76 +2758,63 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
         ):
             raise ValueError(f"protected business surface contract is invalid: {relative}")
 
-    for item in operation_sets["write_set"]:
-        path = _target_path(target, item.get("path"))
-        expected = item.get("preimage_sha256")
-        if expected is None:
-            if path.exists() or path.is_symlink():
+    with SecureTargetFS(
+        requested_target,
+        expected_binding=expected_binding,
+    ) as secure_target:
+        for item in operation_sets["write_set"]:
+            state = secure_target.file_state(item.get("path"))
+            expected = item.get("preimage_sha256")
+            if expected is None:
+                if state["kind"] != "absent":
+                    raise ValueError(
+                        f"migration create path appeared after planning: {item.get('path')}"
+                    )
+                continue
+            if state.get("sha256") != expected:
                 raise ValueError(
-                    f"migration create path appeared after planning: {item.get('path')}"
+                    f"migration preimage hash changed: {item.get('path')}: "
+                    f"expected={expected}; actual={state.get('sha256')}"
                 )
-            continue
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(
-                f"migration preimage is missing or unsafe: {item.get('path')}"
-            )
-        actual = f"sha256:{sha256_file(path)}"
-        if actual != expected:
-            raise ValueError(
-                f"migration preimage hash changed: {item.get('path')}: "
-                f"expected={expected}; actual={actual}"
-            )
-        actual_mode = path.stat().st_mode & 0o7777
-        if "preimage_mode" in item and actual_mode != item.get("preimage_mode"):
-            raise ValueError(
-                f"migration preimage mode changed: {item.get('path')}: "
-                f"expected={item.get('preimage_mode')}; actual={actual_mode}"
-            )
-    for item in operation_sets["delete_set"]:
-        path = _target_path(target, item.get("path"))
-        expected = item.get("preimage_sha256")
-        if not path.is_file() or path.is_symlink() or f"sha256:{sha256_file(path)}" != expected:
-            raise ValueError(
-                f"migration delete preimage hash changed: {item.get('path')}"
-            )
-    for item in operation_sets["move_set"]:
-        source = _target_path(target, item.get("source"))
-        destination = _target_path(target, item.get("destination"))
-        expected_source = item.get("source_preimage_sha256")
-        expected_destination = item.get("destination_preimage_sha256")
-        if (
-            not source.is_file()
-            or source.is_symlink()
-            or f"sha256:{sha256_file(source)}" != expected_source
-        ):
-            raise ValueError(
-                f"migration move source preimage hash changed: {item.get('source')}"
-            )
-        if expected_destination is None:
-            if destination.exists() or destination.is_symlink():
+            if "preimage_mode" in item and state.get("mode") != item.get(
+                "preimage_mode"
+            ):
                 raise ValueError(
-                    f"migration move destination appeared after planning: {item.get('destination')}"
+                    f"migration preimage mode changed: {item.get('path')}: "
+                    f"expected={item.get('preimage_mode')}; actual={state.get('mode')}"
                 )
-        elif (
-            not destination.is_file()
-            or destination.is_symlink()
-            or f"sha256:{sha256_file(destination)}" != expected_destination
-        ):
-            raise ValueError(
-                f"migration move destination preimage hash changed: {item.get('destination')}"
-            )
-    for item in protected:
-        path = _target_path(target, item.get("path"))
-        expected = item.get("preimage_sha256")
-        if (
-            not isinstance(expected, str)
-            or not path.is_file()
-            or path.is_symlink()
-            or f"sha256:{sha256_file(path)}" != expected
-        ):
-            raise ValueError(
-                f"protected business surface preimage changed: {item.get('path')}"
-            )
+        for item in operation_sets["delete_set"]:
+            state = secure_target.file_state(item.get("path"))
+            if state.get("sha256") != item.get("preimage_sha256"):
+                raise ValueError(
+                    f"migration delete preimage hash changed: {item.get('path')}"
+                )
+        for item in operation_sets["move_set"]:
+            source_state = secure_target.file_state(item.get("source"))
+            destination_state = secure_target.file_state(item.get("destination"))
+            if source_state.get("sha256") != item.get("source_preimage_sha256"):
+                raise ValueError(
+                    f"migration move source preimage hash changed: {item.get('source')}"
+                )
+            expected_destination = item.get("destination_preimage_sha256")
+            if expected_destination is None:
+                if destination_state["kind"] != "absent":
+                    raise ValueError(
+                        "migration move destination appeared after planning: "
+                        f"{item.get('destination')}"
+                    )
+            elif destination_state.get("sha256") != expected_destination:
+                raise ValueError(
+                    f"migration move destination preimage hash changed: {item.get('destination')}"
+                )
+        for item in protected:
+            expected = item.get("preimage_sha256")
+            state = secure_target.file_state(item.get("path"))
+            if not isinstance(expected, str) or state.get("sha256") != expected:
+                raise ValueError(
+                    f"protected business surface preimage changed: {item.get('path')}"
+                )
+    verify_target_binding(requested_target, expected_binding)
 
 
 def _lexical_absolute(path: Path) -> Path:
@@ -2658,7 +2894,14 @@ def mark_migration_transaction(
     changed_paths: list[str] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    if state not in {"in_progress", "applied", "rolled_back", "rollback_failed"}:
+    if state not in {
+        "in_progress",
+        "applied",
+        "rollback_in_progress",
+        "cleanup_required",
+        "rolled_back",
+        "rollback_failed",
+    }:
         raise ValueError(f"unsupported migration transaction state: {state}")
     base = snapshot_root.parent
     _require_owned_mode(
@@ -2673,10 +2916,13 @@ def mark_migration_transaction(
         existing = secure_base.file_state(relative)
         if existing["kind"] == "file":
             try:
-                current_value = json.loads(
-                    secure_base.read_exact(relative, existing["sha256"]).decode("utf-8")
+                current_value = _strict_json_loads(
+                    secure_base.read_exact(relative, existing["sha256"]).decode(
+                        "utf-8"
+                    ),
+                    "migration transaction state",
                 )
-            except (UnicodeError, json.JSONDecodeError) as exc:
+            except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
                 raise ValueError(f"invalid migration transaction state: {exc}") from exc
             if not isinstance(current_value, dict):
                 raise ValueError("migration transaction state must be a JSON object")
@@ -2690,7 +2936,13 @@ def mark_migration_transaction(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         transaction_bytes = (
-            json.dumps(transaction, ensure_ascii=False, indent=2) + "\n"
+            json.dumps(
+                transaction,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("utf-8")
         secure_base.write_exact(
             relative,
@@ -2765,8 +3017,11 @@ def create_migration_snapshot(
     snapshot_root: Path | None = None,
 ) -> Path:
     """Persist the complete declared write set before the first target write."""
-    target = target.expanduser().resolve()
-    verify_plan_preimages(target, plan)
+    expected_binding = (plan.get("target_git_state") or {}).get("target_binding")
+    requested_target = Path(os.path.abspath(os.fspath(target.expanduser())))
+    binding = verify_target_binding(requested_target, expected_binding)
+    target = Path(binding["canonical_path"])
+    verify_plan_preimages(requested_target, plan)
     base = _trusted_snapshot_base(target, snapshot_root)
     base.mkdir(parents=True, mode=0o700, exist_ok=True)
     _reject_symlink_chain(base, "trusted snapshot root")
@@ -2810,13 +3065,18 @@ def create_migration_snapshot(
             expected_preimage=None,
             mode=0o600,
         )
-        with SecureTargetFS(target) as secure_target:
+        with SecureTargetFS(
+            requested_target,
+            expected_binding=expected_binding,
+        ) as secure_target:
             for relative_text in planned_target_paths(plan):
                 state = secure_target.file_state(relative_text)
                 relative = _safe_relative_path(relative_text)
                 parent = relative.parent
                 while parent.parts:
-                    if (target / parent).is_dir() and not (target / parent).is_symlink():
+                    if secure_target.directory_state(parent.as_posix())["kind"] == (
+                        "directory"
+                    ):
                         existing_directories.add(parent.as_posix())
                     parent = parent.parent
                 item: dict[str, Any] = {
@@ -2845,6 +3105,7 @@ def create_migration_snapshot(
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "transaction_id": transaction_id,
             "target": str(target),
+            "target_binding": binding,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "migration_protocol_version": plan.get("migration_protocol_version"),
             "profile": plan.get("profile"),
@@ -2856,30 +3117,50 @@ def create_migration_snapshot(
             "existing_directories": sorted(existing_directories),
         }
         descriptor_bytes = (
-            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"
+            json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("utf-8")
         receipt = {
             "schema_version": SNAPSHOT_RECEIPT_SCHEMA_VERSION,
             "transaction_id": transaction_id,
             "target": str(target),
+            "target_binding": binding,
             "plan_sha256": snapshot["plan_sha256"],
             "approved_plan_sha256": plan_sha256,
             "descriptor_sha256": f"sha256:{sha256_bytes(descriptor_bytes)}",
             "backup_set_sha256": f"sha256:{canonical_json_sha256(files)}",
         }
         receipt_bytes = (
-            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+            json.dumps(
+                receipt,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("utf-8")
         anchor = {
             "schema_version": SNAPSHOT_ANCHOR_SCHEMA_VERSION,
             "transaction_id": transaction_id,
             "target": str(target),
+            "target_binding": binding,
             "plan_sha256": plan_sha256,
             "descriptor_sha256": receipt["descriptor_sha256"],
             "receipt_sha256": f"sha256:{sha256_bytes(receipt_bytes)}",
         }
         anchor_bytes = (
-            json.dumps(anchor, ensure_ascii=False, indent=2) + "\n"
+            json.dumps(
+                anchor,
+                ensure_ascii=False,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("utf-8")
         for relative, data, mode in (
             (f"{transaction_id}/snapshot.json", descriptor_bytes, 0o600),
@@ -2892,6 +3173,7 @@ def create_migration_snapshot(
                 expected_preimage=None,
                 mode=mode,
             )
+    verify_target_binding(requested_target, expected_binding)
     return destination
 
 
@@ -2901,8 +3183,12 @@ def rollback_migration_snapshot(
     *,
     trusted_snapshot_root: Path | None = None,
 ) -> dict[str, Any]:
-    target = target.expanduser().resolve()
-    trusted_base = _trusted_snapshot_base(target, trusted_snapshot_root)
+    target = Path(os.path.abspath(os.fspath(target.expanduser())))
+    current_canonical_target = target.resolve(strict=True)
+    trusted_base = _trusted_snapshot_base(
+        current_canonical_target,
+        trusted_snapshot_root,
+    )
     _require_owned_mode(
         trusted_base,
         mode=0o700,
@@ -2962,13 +3248,13 @@ def rollback_migration_snapshot(
         raise ValueError("migration snapshot descriptor digest mismatch")
     if snapshot.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
         raise ValueError("unsupported migration snapshot schema")
-    if snapshot.get("target") != str(target):
+    if snapshot.get("target") != str(current_canonical_target):
         raise ValueError("migration snapshot target does not match requested target")
     if snapshot.get("transaction_id") != snapshot_root.name:
         raise ValueError("migration snapshot transaction identity mismatch")
     if any(
         receipt.get(field) != snapshot.get(field)
-        for field in ("transaction_id", "target", "plan_sha256")
+        for field in ("transaction_id", "target", "target_binding", "plan_sha256")
     ):
         raise ValueError("migration snapshot receipt identity mismatch")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(snapshot.get("plan_sha256"))):
@@ -2982,11 +3268,18 @@ def rollback_migration_snapshot(
         raise ValueError("approved migration plan digest binding mismatch")
     if any(
         anchor.get(field) != snapshot.get(field)
-        for field in ("transaction_id", "target", "plan_sha256")
+        for field in ("transaction_id", "target", "target_binding", "plan_sha256")
     ):
         raise ValueError("migration snapshot external anchor identity mismatch")
     if anchor.get("descriptor_sha256") != receipt.get("descriptor_sha256"):
         raise ValueError("migration snapshot external anchor descriptor mismatch")
+    expected_binding = _validated_target_binding(snapshot.get("target_binding"))
+    approved_binding = _validated_target_binding(
+        (approved_plan.get("target_git_state") or {}).get("target_binding")
+    )
+    if expected_binding != approved_binding:
+        raise ValueError("migration snapshot target binding differs from approved plan")
+    verify_target_binding(target, expected_binding)
 
     files = snapshot.get("files")
     if not isinstance(files, list):
@@ -3005,7 +3298,8 @@ def rollback_migration_snapshot(
     validated: list[tuple[dict[str, Any], dict[str, Any], bytes | None]] = []
     seen_paths: set[str] = set()
     with SecureSnapshotFS(trusted_base) as secure_snapshot, SecureTargetFS(
-        target
+        target,
+        expected_binding=expected_binding,
     ) as secure_target:
         for item in files:
             if not isinstance(item, dict):
@@ -3075,32 +3369,6 @@ def rollback_migration_snapshot(
             raise ValueError(f"migration snapshot contains duplicate directory: {normalized}")
         existing_directories.add(normalized)
 
-    with SecureTargetFS(target) as secure_target:
-        for item, current_state, data in validated:
-            if item.get("kind") == "absent":
-                if current_state.get("kind") != "absent":
-                    secure_target.remove_exact(
-                        item["path"],
-                        current_state["sha256"],
-                        expected_mode=current_state["mode"],
-                    )
-                continue
-            secure_target.write_exact(
-                item["path"],
-                data or b"",
-                expected_preimage=(
-                    None
-                    if current_state.get("kind") == "absent"
-                    else current_state["sha256"]
-                ),
-                expected_mode=(
-                    None
-                    if current_state.get("kind") == "absent"
-                    else current_state["mode"]
-                ),
-                mode=int(item["mode"]),
-            )
-
     removable_directories: set[str] = set()
     for relative_text in approved_paths:
         parent = _safe_relative_path(relative_text).parent
@@ -3109,45 +3377,116 @@ def rollback_migration_snapshot(
             if normalized not in existing_directories:
                 removable_directories.add(normalized)
             parent = parent.parent
-    with SecureTargetFS(target) as secure_target:
-        secure_target.created_directories.extend(removable_directories)
-        secure_target.cleanup_created_directories()
-
-    with SecureTargetFS(target) as secure_target:
-        for item in files:
-            current = secure_target.file_state(item.get("path"))
-            if item.get("kind") == "absent":
-                if current["kind"] != "absent":
-                    raise ValueError(f"rollback failed to remove created path: {item.get('path')}")
-                continue
-            if (
-                current.get("sha256") != item.get("sha256")
-                or current.get("mode") != item.get("mode")
-            ):
-                raise ValueError(f"rollback verification failed: {item.get('path')}")
-    quarantine_residue = [
-        item["path"]
-        for item in _target_inventory(target)
-        if any(
-            part.startswith((".evozeus-tmp-", ".evozeus-quarantine-"))
-            for part in Path(item["path"]).parts
-        )
-    ]
-    if quarantine_residue:
-        raise ValueError(
-            "rollback preserved concurrent quarantine content: "
-            + ", ".join(quarantine_residue)
-        )
+    changed_paths = [str(item["path"]) for item in files]
     mark_migration_transaction(
         snapshot_root,
-        state="rolled_back",
-        changed_paths=[item["path"] for item in files],
+        state="rollback_in_progress",
+        changed_paths=changed_paths,
     )
+    try:
+        with SecureTargetFS(
+            target,
+            expected_binding=expected_binding,
+        ) as secure_target:
+            for item, current_state, data in validated:
+                if item.get("kind") == "absent":
+                    if current_state.get("kind") != "absent":
+                        secure_target.remove_exact(
+                            item["path"],
+                            current_state["sha256"],
+                            expected_mode=current_state["mode"],
+                        )
+                    continue
+                secure_target.write_exact(
+                    item["path"],
+                    data or b"",
+                    expected_preimage=(
+                        None
+                        if current_state.get("kind") == "absent"
+                        else current_state["sha256"]
+                    ),
+                    expected_mode=(
+                        None
+                        if current_state.get("kind") == "absent"
+                        else current_state["mode"]
+                    ),
+                    mode=int(item["mode"]),
+                )
+
+        with SecureTargetFS(
+            target,
+            expected_binding=expected_binding,
+        ) as secure_target:
+            secure_target.created_directories.extend(removable_directories)
+            unresolved_directories = secure_target.cleanup_created_directories()
+            if unresolved_directories:
+                raise ValueError(
+                    "rollback preserved a non-empty transaction-created directory: "
+                    + ", ".join(unresolved_directories)
+                )
+            for relative_text in sorted(removable_directories):
+                if secure_target.directory_state(relative_text)["kind"] != "absent":
+                    raise ValueError(
+                        "rollback failed to remove transaction-created directory: "
+                        + relative_text
+                    )
+
+        with SecureTargetFS(
+            target,
+            expected_binding=expected_binding,
+        ) as secure_target:
+            for item in files:
+                current = secure_target.file_state(item.get("path"))
+                if item.get("kind") == "absent":
+                    if current["kind"] != "absent":
+                        raise ValueError(
+                            f"rollback failed to remove created path: {item.get('path')}"
+                        )
+                    continue
+                if (
+                    current.get("sha256") != item.get("sha256")
+                    or current.get("mode") != item.get("mode")
+                ):
+                    raise ValueError(
+                        f"rollback verification failed: {item.get('path')}"
+                    )
+        quarantine_residue = [
+            item["path"]
+            for item in _target_inventory(target)
+            if any(
+                part.startswith((".evozeus-tmp-", ".evozeus-quarantine-"))
+                for part in Path(item["path"]).parts
+            )
+        ]
+        if quarantine_residue:
+            raise ValueError(
+                "rollback preserved concurrent quarantine content: "
+                + ", ".join(quarantine_residue)
+            )
+        verify_target_binding(target, expected_binding)
+        mark_migration_transaction(
+            snapshot_root,
+            state="rolled_back",
+            changed_paths=changed_paths,
+        )
+    except Exception as exc:
+        try:
+            mark_migration_transaction(
+                snapshot_root,
+                state="rollback_failed",
+                changed_paths=changed_paths,
+                error=str(exc),
+            )
+        except Exception as state_exc:
+            raise ValueError(
+                f"rollback_failed: {exc}; transaction state write failed: {state_exc}"
+            ) from exc
+        raise ValueError(f"rollback_failed: {exc}") from exc
     return {
         "stage": "harness_migration_rollback",
         "status": "rolled_back",
         "writes": True,
-        "target": str(target),
+        "target": str(current_canonical_target),
         "snapshot": str(snapshot_root),
         "plan_sha256": snapshot["plan_sha256"],
         "restored_files": [item["path"] for item in files],

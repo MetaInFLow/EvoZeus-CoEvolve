@@ -21,7 +21,7 @@ from scripts import evozeus_wrapper_lifecycle as lifecycle
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = "44d1fbdefc1e1de47a35c3ca39d2ba083661d569"
-RELEASE_TAG = "v9.9.9"
+RELEASE_TAG = "v0.15.0"
 OFFICIAL_URL = "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git"
 _SOURCE_TAG_ATTESTATIONS: dict[str, dict[str, str] | None] = {}
 
@@ -124,6 +124,7 @@ def _make_release_source(
     )
     closure = json.loads(closure_path.read_text(encoding="utf-8"))
     closure["source"]["required_release"] = RELEASE_TAG
+    closure["state"]["target_wrapper_version"] = RELEASE_TAG
     _write_json(closure_path, closure)
     closure_sha256 = hashlib.sha256(closure_path.read_bytes()).hexdigest()
     history_pointer_path = (
@@ -144,6 +145,7 @@ def _make_release_source(
         ).hexdigest()
         profile["release_axis"]["artifact_source_from"]["release"] = released_from
     profile["to_closure"]["sha256"] = closure_sha256
+    profile["release_axis"]["target_wrapper_to"] = RELEASE_TAG
     profile["release_axis"]["artifact_source_to"]["release"] = RELEASE_TAG
     _write_json(profile_path, profile)
     profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
@@ -218,12 +220,16 @@ def _prepare_exact_v1_target(tmp_path: Path, name: str = "target") -> Path:
         + "\n\n## Business Workflow\n\nOWNER-BYTES-DO-NOT-CHANGE  \n",
         encoding="utf-8",
     )
+    migration_bundle = _trusted_development_bundle()
     bootstrap.copy_templates(
         target,
         _legacy_replacement_values(),
         force=False,
-        _migration_bundle=_trusted_development_bundle(),
+        _migration_bundle=migration_bundle,
     )
+    for profile in migration_bundle["official_upgrade"]["profiles"]:
+        for relative in profile.get("migration_records", []):
+            target.joinpath(relative).unlink(missing_ok=True)
     frozen_skill = (
         ROOT
         / "contracts/v1/migrations/artifacts/using-evozeus-harness-v1.0.0.md"
@@ -1720,7 +1726,7 @@ def test_current_harness_version_is_derived_from_the_verified_closure(
 
     with pytest.raises(
         ValueError,
-        match="current_harness_skill_version disagrees with the verified current closure",
+        match="current_harness_skill_version disagrees with current closure",
     ):
         migration_kernel.load_migration_contract(source)
 
@@ -2771,3 +2777,331 @@ def test_batch_propagates_the_current_targets_structured_rollback_failure(
     assert report["writes"] is True
     assert report["rollback_verified"] is False
     assert report["results"] == [failed_result]
+
+
+@pytest.mark.parametrize("operation", ["create", "replace", "remove"])
+def test_cleanup_identity_race_preserves_later_content_and_requires_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    target = tmp_path / f"cleanup-identity-race-{operation}"
+    target.mkdir()
+    destination = target / "managed.txt"
+    preimage = b"PREIMAGE\n"
+    expected = "sha256:" + hashlib.sha256(preimage).hexdigest()
+    if operation in {"replace", "remove"}:
+        destination.write_bytes(preimage)
+
+    original_rename = migration_kernel._atomic_rename_noreplace_same_directory
+    raced = False
+
+    def replace_cleanup_candidate(
+        parent_fd: int,
+        source: str,
+        isolated: str,
+    ) -> None:
+        nonlocal raced
+        is_cleanup = (
+            source.startswith(".evozeus-tmp-")
+            if operation in {"create", "replace"}
+            else source.startswith(".evozeus-quarantine-")
+        )
+        if is_cleanup and not raced:
+            raced = True
+            os.unlink(source, dir_fd=parent_fd)
+            descriptor = os.open(
+                source,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            try:
+                os.write(descriptor, b"LATER-CONCURRENT-CONTENT\n")
+            finally:
+                os.close(descriptor)
+        original_rename(parent_fd, source, isolated)
+
+    monkeypatch.setattr(
+        migration_kernel,
+        "_atomic_rename_noreplace_same_directory",
+        replace_cleanup_candidate,
+    )
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        with pytest.raises(ValueError, match="cleanup_required"):
+            if operation == "create":
+                secure_target.write_exact(
+                    "managed.txt",
+                    b"POSTIMAGE\n",
+                    expected_preimage=None,
+                    mode=0o644,
+                )
+            elif operation == "replace":
+                secure_target.write_exact(
+                    "managed.txt",
+                    b"POSTIMAGE\n",
+                    expected_preimage=expected,
+                    expected_mode=0o644,
+                    mode=0o644,
+                )
+            else:
+                secure_target.remove_exact(
+                    "managed.txt",
+                    expected,
+                    expected_mode=0o644,
+                )
+
+    preserved = [
+        path
+        for path in target.iterdir()
+        if path.is_file() and path.read_bytes() == b"LATER-CONCURRENT-CONTENT\n"
+    ]
+    assert raced is True
+    assert len(preserved) == 1
+    if operation in {"create", "replace"}:
+        assert destination.read_bytes() == b"POSTIMAGE\n"
+
+
+@pytest.mark.parametrize("replacement", ["symlink-root", "new-root-inode", "new-leaf-inode"])
+def test_approved_target_binding_rejects_post_plan_identity_replacement_zero_write(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    target = _prepare_secure_target(tmp_path, f"target-binding-{replacement}")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / f"target-binding-{replacement}-snapshots"
+    original_owned = target.joinpath("owned.txt").read_bytes()
+
+    if replacement == "new-leaf-inode":
+        detached_leaf = tmp_path / "detached-owned.txt"
+        target.joinpath("owned.txt").rename(detached_leaf)
+        target.joinpath("owned.txt").write_bytes(original_owned)
+        assert target.joinpath("owned.txt").stat().st_ino != detached_leaf.stat().st_ino
+    else:
+        replacement_root = tmp_path / f"replacement-{replacement}"
+        shutil.copytree(target, replacement_root, symlinks=True)
+        detached_root = tmp_path / f"detached-{replacement}"
+        target.rename(detached_root)
+        if replacement == "symlink-root":
+            target.symlink_to(replacement_root, target_is_directory=True)
+        else:
+            replacement_root.rename(target)
+
+    with pytest.raises(ValueError, match="(binding changed|Git tree/status/inventory changed)"):
+        migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=trusted_base,
+        )
+
+    assert target.joinpath("owned.txt").read_bytes() == original_owned
+    assert not target.joinpath("generated/nested/new.txt").exists()
+    assert not trusted_base.exists()
+
+
+def test_rollback_persists_in_progress_before_write_and_rolled_back_after_verify(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "rollback-state-order")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "rollback-state-order-snapshots"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    write_items = {item["path"]: item for item in plan["write_set"]}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "owned.txt",
+            b"OWNED-POSTIMAGE\n",
+            expected_preimage=write_items["owned.txt"]["preimage_sha256"],
+            expected_mode=write_items["owned.txt"]["preimage_mode"],
+            mode=0o644,
+        )
+        secure_target.write_exact(
+            "generated/nested/new.txt",
+            b"CREATED-POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+
+    observed_states: list[str] = []
+    original_write = migration_kernel.SecureTargetFS.write_exact
+
+    def observe_first_target_write(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        data: bytes,
+        *,
+        expected_preimage: str | None,
+        mode: int,
+        expected_mode: int | None = None,
+    ) -> None:
+        if secure_target.target == target.resolve() and not observed_states:
+            transaction = json.loads(
+                snapshot.joinpath("transaction.json").read_text(encoding="utf-8")
+            )
+            observed_states.append(transaction["state"])
+        original_write(
+            secure_target,
+            raw,
+            data,
+            expected_preimage=expected_preimage,
+            expected_mode=expected_mode,
+            mode=mode,
+        )
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "write_exact",
+        observe_first_target_write,
+    )
+    result = migration_kernel.rollback_migration_snapshot(
+        target,
+        snapshot,
+        trusted_snapshot_root=trusted_base,
+    )
+
+    transaction = json.loads(
+        snapshot.joinpath("transaction.json").read_text(encoding="utf-8")
+    )
+    assert observed_states == ["rollback_in_progress"]
+    assert transaction["state"] == "rolled_back"
+    assert result["status"] == "rolled_back"
+    assert not target.joinpath("generated").exists()
+
+
+def test_partial_rollback_failure_is_persisted_as_rollback_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "rollback-partial-failure")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "rollback-partial-failure-snapshots"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    write_items = {item["path"]: item for item in plan["write_set"]}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "owned.txt",
+            b"OWNED-POSTIMAGE\n",
+            expected_preimage=write_items["owned.txt"]["preimage_sha256"],
+            expected_mode=write_items["owned.txt"]["preimage_mode"],
+            mode=0o644,
+        )
+        secure_target.write_exact(
+            "generated/nested/new.txt",
+            b"CREATED-POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+
+    original_remove = migration_kernel.SecureTargetFS.remove_exact
+
+    def fail_created_path_remove(
+        secure_target: migration_kernel.SecureTargetFS,
+        raw: object,
+        expected_sha256: str,
+        *,
+        expected_mode: int | None = None,
+    ) -> None:
+        if str(raw) == "generated/nested/new.txt":
+            raise OSError("simulated partial rollback failure")
+        original_remove(
+            secure_target,
+            raw,
+            expected_sha256,
+            expected_mode=expected_mode,
+        )
+
+    monkeypatch.setattr(
+        migration_kernel.SecureTargetFS,
+        "remove_exact",
+        fail_created_path_remove,
+    )
+    with pytest.raises(ValueError, match="rollback_failed"):
+        migration_kernel.rollback_migration_snapshot(
+            target,
+            snapshot,
+            trusted_snapshot_root=trusted_base,
+        )
+
+    transaction = json.loads(
+        snapshot.joinpath("transaction.json").read_text(encoding="utf-8")
+    )
+    assert transaction["state"] == "rollback_failed"
+    assert "simulated partial rollback failure" in transaction["error"]
+    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+    assert target.joinpath("generated/nested/new.txt").read_bytes() == (
+        b"CREATED-POSTIMAGE\n"
+    )
+
+
+def test_rollback_preserves_concurrent_file_in_created_directory_and_fails_state(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "rollback-created-directory-race")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "rollback-created-directory-race-snapshots"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    write_items = {item["path"]: item for item in plan["write_set"]}
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "generated/nested/new.txt",
+            b"CREATED-POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+    concurrent = target / "generated/nested/concurrent-owner.txt"
+    concurrent.write_bytes(b"CONCURRENT-OWNER\n")
+
+    with pytest.raises(
+        ValueError,
+        match="rollback_failed.*non-empty transaction-created directory",
+    ):
+        migration_kernel.rollback_migration_snapshot(
+            target,
+            snapshot,
+            trusted_snapshot_root=trusted_base,
+        )
+
+    transaction = json.loads(
+        snapshot.joinpath("transaction.json").read_text(encoding="utf-8")
+    )
+    assert transaction["state"] == "rollback_failed"
+    assert concurrent.read_bytes() == b"CONCURRENT-OWNER\n"
+    assert target.joinpath("generated/nested").is_dir()
+    assert not target.joinpath("generated/nested/new.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"key": 1, "key": 2}',
+        '{"value": NaN}',
+        '{"value": Infinity}',
+        '{"value": -Infinity}',
+        '{"value": 1e400}',
+    ],
+)
+def test_migration_json_parser_rejects_ambiguous_or_nonfinite_values(
+    raw: str,
+) -> None:
+    with pytest.raises(ValueError):
+        migration_kernel._json_bytes_object(raw.encode("utf-8"), "audit fixture")
+
+
+def test_migration_json_serializers_reject_nonfinite_values() -> None:
+    with pytest.raises(ValueError):
+        migration_kernel.canonical_json_sha256({"value": float("inf")})
+    with pytest.raises(ValueError):
+        migration_kernel.canonical_plan_bytes({"value": float("nan")})
