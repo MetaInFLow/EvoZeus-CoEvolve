@@ -48,7 +48,7 @@
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "19b020303198e75fa6f91b8bccd1129c7de26673a3ad57209304ad53b0fa33ef",
+      "sha256": "aecb4b4e8a8549e54cc071b6822b01b121c4714786528c192a7a67b45637d703",
       "role": "current-target-closure-pointer"
     },
     {
@@ -173,7 +173,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
+      "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
       "role": "immutable-target-closure-artifact"
     },
     {
@@ -268,7 +268,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "882208337fb1d617f6974590359b4a91b7d18776de19d61964e4d9d08cd8e4f8",
+      "sha256": "f918a9fa681b8db837e778f229520baaa088c562a04bd0b6d670c48b0a18bcfa",
       "role": "immutable-target-closure"
     },
     {
@@ -283,17 +283,17 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "31a98ae1fcb274c73a0c650eeecebb259ed5129cfe2e856eb4a111eca50e1e10",
+      "sha256": "6cb3bbe66c64b529f2188b53569cf4b8591279a140de9ef1802f0c8af81010f6",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "18e968cc9e4eb76475fc60aeb41d3ced5bbbc3475612821e52a1569474af2156",
+      "sha256": "04286d81a13145b56c4a0d27df67624176d1fd2796f566025ed271b19266cd01",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
-      "sha256": "7ff66509064e28b4320ecdfa4446b3e237098db2eb655ab9906100cb21dfec7b",
+      "sha256": "609e6d55607ca44602090003b294af9f42f6c01171ebe60a3f073720ea4fb725",
       "role": "supervised-legacy-profile"
     },
     {
@@ -343,7 +343,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "b41acc6a4314067688e33d2c50a0fdc19fbcf40e4b0ab1f2589d5d8ebfe2742f",
+      "sha256": "de52d5315f85cfcf79847a6abc54a6865857f73bfd417da29f8f0e4b81ec01d3",
       "role": "target-template-inventory"
     },
     {

@@ -12,7 +12,7 @@
   },
   "to_closure": {
     "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-    "sha256": "882208337fb1d617f6974590359b4a91b7d18776de19d61964e4d9d08cd8e4f8"
+    "sha256": "f918a9fa681b8db837e778f229520baaa088c562a04bd0b6d670c48b0a18bcfa"
   },
   "release_axis": {
     "target_wrapper_from": "v0.14.0",
@@ -66,7 +66,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-        "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
+        "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
         "mode": "100755"
       }
     },

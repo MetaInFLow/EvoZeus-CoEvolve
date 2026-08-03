@@ -35,7 +35,7 @@
         {
           "source": "scripts/evozeus_wrapper_preflight.py",
           "target": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
-          "sha256": "f01fd6631438f277f64687728bcb156cdf6b48714ec45bfa92e80ad79b29494c",
+          "sha256": "15df4c7e39fc048106e894ce4077cc391c147c91a2cdbe5a39111d8335737752",
           "executable": true
         },
         {

@@ -485,6 +485,7 @@ def check_migration_contract(target: Path, manifest: dict) -> None:
         fail("migration contract current Harness Skill version is incompatible")
     if contract.get("path_roots") != {
         "artifact_path": "contracts/v1",
+        "repository_path": "repository_root",
         "target_path": "target_repository_root",
     }:
         fail("migration contract path roots are ambiguous")

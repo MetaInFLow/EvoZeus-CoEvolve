@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import evozeus_harness_migration as migration_kernel
+from scripts import evozeus_wrapper_preflight as preflight
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,9 @@ CONTRACT_RELATIVE = Path(
     "contracts/v1/migrations/harness-migration-contract-v1.json"
 )
 MANIFEST_RELATIVE = Path("contracts/v1/manifest.json")
+TARGET_CONTRACT = Path(
+    ".evozeus-wrapper/contracts/harness-migration-contract-v1.json"
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -59,3 +63,44 @@ def test_contract_loader_rejects_a_missing_repository_path_root(
         match="migration contract path_roots are missing or ambiguous",
     ):
         migration_kernel.load_migration_contract(source)
+
+
+def _preflight_target(tmp_path: Path, contract: dict[str, object]) -> tuple[Path, dict]:
+    target = tmp_path / "target"
+    contract_path = target / TARGET_CONTRACT
+    contract_path.parent.mkdir(parents=True)
+    _write_json(contract_path, contract)
+    manifest = {
+        "migration_contract": {
+            "migration_protocol_version": "v1.0.0",
+            "contract_id": "evozeus-harness-migration",
+            "contract_version": "v1.0.0",
+            "path": TARGET_CONTRACT.as_posix(),
+            "sha256": "sha256:" + hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+        },
+        "managed_files": [TARGET_CONTRACT.as_posix()],
+    }
+    return target, manifest
+
+
+def test_target_preflight_accepts_the_three_explicit_path_roots(
+    tmp_path: Path,
+) -> None:
+    contract = json.loads((ROOT / CONTRACT_RELATIVE).read_text(encoding="utf-8"))
+    target, manifest = _preflight_target(tmp_path, contract)
+
+    preflight.check_migration_contract(target, manifest)
+
+
+def test_target_preflight_rejects_a_missing_repository_path_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    contract = json.loads((ROOT / CONTRACT_RELATIVE).read_text(encoding="utf-8"))
+    del contract["path_roots"]["repository_path"]
+    target, manifest = _preflight_target(tmp_path, contract)
+
+    with pytest.raises(SystemExit):
+        preflight.check_migration_contract(target, manifest)
+
+    assert "migration contract path roots are ambiguous" in capsys.readouterr().err
