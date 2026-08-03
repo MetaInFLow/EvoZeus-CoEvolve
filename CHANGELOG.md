@@ -17,7 +17,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Moved versioned Release Notes from the repository root to `docs/releases/` and made that directory the tag workflow's canonical notes source.
 - Consolidated invocation checks, low-frequency lifecycle routing, authorization boundaries, UAT, Release, and rollback guidance into the canonical Harness Skill.
 - Changed legacy instruction matching to read-only discovery. Regex, frontmatter, headings, terminal signatures, and old paths have no destructive authority; ambiguous and scattered layouts return `manual_migration_required`, `writes=false`.
-- Limited automatic migration to the exact canonical Harness Skill v1.0→v1.1 profile. The profile preserves the instruction surface byte-for-byte and verifies every preimage and postimage.
+- Made automatic migration profile selection data-driven through verified current pointers and direct-to-current historical closures. The current v1.0→v1.1 profile preserves the instruction surface byte-for-byte and requires the complete v1.0 closure—every exact hash/mode, required-absent path, manifest-owned state, operation precondition, and postimage—to match.
 - Made v0.15.0 the fresh-attach baseline and separated the target wrapper v0.14→v0.15 axis from artifact provenance: v1.0 comes from exact construction revision `44d1fbdefc1e1de47a35c3ca39d2ba083661d569`, while v1.1 requires the official v0.15.0 release.
 
 ### Security
@@ -29,7 +29,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 ### Verification
 
 - Added fresh attach, exact artifact migration, same-business-heading, missing-terminal, CRLF, fenced-code, no-marker, unknown-layout, plan-approval, source-trust, symlink, snapshot-tamper, rollback, and ambiguous-zero-write regression coverage.
-- Added regression coverage that keeps current v0.15 fresh fixtures separate from legacy v0.14 migration fixtures and rejects incorrect artifact provenance or mode-only drift.
+- Added regression coverage that keeps current v0.15 fresh fixtures separate from legacy v0.14 migration fixtures and rejects incorrect artifact provenance, mode-only drift, unchanged exact-file drift, unexpected files at required-absent paths, manifest-state drift, and ambiguous historical profiles.
 - Migration plans declare explicit write/delete/move sets, protected business surfaces, validation, rollback, and self-excluding `plan_sha256`; every write item carries a precomputed postimage hash.
 - Added lifecycle coverage for missing or incompatible Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership, and optional zero-mutation execution against a real Core checkout.
 

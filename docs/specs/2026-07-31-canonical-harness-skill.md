@@ -20,7 +20,7 @@
 2. 业务 instruction surface 只保留一个四行 wrapper-owned 激活块，frontmatter、trigger、工作流、输出合同和示例保持业务所有权。
 3. `wrapper.json` 记录 Harness Skill 路径、版本和 managed identity；入口引用必须与 manifest 完全一致。
 4. structure / doctor 在读取前拒绝 absolute path、Windows absolute path、`..`、路径错配和 symlink escape。
-5. 存量 migration discovery 只读；删除、移动和替换必须由版本化 profile、adapter identity、stable block identity 与 exact preimage hash 共同授权。证据不足时 `writes=false`，目标业务字节和换行原样保留。
+5. 存量 migration discovery 只读；自动写入必须由版本化 profile、adapter identity、stable block identity 与完整历史闭包共同授权。完整历史闭包覆盖全部 exact 文件的 byte/mode、required-absent 路径和 manifest owned state。证据不足时 `writes=false`，目标业务字节和换行原样保留。
 6. 正常调用按 `integration.mode` 与 `integration.capabilities` 的事实解释覆盖范围；instruction-surface preflight 继续依赖 prompt compliance，不新增 native `SkillInvoke` 声明。兼容旧 Harness 保持 advisory / fail-open；确定性的 manifest、路径或 source contract 错误继续阻断。
 
 ## PSPS
@@ -107,15 +107,21 @@ Harness Skill 使用独立合同版本 `v1.1.0`。该版本描述 Prompt / front
 ## 版本化迁移协议
 
 1. **Inspect**：解析 manifest、canonical marker 与历史候选。Regex、frontmatter、heading、terminal signature、旧路径和 Markdown 边界只生成 diagnostic candidates，`destructive_authority=false`。
-2. **Profile**：`legacy-scattered-to-canonical-v1.0@v1.0.0`、`prerelease-ambiguous-to-manual-review@v1.0.0` 与 unknown profile 固定进入 manual review；其中 prerelease profile 专门隔离缺少 exact migration contract / managed-block receipt 的 v1.1 目标。当前唯一 automatic profile 是 `canonical-v1.0-to-v1.1@v1.0.0`。
-3. **Evidence**：automatic profile 同时要求 manifest identity、唯一 stable marker block、frozen v1.0 Harness Skill artifact hash、exact v1.0 preflight hash、adapter id/version/digest。任一证据缺失、重复 marker 或额外 legacy candidate 都降级为 manual、`writes=false`。
+2. **Profile**：`legacy-scattered-to-canonical-v1.0@v1.0.0`、`prerelease-ambiguous-to-manual-review@v1.0.0` 与 unknown profile 固定进入 manual review。Runtime 从受验证的 current pointers 派生候选，按 from closure 与 current closure 动态选择唯一 direct-to-current profile；profile id 不进入硬编码分支。
+3. **Evidence**：automatic profile 同时要求完整 from closure、唯一 stable marker block、adapter id/version/digest。完整 closure evidence 包含每个 exact 文件的 hash/mode、每个 absent 条目的真实缺失、manifest owned fields、`managed_files_require` 子集关系和规范化 managed-block path。任一证据缺失、重复 marker、候选为零或多于一个，都降级为 manual、`writes=false`。
 4. **Plan**：输出 migration protocol、contract、profile、adapter、from/to、write/delete/move set、protected business surfaces、每个 preimage/postimage、source release attestation、validation、rollback 与 self-excluding `plan_sha256`。
 5. **Approve**：用户批准 exact `plan_sha256`；apply 使用 `--approve-plan` 进行 compare-and-swap。GitHub `ADMIN` 仍需验证，但不构成 plan approval。
-6. **Source trust**：要求 official origin、clean worktree、`HEAD`、local release tag commit 与 official remote tag commit 四者一致；tagged manifest 绑定 contract，实际 Harness/preflight postimage bytes 与 tag 逐字节一致。未发布 branch 保持 `source_unreleased`、`writes=false`。
+6. **Source trust**：官方 GitHub tag attestation 是远端事实源；local tag object、peeled commit、clean `HEAD` 必须与它一致。tagged manifest 绑定 contract，实际 postimage bytes 与 tag 逐字节一致。未发布 branch 保持 `source_unreleased`、`writes=false`。
 7. **Snapshot/apply**：在 target Repo 外创建带 descriptor digest receipt 与 backup-set digest 的完整 snapshot；复验所有 target preimages 和 protected surface CAS；预先 staging 全部 postimage；只写批准集合。
 8. **Verify/rollback**：验证全部 postimage、instruction surface byte-exact 与 structure。任何失败先完整校验 snapshot metadata、receipt、备份 hash、路径类型和当前状态，再执行恢复。手工 rollback 还需显式 `--approve`。
 
 Fresh attach 只在 instruction surface 同时满足“零 canonical markers、零 historical candidates”时 additive 插入四行块。预存未知 managed destination 文件会被保留并阻断，即使调用 `--force`。
+
+### 历史版本演进
+
+每次发布新 Harness 版本时，先新增不可变 current closure，再为每个仍受支持的历史 closure 新增一条直达新 current closure 的 profile，最后原子更新两个 current pointers。旧 closure 与旧 profile 文件保留原字节；旧 profile 可退出 active pointer，但不得改写。候选 PR 只能新增下一版本历史、直达当前版本的完整 profile 星型和受绑定 artifacts。可信 base verifier 会拒绝改写历史、遗漏历史覆盖、非唯一 from closure、构建修订来源不一致以及未绑定的 candidate 数据。
+
+版本轴分别记录 target wrapper、contract bundle、Harness Skill、migration protocol/profile 和 artifact release。自动迁移按 closure 状态与 release provenance 匹配，不能仅比较一个 frontmatter 版本字符串。
 
 ## 写集
 
@@ -139,7 +145,7 @@ Fresh attach 只在 instruction surface 同时满足“零 canonical markers、�
 | --- | --- | --- | --- |
 | A | fresh attach 只注入四行块并生成 Harness Skill | bootstrap + contract unit tests | Eng / DX |
 | B | structure / doctor 拒绝损坏与越界合同 | security matrix tests | Code / Security |
-| C | legacy/ambiguous 候选零写入，exact v1.0 profile 可验证迁移 | LF/CRLF、fenced code、missing terminal、unknown layout、rollback tests | Eng / QA |
+| C | legacy/ambiguous 候选零写入，完整 v1.0 closure 可验证迁移 | exact byte/mode、absent path、manifest state、LF/CRLF、unknown layout、rollback tests | Eng / QA |
 | D | single / AGENTS / hooked bundle 使用同一模式 | parameterized structure tests | QA / DX |
 | E | 全量回归和真实公开 Repo 只读副本 smoke | pytest、py_compile、preflight、diff check | Release |
 

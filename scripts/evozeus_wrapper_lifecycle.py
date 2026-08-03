@@ -3328,7 +3328,10 @@ def _canonical_v1_upgrade_evidence(
         "trusted_preimages": preimages,
         "stable_block": stable_block,
         "blockers": blockers,
-        "authority": "manifest + stable block id + release-bound exact artifact digests",
+        "authority": (
+            "verified full from closure + manifest patch preconditions + "
+            "stable block + release-bound postimages"
+        ),
     }
 
 

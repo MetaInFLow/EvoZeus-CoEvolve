@@ -12,7 +12,7 @@ Use this Skill for target Harness maintenance. The target boundary is one indepe
 Run every change through this sequence:
 
 1. **Inspect**：resolve the independent Repo root, read `.evozeus-wrapper/wrapper.json`, inspect the compact activation marker, and collect historical headings/signatures as read-only discovery candidates.
-2. **Plan**：load `contracts/v1/migrations/harness-migration-contract-v1.json`; use the trusted-base verifier to validate the stable protocol, both current pointers, the selected external official profile, and its hash-bound from/to closures before deriving any automatic write authority; emit the protocol, profile, adapter identity, exact from/to state, write/delete/move sets, protected business surfaces, source-release attestation, validation, rollback, and `plan_sha256`.
+2. **Plan**：load `contracts/v1/migrations/harness-migration-contract-v1.json`; use the trusted-base verifier to validate the stable protocol, both current pointers, every active direct-to-current external profile, and each hash-bound from/to closure. Select exactly one profile only after the target matches the whole immutable from closure: every exact file hash and mode, every required-absent path, the closure-owned manifest state, and the stable activation block. Emit the protocol, profile, adapter identity, exact from/to state, write/delete/move sets, protected business surfaces, source-release attestation, validation, rollback, and `plan_sha256`.
 3. **Approve**：show the complete plan to the user and obtain approval for that exact `sha256:<digest>`. GitHub `ADMIN` authority does not approve a plan.
 4. **Apply**：recompute the plan, require `--approve-plan` to match, verify every preimage and the official immutable source release, create a receipt-bound snapshot outside the target Repo, stage all postimages, then write only the approved set.
 5. **Verify**：check every postimage, preserve marker-external business bytes exactly, and run target structure validation.
@@ -52,11 +52,13 @@ Batch apply requires both `--approve` and the exact dry-run `batch_plan_sha256` 
 ## Versioned authority profiles
 
 - `legacy-scattered-to-canonical-v1.0@v1.0.0`：manual review, `writes=false`. Regex, frontmatter, heading, terminal text, path names, and inferred layout remain discovery-only evidence for every protocol version.
-- `canonical-v1.0-to-v1.1@v1.0.0`：automatic planning is available only after the trusted-base verifier resolves the hash-bound external official profile and immutable v1.0/v1.1 closures, and manifest identity, stable block identity, exact frozen Harness Skill preimage, exact preflight preimage, and adapter digest all match.
+- `canonical-v1.0-to-v1.1@v1.0.0`：the first concrete automatic profile. Planning is available only after the trusted-base verifier resolves its immutable v1.0/v1.1 closures and the target matches the complete v1.0 closure, stable block identity, profile identity, and adapter digest.
 - `prerelease-ambiguous-to-manual-review@v1.0.0`：a v1.1 Harness without the exact migration contract and managed-block receipts remains manual, `writes=false`.
 - `unknown-to-manual-review@v1.0.0`：manual review, `writes=false`.
 
-Destructive authority comes exclusively from the verified external official profile, its immutable closure diff, adapter identity, and exact preimage hashes. Frontmatter and regex findings never grant write authority. A missing field, duplicate marker, unknown layout, extra legacy candidate, dirty target, changed preimage, changed protected surface, untrusted source, or unapproved plan digest blocks all writes.
+The runtime does not select a profile by a hard-coded profile id. Each new Harness release adds one immutable current closure and a direct-to-current profile from every still-supported immutable historical closure. `history/current.json` selects the current closure; `profiles/current.json` selects the complete active upgrade star. Historical closures and profile files are append-only. Replacing the current pointer never rewrites prior history.
+
+Destructive authority comes exclusively from the verified external official profile, its immutable closure diff, adapter identity, and a complete exact match of the selected from closure. Frontmatter and regex findings never grant write authority. A missing field, present must-be-absent path, duplicate marker, unknown layout, extra legacy candidate, changed exact byte or mode, changed protected surface, untrusted source, ambiguous profile match, or unapproved plan digest blocks all writes.
 
 ## Source and snapshot trust
 
@@ -71,7 +73,7 @@ Destructive authority comes exclusively from the verified external official prof
 - The compact activation block uses the stable `evozeus-harness-entry` marker and manifest-bound relative link.
 - Fresh attach may add the block only when the surface has zero canonical markers and zero historical candidates.
 - Historical candidates never authorize deletion, relocation, or replacement. Route them to a reviewed adapter/profile backlog.
-- The canonical v1.0→v1.1 profile does not write the instruction surface. Its full-file preimage hash is a compare-and-swap protected surface and its bytes must remain identical after apply.
+- Protocol v1 profiles do not write the instruction surface. Its full-file preimage hash is a compare-and-swap protected surface and its bytes must remain identical after apply.
 - Pre-existing unknown files at managed destinations are preserved and block bootstrap/repair, including `--force`, unless an exact trusted preimage or manifest receipt proves ownership.
 
 ## Stop conditions
@@ -80,7 +82,7 @@ Stop with `writes=false` when any condition below holds:
 
 - `.evozeus-wrapper/wrapper.json` is missing, ambiguous, incomplete, or conflicts with a legacy manifest.
 - The plan lacks an automatic profile or any independent protocol/profile/adapter identity.
-- The source release, remote tag commit, contract, adapter, frozen preimage, or postimage cannot be verified exactly.
+- The source release, remote tag commit, contract, adapter, full from closure, or postimage cannot be verified exactly.
 - The target Git status is unavailable or dirty.
 - A write path escapes the target, traverses a symlink, has an unsafe parent type, or changed after planning.
 - `--approve-plan` is absent or differs from the current `plan_sha256`.
