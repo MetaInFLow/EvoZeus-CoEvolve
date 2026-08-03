@@ -215,10 +215,21 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["sha256", "mode"],
+          "required": ["sha256", "mode", "artifact"],
           "properties": {
             "sha256": { "$ref": "#/$defs/sha256" },
-            "mode": { "enum": ["100644", "100755"] }
+            "mode": { "enum": ["100644", "100755"] },
+            "artifact": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256", "mode", "normalization"],
+              "properties": {
+                "path": { "$ref": "#/$defs/relativePath" },
+                "sha256": { "$ref": "#/$defs/sha256" },
+                "mode": { "enum": ["100644", "100755"] },
+                "normalization": { "const": "forbidden_byte_exact" }
+              }
+            }
           }
         }
       ]

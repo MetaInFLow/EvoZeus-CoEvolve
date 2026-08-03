@@ -709,12 +709,43 @@ def test_published_schemas_validate_the_frozen_documents() -> None:
             ROOT / "contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json",
             ROOT / "contracts/v1/migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
         ),
+        (
+            ROOT / "contracts/v1/migrations/schemas/supervised-legacy-profile-v1.schema.json",
+            ROOT
+            / "contracts/v1/migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
+        ),
     )
     for schema_path, document_path in pairs:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         document = json.loads(document_path.read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
+
+
+def test_supervised_profile_schema_requires_frozen_preflight_artifact_binding() -> None:
+    schema = json.loads(
+        (
+            ROOT
+            / "contracts/v1/migrations/schemas/supervised-legacy-profile-v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    profile = json.loads(
+        (
+            ROOT
+            / "contracts/v1/migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    operation = next(
+        item
+        for item in profile["operations"]
+        if item["target_path"]
+        == ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    operation["preimage"].pop("artifact")
+
+    errors = list(Draft202012Validator(schema).iter_errors(profile))
+    assert errors
+    assert any("not valid under any of the given schemas" in error.message for error in errors)
 
 
 @pytest.mark.parametrize(

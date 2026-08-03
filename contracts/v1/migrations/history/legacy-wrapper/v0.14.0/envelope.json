@@ -15,6 +15,23 @@
     "captured_at": "2026-07-31",
     "purpose": "Issue #38 reviewed v0.14 three-section Prompt source envelope"
   },
+  "frozen_preflight_artifact": {
+    "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+    "artifact_path": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+    "sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+    "mode": "100755",
+    "encoding": "strict-utf-8",
+    "newline_style": "lf",
+    "normalization": "forbidden_byte_exact",
+    "source": {
+      "repository": "MetaInFLow/EvoZeus-CoEvolve",
+      "commit": "61b8340706db95995f9d31b2928c3363e473748d",
+      "tree": "91bfe36a427fffa52be9f8f62c6a31a4ca7e8c81",
+      "path": "scripts/evozeus_wrapper_preflight.py",
+      "blob": "c772f9bc7f252e36689c9ff6b55442724a97eb00",
+      "mode": "100755"
+    }
+  },
   "state": {
     "layout": "consolidated-v2",
     "target_wrapper_version": "v0.14.0",

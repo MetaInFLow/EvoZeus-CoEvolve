@@ -4,7 +4,7 @@
   "profile_version": "v1.0.0",
   "profile_schema": {
     "path": "migrations/schemas/supervised-legacy-profile-v1.schema.json",
-    "sha256": "07fa2b758bbf22b34eb893abc4eb28c2139023440c1062ad7eaed746a9860416"
+    "sha256": "c1be868ea77137487093d896c9844981f413c3593d39fc1ddffd5e7060aef07c"
   },
   "protocol": {
     "path": "migrations/protocols/official-upgrade-protocol-v1.json",
@@ -12,11 +12,11 @@
   },
   "source_envelope": {
     "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
-    "sha256": "cc8a46d8e7111160a6d76e66b9fc0a1f8eccb8b1c4a57c9022a53076f04c43e5"
+    "sha256": "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346"
   },
   "adapter": {
     "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-    "sha256": "0ede3f7dffadcdc82e8e58d6d7998697efb1a80036c90879ff14b769659285b8"
+    "sha256": "ea82bfb8fbeae9e1f5e89302ca0c6f4ea718ee3577bddc0bedc352682d4da9ca"
   },
   "target_closure_pointer": {
     "path": "migrations/history/harness-skill/current.json",
@@ -66,7 +66,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "f20d85a70f888a072578ecb74aae0765cc5fa4cdbbc5ccf17d7926e6756d51ed",
+        "sha256": "b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e",
         "mode": "100644"
       }
     },
@@ -89,7 +89,13 @@
       "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
       "preimage": {
         "sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
-        "mode": "100755"
+        "mode": "100755",
+        "artifact": {
+          "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py",
+          "sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+          "mode": "100755",
+          "normalization": "forbidden_byte_exact"
+        }
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
@@ -155,7 +161,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:f20d85a70f888a072578ecb74aae0765cc5fa4cdbbc5ccf17d7926e6756d51ed"
+            "sha256": "sha256:b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e"
           }
         },
         {
@@ -194,11 +200,11 @@
       "target_path": "SKILL.md",
       "source_envelope": {
         "path": "migrations/history/legacy-wrapper/v0.14.0/envelope.json",
-        "sha256": "cc8a46d8e7111160a6d76e66b9fc0a1f8eccb8b1c4a57c9022a53076f04c43e5"
+        "sha256": "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346"
       },
       "adapter": {
         "path": "migrations/adapters/legacy-v0.14-three-section/adapter-v1.json",
-        "sha256": "0ede3f7dffadcdc82e8e58d6d7998697efb1a80036c90879ff14b769659285b8"
+        "sha256": "ea82bfb8fbeae9e1f5e89302ca0c6f4ea718ee3577bddc0bedc352682d4da9ca"
       },
       "plan_contract": {
         "decision": "supervised_migration_available",

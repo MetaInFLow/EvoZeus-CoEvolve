@@ -32,6 +32,10 @@ LEGACY_ADAPTER_REL = (
 LEGACY_ENVELOPE_REL = (
     "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json"
 )
+LEGACY_PREFLIGHT_ARTIFACT_REL = (
+    "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/"
+    "artifacts/scripts/evozeus_wrapper_preflight.py"
+)
 LEGACY_PROFILE_SCHEMA_REL = (
     "contracts/v1/migrations/schemas/supervised-legacy-profile-v1.schema.json"
 )
@@ -851,6 +855,8 @@ def _verify_exact_operation(
     expected_type: str,
     before: dict[str, Any] | None,
     after: dict[str, Any],
+    *,
+    legacy_preimage_artifact: dict[str, Any] | None = None,
 ) -> None:
     if expected_type == "create_exact":
         if operation.get("preimage") != {"state": "absent"}:
@@ -859,7 +865,23 @@ def _verify_exact_operation(
         preimage = operation.get("preimage")
         if not isinstance(preimage, dict) or before is None:
             raise VerificationError(f"replace_exact preimage is missing: {operation['target_path']}")
-        if preimage != {"sha256": before.get("sha256"), "mode": before.get("mode")}:
+        expected_preimage: dict[str, Any] = {
+            "sha256": before.get("sha256"),
+            "mode": before.get("mode"),
+        }
+        if legacy_preimage_artifact is not None:
+            artifact_path = legacy_preimage_artifact.get("artifact_path")
+            if not isinstance(artifact_path, str) or not artifact_path.startswith(
+                BUNDLE_PREFIX
+            ):
+                raise VerificationError("legacy preimage artifact path is invalid")
+            expected_preimage["artifact"] = {
+                "path": artifact_path.removeprefix(BUNDLE_PREFIX),
+                "sha256": legacy_preimage_artifact.get("sha256"),
+                "mode": legacy_preimage_artifact.get("mode"),
+                "normalization": legacy_preimage_artifact.get("normalization"),
+            }
+        if preimage != expected_preimage:
             raise VerificationError(f"replace_exact preimage disagrees with closure: {operation['target_path']}")
     postimage = operation.get("postimage")
     if not isinstance(postimage, dict):
@@ -1310,6 +1332,75 @@ def _legacy_envelope_entries(
     return entries
 
 
+def _verify_legacy_preflight_artifact(
+    store: BlobStore,
+    manifest_files: dict[str, dict[str, str]],
+    envelope: dict[str, Any],
+    legacy_entries: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    artifact = envelope.get("frozen_preflight_artifact")
+    expected = {
+        "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+        "artifact_path": LEGACY_PREFLIGHT_ARTIFACT_REL,
+        "sha256": (
+            "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1"
+        ),
+        "mode": "100755",
+        "encoding": "strict-utf-8",
+        "newline_style": "lf",
+        "normalization": "forbidden_byte_exact",
+        "source": {
+            "repository": "MetaInFLow/EvoZeus-CoEvolve",
+            "commit": "61b8340706db95995f9d31b2928c3363e473748d",
+            "tree": "91bfe36a427fffa52be9f8f62c6a31a4ca7e8c81",
+            "path": "scripts/evozeus_wrapper_preflight.py",
+            "blob": "c772f9bc7f252e36689c9ff6b55442724a97eb00",
+            "mode": "100755",
+        },
+    }
+    if artifact != expected:
+        raise VerificationError("reviewed legacy preflight artifact evidence is invalid")
+    target_entry = legacy_entries.get(expected["target_path"])
+    if not isinstance(target_entry, dict) or any(
+        target_entry.get(field) != expected[field]
+        for field in ("sha256", "mode")
+    ):
+        raise VerificationError(
+            "reviewed legacy preflight artifact differs from its target envelope"
+        )
+    artifact_path = _manifest_bound_bundle_binding(
+        store,
+        manifest_files,
+        {
+            "path": expected["artifact_path"].removeprefix(BUNDLE_PREFIX),
+            "sha256": expected["sha256"],
+        },
+        "reviewed legacy preflight artifact",
+        "trusted-legacy-source-artifact",
+    )
+    if store.mode(artifact_path) != expected["mode"]:
+        raise VerificationError("reviewed legacy preflight artifact mode is invalid")
+    data = store.read_bytes(artifact_path)
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise VerificationError(
+            "reviewed legacy preflight artifact is not strict UTF-8"
+        ) from exc
+    if b"\r" in data or not data.endswith(b"\n"):
+        raise VerificationError(
+            "reviewed legacy preflight artifact violates LF byte-exact semantics"
+        )
+    blob_oid = hashlib.sha1(
+        f"blob {len(data)}\0".encode("ascii") + data
+    ).hexdigest()
+    if blob_oid != expected["source"]["blob"]:
+        raise VerificationError(
+            "reviewed legacy preflight artifact Git blob identity is invalid"
+        )
+    return artifact
+
+
 def _derive_legacy_static_write_set(
     envelope: dict[str, Any],
     legacy_entries: dict[str, dict[str, Any]],
@@ -1586,6 +1677,12 @@ def load_supervised_legacy_profile(
     ):
         raise VerificationError("reviewed legacy source evidence is not the audited fixture")
     legacy_entries = _legacy_envelope_entries(envelope)
+    frozen_preflight_artifact = _verify_legacy_preflight_artifact(
+        store,
+        manifest_files,
+        envelope,
+        legacy_entries,
+    )
     host_entrypoints = envelope.get("host_entrypoints_must_match")
     if not isinstance(host_entrypoints, list) or not host_entrypoints:
         raise VerificationError("reviewed legacy host entrypoint evidence is missing")
@@ -1836,7 +1933,18 @@ def load_supervised_legacy_profile(
         _, before, after = changes[target]
         if operation_type in {"create_exact", "replace_exact"}:
             assert after is not None
-            _verify_exact_operation(store, operation, operation_type, before, after)
+            _verify_exact_operation(
+                store,
+                operation,
+                operation_type,
+                before,
+                after,
+                legacy_preimage_artifact=(
+                    frozen_preflight_artifact
+                    if target == frozen_preflight_artifact["target_path"]
+                    else None
+                ),
+            )
         elif operation_type == "manifest_patch":
             assert after is not None
             _verify_legacy_manifest_operation(

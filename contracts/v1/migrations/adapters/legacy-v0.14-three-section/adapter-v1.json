@@ -9,7 +9,7 @@
   },
   "source_envelope": {
     "path": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",
-    "sha256": "cc8a46d8e7111160a6d76e66b9fc0a1f8eccb8b1c4a57c9022a53076f04c43e5"
+    "sha256": "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346"
   },
   "expected_headings": {
     "status": "EvoZeus-CoEvolve 状态检查",

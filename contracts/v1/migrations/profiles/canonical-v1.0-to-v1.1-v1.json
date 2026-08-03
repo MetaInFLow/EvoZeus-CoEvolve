@@ -12,7 +12,7 @@
   },
   "to_closure": {
     "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-    "sha256": "f918a9fa681b8db837e778f229520baaa088c562a04bd0b6d670c48b0a18bcfa"
+    "sha256": "8167c53603fc7b0cfeb1c2159a49b3f89e0219d324e0b6611bb67841d020891a"
   },
   "release_axis": {
     "target_wrapper_from": "v0.14.0",
@@ -39,7 +39,7 @@
       },
       "postimage": {
         "artifact_path": "migrations/history/harness-skill/v1.1.0/artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
-        "sha256": "f20d85a70f888a072578ecb74aae0765cc5fa4cdbbc5ccf17d7926e6756d51ed",
+        "sha256": "b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e",
         "mode": "100644"
       }
     },
@@ -125,7 +125,7 @@
             "contract_id": "evozeus-harness-migration",
             "contract_version": "v1.0.0",
             "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
-            "sha256": "sha256:f20d85a70f888a072578ecb74aae0765cc5fa4cdbbc5ccf17d7926e6756d51ed"
+            "sha256": "sha256:b8188123b7d62a5192b6de150e50c99865fb0f9358cbae1e06d033410b442f3e"
           }
         },
         {

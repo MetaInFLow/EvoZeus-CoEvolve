@@ -18,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
 PROTOCOL_SHA256 = "e53ba69f9d8071cc7187fb44f7284d74416cf9f8d4c96d35f2d85f66dc2cfaad"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
+LEGACY_PREFLIGHT_SHA256 = (
+    "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1"
+)
+LEGACY_PREFLIGHT_SOURCE_COMMIT = "61b8340706db95995f9d31b2928c3363e473748d"
+LEGACY_PREFLIGHT_SOURCE_TREE = "91bfe36a427fffa52be9f8f62c6a31a4ca7e8c81"
+LEGACY_PREFLIGHT_SOURCE_BLOB = "c772f9bc7f252e36689c9ff6b55442724a97eb00"
 
 
 def _sha256(value: bytes) -> str:
@@ -937,6 +943,7 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
     "path",
     [
         verifier.LEGACY_ENVELOPE_REL,
+        verifier.LEGACY_PREFLIGHT_ARTIFACT_REL,
         verifier.LEGACY_ADAPTER_REL,
         verifier.LEGACY_ENVELOPE_SCHEMA_REL,
         verifier.LEGACY_ADAPTER_SCHEMA_REL,
@@ -956,6 +963,169 @@ def test_supervised_legacy_trust_assets_are_digest_closed(path: str) -> None:
 
     with pytest.raises(verifier.VerificationError, match="digest mismatch"):
         verifier.verify_catalog(store)
+
+
+def test_legacy_preflight_artifact_is_the_declared_git_blob_and_lf_exact() -> None:
+    envelope = json.loads(
+        (ROOT / verifier.LEGACY_ENVELOPE_REL).read_text(encoding="utf-8")
+    )
+    artifact = envelope["frozen_preflight_artifact"]
+    artifact_path = ROOT / verifier.LEGACY_PREFLIGHT_ARTIFACT_REL
+    data = artifact_path.read_bytes()
+
+    assert artifact == {
+        "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+        "artifact_path": verifier.LEGACY_PREFLIGHT_ARTIFACT_REL,
+        "sha256": LEGACY_PREFLIGHT_SHA256,
+        "mode": "100755",
+        "encoding": "strict-utf-8",
+        "newline_style": "lf",
+        "normalization": "forbidden_byte_exact",
+        "source": {
+            "repository": "MetaInFLow/EvoZeus-CoEvolve",
+            "commit": LEGACY_PREFLIGHT_SOURCE_COMMIT,
+            "tree": LEGACY_PREFLIGHT_SOURCE_TREE,
+            "path": "scripts/evozeus_wrapper_preflight.py",
+            "blob": LEGACY_PREFLIGHT_SOURCE_BLOB,
+            "mode": "100755",
+        },
+    }
+    assert len(data) == 54_422
+    assert _sha256(data) == LEGACY_PREFLIGHT_SHA256
+    assert artifact_path.stat().st_mode & 0o777 == 0o755
+    assert b"\r" not in data
+    assert data.endswith(b"\n")
+    data.decode("utf-8", errors="strict")
+    assert subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "cat-file",
+            "blob",
+            (
+                LEGACY_PREFLIGHT_SOURCE_COMMIT
+                + ":scripts/evozeus_wrapper_preflight.py"
+            ),
+        ]
+    ) == data
+    assert subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "show",
+            "-s",
+            "--format=%T",
+            LEGACY_PREFLIGHT_SOURCE_COMMIT,
+        ],
+        text=True,
+    ).strip() == LEGACY_PREFLIGHT_SOURCE_TREE
+    assert subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "ls-tree",
+            LEGACY_PREFLIGHT_SOURCE_COMMIT,
+            "scripts/evozeus_wrapper_preflight.py",
+        ],
+        text=True,
+    ).strip() == (
+        "100755 blob "
+        + LEGACY_PREFLIGHT_SOURCE_BLOB
+        + "\tscripts/evozeus_wrapper_preflight.py"
+    )
+
+
+@pytest.mark.parametrize("field", ["commit", "tree", "blob"])
+def test_legacy_preflight_artifact_rejects_wrong_git_source_identity(
+    field: str,
+) -> None:
+    store = _base_store()
+    envelope = json.loads(
+        (ROOT / verifier.LEGACY_ENVELOPE_REL).read_text(encoding="utf-8")
+    )
+    envelope["frozen_preflight_artifact"]["source"][field] = "0" * 40
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="preflight artifact evidence is invalid",
+    ):
+        verifier._verify_legacy_preflight_artifact(  # noqa: SLF001
+            store,
+            verifier._contract_manifest_files(store, "contract manifest"),  # noqa: SLF001
+            envelope,
+            verifier._legacy_envelope_entries(envelope),  # noqa: SLF001
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "mode", "message"),
+    [
+        (lambda data: data + b"# drift\n", "100755", "digest mismatch"),
+        (lambda data: data.replace(b"\n", b"\r\n"), "100755", "digest mismatch"),
+        (lambda data: data, "100644", "mode is invalid"),
+    ],
+    ids=["replacement", "crlf-normalization", "mode-drift"],
+)
+def test_legacy_preflight_artifact_rejects_any_byte_or_mode_normalization(
+    mutate,
+    mode: str,
+    message: str,
+) -> None:
+    original = (ROOT / verifier.LEGACY_PREFLIGHT_ARTIFACT_REL).read_bytes()
+    store = verifier.CandidateStore(
+        _base_store(),
+        {
+            verifier.LEGACY_PREFLIGHT_ARTIFACT_REL: _candidate_blob(
+                verifier.LEGACY_PREFLIGHT_ARTIFACT_REL,
+                mutate(original),
+                mode=mode,
+            )
+        },
+    )
+
+    with pytest.raises(verifier.VerificationError, match=message):
+        verifier.verify_catalog(store)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("path", "migrations/history/legacy-wrapper/v0.14.0/artifacts/wrong.py"),
+        ("sha256", "0" * 64),
+        ("mode", "100644"),
+        ("normalization", "allow_crlf"),
+    ],
+)
+def test_supervised_profile_cannot_rebind_the_frozen_preflight_artifact(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    profile_path = (
+        root
+        / "contracts/v1/migrations/profiles/"
+        "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    operation = next(
+        item
+        for item in profile["operations"]
+        if item["target_path"]
+        == ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    operation["preimage"]["artifact"][field] = value
+    _write_json(profile_path, profile)
+    _rebind_filesystem_manifest(root)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="replace_exact preimage disagrees with closure",
+    ):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
 
 
 @pytest.mark.parametrize(
