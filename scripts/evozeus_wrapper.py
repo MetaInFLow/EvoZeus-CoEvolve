@@ -44,6 +44,20 @@ def print_report(report: dict, as_json: bool, stage: str) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
+def single_target_harness_exit_code(report: dict, *, dry_run: bool) -> int:
+    if dry_run:
+        return 0
+    if report.get("status") in {"applied", "up_to_date"}:
+        return 0
+    if (
+        report.get("status") is None
+        and report.get("migration_required") is False
+        and report.get("writes") is False
+    ):
+        return 0
+    return 1
+
+
 def repository_target(path: str) -> tuple[Path, dict] | tuple[None, dict]:
     try:
         boundary = resolve_harness_target(Path(path))
@@ -419,11 +433,7 @@ def main() -> int:
                 return 1
         report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
-        return 1 if report.get("status") in {
-            "approval_required",
-            "blocked",
-            "manual_migration_required",
-        } else 0
+        return single_target_harness_exit_code(report, dry_run=args.dry_run)
     if args.group == "harness" and args.command == "migrate-layout":
         target, boundary = repository_target(args.target)
         if target is None:
@@ -448,11 +458,7 @@ def main() -> int:
             return 1
         report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
-        return 1 if report.get("status") in {
-            "approval_required",
-            "blocked",
-            "manual_migration_required",
-        } else 0
+        return single_target_harness_exit_code(report, dry_run=args.dry_run)
     if args.group == "harness" and args.command == "rollback-migration":
         target, boundary = repository_target(args.target)
         if target is None:

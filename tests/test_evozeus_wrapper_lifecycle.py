@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import evozeus_harness_migration as migration_kernel
+from scripts import evozeus_wrapper_lifecycle as lifecycle
 from scripts.evozeus_wrapper_bootstrap import (
     build_evolution_section,
     build_status_section,
@@ -96,6 +97,26 @@ from scripts.evozeus_wrapper_preflight import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_wrapper_cli_for_test():
+    scripts_dir = str(ROOT / "scripts")
+    spec = importlib.util.spec_from_file_location(
+        "evozeus_wrapper_cli_test",
+        ROOT / "scripts/evozeus_wrapper.py",
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load evozeus_wrapper.py for CLI tests")
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, scripts_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(scripts_dir)
+    return module
+
+
+wrapper_cli = load_wrapper_cli_for_test()
+
+
 def trusted_attachment_bundle() -> dict[str, object]:
     """Supply an explicit trusted-release fixture to attachment unit tests."""
     bundle = migration_kernel.load_migration_contract(ROOT)
@@ -105,6 +126,89 @@ def trusted_attachment_bundle() -> dict[str, object]:
         "reasons": [],
     }
     return bundle
+
+
+def create_exact_v1_migration_target(target: Path) -> Path:
+    target.mkdir()
+    (target / "SKILL.md").write_text(
+        '---\nname: "migration-target"\ndescription: Business contract.\n---\n\n'
+        "# Migration Target\n\n"
+        + lifecycle.build_harness_activation_block()
+        + "\n\n## Business Workflow\n\nOWNER-BYTES-DO-NOT-CHANGE  \n",
+        encoding="utf-8",
+    )
+    closure_root = (
+        ROOT / "contracts/v1/migrations/history/harness-skill/v1.0.0"
+    )
+    closure = json.loads((closure_root / "closure.json").read_text(encoding="utf-8"))
+    managed_files = []
+    for item in closure["files"]:
+        if item["kind"] in {"absent", "manifest_state"}:
+            continue
+        destination = target / item["target_path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(closure_root / item["artifact_path"], destination)
+        destination.chmod(int(item["mode"], 8) & 0o7777)
+        managed_files.append(item["target_path"])
+    manifest = build_wrapper_manifest(
+        "MetaInFLow/migration-target",
+        "v0.14.0",
+        managed_files,
+        [],
+        instruction_surface="SKILL.md",
+        migration_bundle=trusted_attachment_bundle(),
+    )
+    manifest["harness_skill_version"] = "v1.0.0"
+    manifest.pop("migration_contract", None)
+    manifest.pop("managed_blocks", None)
+    manifest["managed_files"] = [
+        item
+        for item in manifest["managed_files"]
+        if item != lifecycle.TARGET_MIGRATION_CONTRACT
+    ]
+    manifest_path = target / TARGET_WRAPPER_MANIFEST
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    subprocess.run(
+        ["git", "-C", str(target), "config", "user.name", "EvoZeus Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "config",
+            "user.email",
+            "evozeus@example.invalid",
+        ],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(target), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(target), "commit", "-qm", "canonical v1 fixture"],
+        check=True,
+    )
+    return manifest_path
+
+
+def commit_target_state(target: Path, message: str) -> None:
+    subprocess.run(["git", "-C", str(target), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(target), "commit", "-qm", message],
+        check=True,
+    )
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain=v1"],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if status.stdout:
+        raise AssertionError(f"target fixture is dirty: {status.stdout}")
 
 
 def seed_core_global_dispatcher(home: Path, source: Path | None = None) -> Path:
@@ -379,6 +483,74 @@ class LifecycleBasicsTest(unittest.TestCase):
                 boundary["nested_harness_manifests"],
                 ["skills/example/.evozeus-wrapper/wrapper.json"],
             )
+
+    def assert_single_target_cli_rollback_failure_exits_nonzero(
+        self,
+        command: str,
+    ) -> None:
+        target = Path("/synthetic/target")
+        boundary = {
+            "repo_root": str(target),
+            "requested_is_repo_root": True,
+            "eligible": True,
+        }
+        report = {
+            "stage": "harness_layout_migration",
+            "status": "rollback_failed",
+            "writes": True,
+            "rollback_verified": False,
+            "migration_required": True,
+        }
+        argv = [
+            "evozeus_wrapper.py",
+            "harness",
+            command,
+            "--target",
+            str(target),
+            "--latest-version",
+            "v0.15.0",
+            "--json",
+        ]
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", argv), patch.object(
+            wrapper_cli,
+            "repository_target",
+            return_value=(target, boundary),
+        ), patch.object(
+            wrapper_cli,
+            "require_repo_admin",
+            return_value={"permission": "ADMIN"},
+        ), patch.object(
+            wrapper_cli,
+            "migrate_target_layout",
+            return_value=dict(report),
+        ), contextlib.redirect_stdout(stdout):
+            returncode = wrapper_cli.main()
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "rollback_failed")
+
+    def test_harness_upgrade_cli_returns_failure_for_rollback_failed(self):
+        self.assert_single_target_cli_rollback_failure_exits_nonzero("upgrade")
+
+    def test_harness_migrate_layout_cli_returns_failure_for_rollback_failed(self):
+        self.assert_single_target_cli_rollback_failure_exits_nonzero("migrate-layout")
+
+    def test_single_target_harness_mutation_unknown_status_fails_closed(self):
+        self.assertEqual(
+            wrapper_cli.single_target_harness_exit_code(
+                {"status": "future_failure", "writes": True},
+                dry_run=False,
+            ),
+            1,
+        )
+        self.assertEqual(
+            wrapper_cli.single_target_harness_exit_code(
+                {"status": "manual_migration_required", "writes": False},
+                dry_run=True,
+            ),
+            0,
+        )
 
     def test_harness_mutation_requires_repository_admin(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1227,6 +1399,217 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 load_wrapper_manifest(target)
+
+    def assert_invalid_manifest_is_manual_zero_write(
+        self,
+        target: Path,
+        expected_error: str,
+    ) -> dict:
+        plan = plan_target_layout_migration(
+            target,
+            latest_version="v0.15.0",
+            _migration_bundle=trusted_attachment_bundle(),
+        )
+
+        self.assertEqual(plan["status"], "manual_migration_required")
+        self.assertEqual(plan["decision"], "manual_migration_required")
+        self.assertTrue(plan["manifest_validation_failed"])
+        self.assertFalse(plan["writes"])
+        self.assertFalse(plan["can_apply"])
+        self.assertEqual(plan["write_set"], [])
+        self.assertEqual(plan["delete_set"], [])
+        self.assertEqual(plan["move_set"], [])
+        self.assertFalse(plan["ownership_evidence"]["matched"])
+        self.assertIn(
+            expected_error,
+            plan["ownership_evidence"]["manifest_identity"]["error"],
+        )
+        self.assertTrue(
+            any(expected_error in item for item in plan["conflicts"]),
+            plan["conflicts"],
+        )
+        self.assertTrue(
+            any(expected_error in item for item in plan["apply_blockers"]),
+            plan["apply_blockers"],
+        )
+        return plan
+
+    def test_layout_plan_rejects_duplicate_wrapper_version_with_manual_zero_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "duplicate-wrapper-version"
+            manifest_path = create_exact_v1_migration_target(target)
+            baseline = plan_target_layout_migration(
+                target,
+                latest_version="v0.15.0",
+                _migration_bundle=trusted_attachment_bundle(),
+            )
+            self.assertEqual(
+                baseline["decision"],
+                "automatic_migration_available",
+            )
+            self.assertTrue(baseline["can_apply"])
+            original = manifest_path.read_text(encoding="utf-8")
+            manifest_path.write_text(
+                original.replace(
+                    '  "wrapper_version": "v0.14.0",',
+                    '  "wrapper_version": "v9.9.9",\n'
+                    '  "wrapper_version": "v0.14.0",',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            commit_target_state(target, "duplicate wrapper version")
+
+            self.assert_invalid_manifest_is_manual_zero_write(
+                target,
+                "duplicate key: wrapper_version",
+            )
+
+    def test_layout_plan_rejects_nested_duplicate_manifest_key_with_manual_zero_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "nested-duplicate"
+            manifest_path = create_exact_v1_migration_target(target)
+            original = manifest_path.read_text(encoding="utf-8")
+            head, tail = original.rsplit("\n}", 1)
+            manifest_path.write_text(
+                head
+                + ',\n  "diagnostic": {"source": "first", "source": "second"}\n}'
+                + tail,
+                encoding="utf-8",
+            )
+            commit_target_state(target, "nested duplicate manifest key")
+
+            self.assert_invalid_manifest_is_manual_zero_write(
+                target,
+                "duplicate key: source",
+            )
+
+    def test_layout_plan_rejects_nan_manifest_value_with_manual_zero_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "nan-manifest"
+            manifest_path = create_exact_v1_migration_target(target)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["diagnostic_score"] = float("nan")
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            commit_target_state(target, "non-finite manifest number")
+
+            self.assert_invalid_manifest_is_manual_zero_write(
+                target,
+                "non-finite numeric value: NaN",
+            )
+
+    def test_layout_plan_rejects_symlinked_manifest_with_manual_zero_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "symlinked-manifest"
+            manifest_path = create_exact_v1_migration_target(target)
+            external_manifest = root / "external-wrapper.json"
+            external_manifest.write_bytes(manifest_path.read_bytes())
+            external_before = external_manifest.read_bytes()
+            manifest_path.unlink()
+            manifest_path.symlink_to(external_manifest)
+            commit_target_state(target, "symlink wrapper manifest")
+
+            self.assert_invalid_manifest_is_manual_zero_write(
+                target,
+                "expected a readable regular non-symlink file",
+            )
+            self.assertEqual(external_manifest.read_bytes(), external_before)
+
+    def test_applied_transaction_marker_failure_restores_all_preimages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            target = root / "applied-marker-failure"
+            create_exact_v1_migration_target(target)
+            bundle = trusted_attachment_bundle()
+            plan = plan_target_layout_migration(
+                target,
+                latest_version="v0.15.0",
+                today=date(2026, 8, 3),
+                _migration_bundle=bundle,
+            )
+            self.assertEqual(plan["decision"], "automatic_migration_available")
+            self.assertTrue(plan["can_apply"])
+            preimages = {}
+            for item in plan["write_set"]:
+                path = target / item["path"]
+                preimages[item["path"]] = (
+                    path.exists(),
+                    path.read_bytes() if path.exists() else None,
+                    path.stat().st_mode & 0o7777 if path.exists() else None,
+                )
+
+            real_marker = migration_kernel.mark_migration_transaction
+            applied_marker_attempted = False
+
+            def fail_applied_marker(snapshot, *, state, changed_paths=None, error=None):
+                nonlocal applied_marker_attempted
+                if state == "applied":
+                    applied_marker_attempted = True
+                    raise OSError("synthetic applied marker failure")
+                return real_marker(
+                    snapshot,
+                    state=state,
+                    changed_paths=changed_paths,
+                    error=error,
+                )
+
+            with patch.object(
+                migration_kernel,
+                "mark_migration_transaction",
+                side_effect=fail_applied_marker,
+            ), self.assertRaisesRegex(
+                ValueError,
+                "migration failed and snapshot rollback passed: synthetic applied marker failure",
+            ):
+                lifecycle._apply_canonical_v1_upgrade(
+                    target,
+                    plan,
+                    date(2026, 8, 3),
+                    bundle,
+                    root / "snapshots",
+                )
+
+            self.assertTrue(applied_marker_attempted)
+            for relative, (existed, content, mode) in preimages.items():
+                path = target / relative
+                self.assertEqual(path.exists(), existed, relative)
+                if existed:
+                    self.assertEqual(path.read_bytes(), content, relative)
+                    self.assertEqual(path.stat().st_mode & 0o7777, mode, relative)
+            status = subprocess.run(
+                ["git", "-C", str(target), "status", "--porcelain=v1"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(status.stdout, "")
+
+    def test_architecture_detection_does_not_trust_ambiguous_manifest_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "ambiguous-instruction-surface"
+            target.mkdir()
+            (target / "SKILL.md").write_text("# Root Skill\n", encoding="utf-8")
+            alternate = target / "skills/alternate/SKILL.md"
+            alternate.parent.mkdir(parents=True)
+            alternate.write_text("# Alternate\n", encoding="utf-8")
+            manifest_path = target / TARGET_WRAPPER_MANIFEST
+            manifest_path.parent.mkdir()
+            manifest_path.write_text(
+                '{"instruction_surface":"SKILL.md",'
+                '"instruction_surface":"skills/alternate/SKILL.md"}\n',
+                encoding="utf-8",
+            )
+
+            architecture = detect_target_architecture(target)
+
+            self.assertEqual(
+                architecture["integration"]["instruction_surface"],
+                "SKILL.md",
+            )
 
     def test_migrate_target_layout_moves_legacy_files_and_rewrites_references(self):
         with tempfile.TemporaryDirectory() as tmp:

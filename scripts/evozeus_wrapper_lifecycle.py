@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -1243,8 +1244,8 @@ def detect_target_architecture(target: Path) -> dict[str, Any]:
     current_manifest = target / TARGET_WRAPPER_MANIFEST
     if current_manifest.is_file():
         try:
-            manifest_data = json.loads(current_manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            manifest_data = _read_manifest_json(current_manifest)
+        except (OSError, ValueError):
             manifest_data = {}
         manifest_surface = (
             manifest_data.get("instruction_surface")
@@ -1412,9 +1413,60 @@ def oldest_wrapper_manifest_path(target: Path) -> Path:
 
 
 def _read_manifest_json(path: Path) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in parsed:
+                raise ValueError(f"duplicate key: {key}")
+            parsed[key] = value
+        return parsed
+
+    def reject_non_finite_number(value: str) -> None:
+        raise ValueError(f"non-finite numeric value: {value}")
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        path_metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        ) from exc
+    if not stat.S_ISREG(path_metadata.st_mode):
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        )
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read()
+    finally:
+        os.close(descriptor)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid wrapper manifest UTF-8: {path}") from exc
+    try:
+        data = json.loads(
+            text,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_non_finite_number,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid wrapper manifest JSON: {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"wrapper manifest must be a JSON object: {path}")
@@ -1427,7 +1479,11 @@ def wrapper_manifest_status(target: Path) -> dict[str, Any]:
         ("legacy_evoinfra", legacy_wrapper_manifest_path(target)),
         ("legacy_evozeus", oldest_wrapper_manifest_path(target)),
     ]
-    detected = [(source, path, _read_manifest_json(path)) for source, path in candidates if path.exists()]
+    detected = [
+        (source, path, _read_manifest_json(path))
+        for source, path in candidates
+        if path.exists() or path.is_symlink()
+    ]
     active_source, active_path, active_manifest = detected[0] if detected else ("missing", None, None)
     conflict = any(manifest != active_manifest for _, _, manifest in detected[1:])
     source = "conflict" if conflict else active_source
@@ -3626,6 +3682,127 @@ def _official_upgrade_write_plan(
     return write_set, staged
 
 
+def _invalid_manifest_migration_plan(
+    target: Path,
+    latest_version: str | None,
+    migration_bundle: dict[str, Any],
+    manual_profile: dict[str, Any],
+    error: Exception,
+) -> dict[str, Any]:
+    diagnostic = f"wrapper manifest is invalid or ambiguous: {error}"
+    try:
+        target_git_state = migration_kernel.target_git_state(target)
+    except ValueError as exc:
+        target_git_state = None
+        git_state_error = str(exc)
+    else:
+        git_state_error = None
+    worktree_status_available = target_git_state is not None
+    worktree_clean = bool(target_git_state and target_git_state["status_clean"])
+    ownership_evidence = {
+        "matched": False,
+        "manifest_identity": {
+            "valid": False,
+            "trusted_for_instruction_surface": False,
+            "path_candidates": [
+                TARGET_WRAPPER_MANIFEST,
+                LEGACY_TARGET_WRAPPER_MANIFEST,
+                OLDEST_TARGET_WRAPPER_MANIFEST,
+            ],
+            "error": diagnostic,
+        },
+        "from_closure_files": [],
+        "manifest_patch_preconditions": [],
+        "trusted_preimages": [],
+        "stable_block": {
+            "block_id": None,
+            "path": None,
+            "expected_sha256_lf": None,
+            "actual_sha256_lf": None,
+            "matched": False,
+        },
+        "blockers": [diagnostic],
+        "authority": "strict wrapper manifest validation",
+    }
+    rollback_contract = {
+        "strategy": "restore_complete_snapshot",
+        "snapshot_required_before_write": True,
+        "snapshot_location": "outside_target_repository",
+        "command": (
+            "python3 scripts/evozeus_wrapper.py harness rollback-migration "
+            f"--target {target} --snapshot <snapshot-path> --approve --json"
+        ),
+    }
+    plan = {
+        "stage": "harness_layout_migration",
+        "status": "manual_migration_required",
+        "target": str(target),
+        "writes": False,
+        "decision": "manual_migration_required",
+        "migration_protocol_version": migration_kernel.MIGRATION_PROTOCOL_VERSION,
+        "migration_contract": migration_bundle["identity"],
+        "source_trust": migration_bundle["source_trust"],
+        "profile": migration_kernel.profile_identity(manual_profile),
+        "compatibility_state": "invalid_manifest",
+        "target_wrapper_from": None,
+        "target_wrapper_to": latest_version,
+        "harness_skill_from": None,
+        "harness_skill_to": None,
+        "ownership_evidence": ownership_evidence,
+        "automatic_profile_authorized": False,
+        "upgrade_axis_evidence": {
+            "matched": False,
+            "reason": diagnostic,
+        },
+        "automatic_profile_candidates": [],
+        "discovery_candidates": [],
+        "discovery_candidates_have_destructive_authority": False,
+        "from_layout": "unknown",
+        "to_layout": "consolidated-v2",
+        "target_wrapper_dir": TARGET_EVOINFRA_DIR,
+        "manifest_path": TARGET_WRAPPER_MANIFEST,
+        "from_manifest_source": "invalid",
+        "current_version": None,
+        "latest_version": latest_version,
+        "migration_required": True,
+        "layout_migration_required": False,
+        "version_refresh_required": False,
+        "instruction_surface_migration_required": False,
+        "manifest_validation_failed": True,
+        "migration_record": None,
+        "moves": [],
+        "legacy_layout_candidates": [],
+        "write_set": [],
+        "delete_set": [],
+        "move_set": [],
+        "protected_business_surfaces": [],
+        "managed_file_refreshes": [],
+        "codex_hooks_update": None,
+        "instruction_surface": None,
+        "preserved_host_entrypoints": [],
+        "conflicts": [diagnostic],
+        "worktree_clean": worktree_clean,
+        "worktree_status_available": worktree_status_available,
+        "worktree_status_error": git_state_error,
+        "target_git_state": target_git_state,
+        "text_rewrite_candidates": [],
+        "generated_cache_candidates": [],
+        "apply_blockers": [
+            diagnostic,
+            "invalid wrapper manifest has no destructive migration authority",
+        ],
+        "can_apply": False,
+        "validation": {
+            "pre_apply": ["repair the wrapper manifest and recompute the plan"],
+            "post_apply": [],
+        },
+        "rollback": rollback_contract,
+        "post_apply_baseline": None,
+    }
+    plan["plan_sha256"] = f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+    return plan
+
+
 def plan_target_layout_migration(
     target: Path,
     latest_version: str | None = None,
@@ -3655,7 +3832,16 @@ def plan_target_layout_migration(
         migration_contract,
         "prerelease-ambiguous-to-manual-review",
     )
-    manifest_status = wrapper_manifest_status(target)
+    try:
+        manifest_status = wrapper_manifest_status(target)
+    except (OSError, ValueError) as exc:
+        return _invalid_manifest_migration_plan(
+            target,
+            latest_version,
+            migration_bundle,
+            unknown_profile,
+            exc,
+        )
     conflicts: list[str] = []
     discovery_candidates: list[dict[str, Any]] = []
     if manifest_status["conflict"]:
@@ -4476,6 +4662,11 @@ def _apply_canonical_v1_upgrade(
             detail = (structure["stderr"] or structure["stdout"]).strip()
             raise ValueError(f"migration post-validation failed: {detail}")
         migration_kernel.verify_post_apply_target_state(target, plan)
+        migration_kernel.mark_migration_transaction(
+            snapshot,
+            state="applied",
+            changed_paths=changed_files,
+        )
     except Exception as exc:
         try:
             rollback = migration_kernel.rollback_migration_snapshot(
@@ -4504,12 +4695,6 @@ def _apply_canonical_v1_upgrade(
             f"migration failed and snapshot rollback passed: {exc}; "
             f"snapshot={rollback['snapshot']}"
         ) from exc
-
-    migration_kernel.mark_migration_transaction(
-        snapshot,
-        state="applied",
-        changed_paths=changed_files,
-    )
 
     return {
         **plan,
