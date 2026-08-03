@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1979,16 +1980,21 @@ def test_unknown_migration_data_cannot_fall_through_as_an_ordinary_pr() -> None:
 
 
 def test_main_uat_and_release_workflows_explicitly_run_history_gate() -> None:
-    command = (
+    ci_command = (
         "python scripts/evozeus_official_upgrade_verify.py "
         "verify-base --repo-root ."
+    )
+    release_command = (
+        "python trusted/scripts/evozeus_official_upgrade_verify.py "
+        "verify-release"
     )
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
     assert 'branches: [main, "uat/current"]' in ci
-    assert command in ci
-    assert command in release
+    assert ci_command in ci
+    assert release_command in release
+    assert ci_command not in release
 
 
 def test_catalog_requires_a_unique_direct_profile_from_each_historical_closure(
@@ -2960,6 +2966,74 @@ def _release_workflow() -> tuple[str, dict[str, object]]:
     return text, document
 
 
+def _job_commands(job: dict[str, object]) -> str:
+    return "\n".join(step.get("run", "") for step in job["steps"])
+
+
+def _checkout_steps(job: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        step
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
+
+
+def _assert_release_security_invariants(workflow: dict[str, object]) -> None:
+    jobs = workflow["jobs"]
+    governance = jobs["governance"]
+    verify = jobs["verify"]
+    test_job = jobs["test"]
+    package = jobs["package"]
+    publish = jobs["publish"]
+
+    verify_commands = _job_commands(verify)
+    assert (
+        "python trusted/scripts/evozeus_official_upgrade_verify.py "
+        "verify-release"
+    ) in verify_commands
+    assert "python candidate/scripts/evozeus_official_upgrade_verify.py" not in verify_commands
+    assert _checkout_steps(test_job)[0]["with"]["ref"] == (
+        "${{ needs.verify.outputs.tag_commit }}"
+    )
+    assert _checkout_steps(package)[0]["with"]["ref"] == (
+        "${{ needs.verify.outputs.tag_commit }}"
+    )
+    assert set(publish["needs"]) == {"governance", "verify", "test", "package"}
+    assert "needs.governance.outputs.approved == 'true'" in publish["if"]
+
+    governance_gate = governance["steps"][0]
+    assert publish["steps"][0] == governance_gate
+    create_index = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if "gh release create" in step.get("run", "")
+    )
+    assert publish["steps"][create_index - 1] == governance_gate
+    assert governance_gate["env"]["REQUIRED_CI_CONTEXT"] == "CI / test"
+    assert governance_gate["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
+        "EvoZeus Official Upgrade Profile / classify-and-verify"
+    )
+    assert governance_gate["run"].count(
+        "((.bypass_actors // []) | length == 0)"
+    ) == 2
+    assert "index($ci) != null and index($official) != null" in governance_gate["run"]
+    artifact_step = next(
+        step
+        for step in publish["steps"]
+        if step["name"] == "Verify artifact API provenance before download"
+    )
+    assert artifact_step["env"]["EXPECTED_ARTIFACT_DIGEST"] == (
+        "${{ needs.package.outputs.artifact_digest }}"
+    )
+    publish_commands = _job_commands(publish)
+    assert 'test "${REMOTE_RAW_TAG_OID}" = "${EXPECTED_RAW_TAG_OID}"' in publish_commands
+    assert 'test "${OBJECT_SHA}" = "${EXPECTED_TAG_COMMIT}"' in publish_commands
+    assert "gh release create" in publish_commands
+    assert "--verify-tag" in publish_commands
+    assert "--clobber" not in publish_commands
+    assert "gh release upload" not in publish_commands
+
+
 def test_release_workflow_is_manual_main_only_and_read_by_default() -> None:
     text, workflow = _release_workflow()
     trigger = workflow["on"]
@@ -2974,29 +3048,295 @@ def test_release_workflow_is_manual_main_only_and_read_by_default() -> None:
         "required": "true",
         "type": "string",
     }
-    assert workflow["permissions"] == {"contents": "read"}
-    assert set(jobs) == {"verify", "publish"}
-    assert jobs["verify"]["permissions"] == {"contents": "read"}
-    assert jobs["publish"]["permissions"] == {"contents": "write"}
-    assert jobs["publish"]["needs"] == "verify"
-    for job_name in ("verify", "publish"):
+    assert workflow["permissions"] == {"actions": "read", "contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": "release-${{ github.repository }}-${{ inputs.tag }}",
+        "cancel-in-progress": "false",
+    }
+    assert set(jobs) == {"governance", "verify", "test", "package", "publish"}
+    assert jobs["test"]["needs"] == ["governance", "verify"]
+    assert jobs["package"]["needs"] == ["governance", "verify", "test"]
+    assert jobs["publish"]["needs"] == ["governance", "verify", "test", "package"]
+    for job_name in ("governance", "verify", "test", "package"):
+        assert jobs[job_name]["permissions"] == {
+            "actions": "read",
+            "contents": "read",
+        }
+    assert jobs["publish"]["permissions"] == {
+        "actions": "read",
+        "contents": "write",
+    }
+    assert jobs["publish"]["environment"] == "release"
+    for job_name in jobs:
         condition = jobs[job_name]["if"]
         assert "github.ref == 'refs/heads/main'" in condition
         assert "endsWith(github.workflow_ref, '@refs/heads/main')" in condition
+    for job_name in ("test", "package", "publish"):
+        condition = jobs[job_name]["if"]
+        assert "needs.governance.result == 'success'" in condition
+        assert "needs.governance.outputs.approved == 'true'" in condition
     dispatch_gate = jobs["verify"]["steps"][0]["run"]
     assert 'test "${GITHUB_REF}" = "refs/heads/main"' in dispatch_gate
     assert 'test "${GITHUB_WORKFLOW_REF}" = "${EXPECTED_WORKFLOW_REF}"' in dispatch_gate
     assert "release tag must use vMAJOR.MINOR.PATCH" in dispatch_gate
-    assert "rulesets and required checks remain pending explicit user" in text
-    assert "does not claim that they are configured" in text
+    assert "remains fail-closed until repository administrators configure" in text
+    assert "only\n# reads those controls; it never creates or changes them" in text
+    assert "--method" not in _job_commands(jobs["governance"])
 
 
-def test_release_verify_job_pins_actions_and_orders_read_only_verification() -> None:
+def test_release_governance_job_proves_external_admin_controls_read_only() -> None:
+    _text, workflow = _release_workflow()
+    jobs = workflow["jobs"]
+    governance = jobs["governance"]
+    assert _checkout_steps(governance) == []
+    assert governance["outputs"] == {
+        "approved": "${{ steps.approval.outputs.approved }}"
+    }
+    step = governance["steps"][0]
+    assert step["env"]["ATTESTATION"] == (
+        "${{ vars.EVOZEUS_RELEASE_GOVERNANCE_ATTESTATION }}"
+    )
+    assert step["env"]["GH_TOKEN"] == "${{ secrets.EVOZEUS_GOVERNANCE_TOKEN }}"
+    assert step["env"]["REQUIRED_CI_CONTEXT"] == "CI / test"
+    assert step["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
+        "EvoZeus Official Upgrade Profile / classify-and-verify"
+    )
+    run = step["run"]
+    for required in (
+        'test -n "${GH_TOKEN}"',
+        'test "${ATTESTATION}" = "${EXPECTED_ATTESTATION}"',
+        "repos/${GH_REPO}/rulesets?per_page=100",
+        "repos/${GH_REPO}/rulesets/${RULESET_ID}",
+        'index("pull_request")',
+        'index("required_status_checks")',
+        'index("update")',
+        "((.bypass_actors // []) | length == 0)",
+        "index($ci) != null and index($official) != null",
+        "repos/${GH_REPO}/branches/main/protection",
+        ".required_pull_request_reviews.required_approving_review_count >= 1",
+        ".enforce_admins.enabled == true",
+        "repos/${GH_REPO}/environments/${RELEASE_ENVIRONMENT}",
+        '.type == "required_reviewers"',
+        ".prevent_self_review == true",
+        "deployment-branch-policies?per_page=100",
+        "repos/${GH_REPO}/immutable-releases",
+        ".enabled == true",
+    ):
+        assert required in run
+    assert run.count("((.bypass_actors // []) | length == 0)") == 2
+    approval = governance["steps"][1]
+    assert approval["id"] == "approval"
+    assert "approved=true" in approval["run"]
+    assert "approved=true" not in run
+    assert "gh api --method" not in run
+    publish_gate = jobs["publish"]["steps"][0]
+    assert publish_gate == step
+    assert publish_gate["env"]["GH_TOKEN"] == (
+        "${{ secrets.EVOZEUS_GOVERNANCE_TOKEN }}"
+    )
+
+
+def _valid_release_governance_responses() -> dict[str, object]:
+    required_contexts = [
+        {"context": "CI / test"},
+        {"context": "EvoZeus Official Upgrade Profile / classify-and-verify"},
+    ]
+    return {
+        "ruleset_list": [
+            {"id": 1, "target": "branch", "enforcement": "active"},
+            {"id": 2, "target": "tag", "enforcement": "active"},
+        ],
+        "branch_ruleset": {
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {
+                "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+            },
+            "rules": [
+                {"type": "deletion"},
+                {"type": "non_fast_forward"},
+                {"type": "pull_request"},
+                {
+                    "type": "required_status_checks",
+                    "parameters": {"required_status_checks": required_contexts},
+                },
+            ],
+        },
+        "tag_ruleset": {
+            "target": "tag",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {
+                "ref_name": {"include": ["refs/tags/v*"], "exclude": []}
+            },
+            "rules": [{"type": "deletion"}, {"type": "update"}],
+        },
+        "branch_protection": {
+            "required_status_checks": {
+                "contexts": ["CI / test"],
+                "checks": [
+                    {
+                        "context": (
+                            "EvoZeus Official Upgrade Profile / "
+                            "classify-and-verify"
+                        )
+                    }
+                ],
+            },
+            "required_pull_request_reviews": {"required_approving_review_count": 1},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        },
+        "environment": {
+            "protection_rules": [
+                {
+                    "type": "required_reviewers",
+                    "prevent_self_review": True,
+                    "reviewers": [{"type": "Team", "reviewer": {"id": 7}}],
+                }
+            ],
+            "deployment_branch_policy": {
+                "protected_branches": False,
+                "custom_branch_policies": True,
+            },
+        },
+        "deployment_policies": {
+            "branch_policies": [{"type": "branch", "name": "main"}]
+        },
+        "immutable_releases": {"enabled": True, "enforced_by_owner": False},
+    }
+
+
+def _run_release_governance_gate(
+    tmp_path: Path,
+    responses: dict[str, object],
+    *,
+    attestation: str = "evozeus-release-governance-v1",
+) -> subprocess.CompletedProcess[str]:
+    _text, workflow = _release_workflow()
+    gate = workflow["jobs"]["governance"]["steps"][0]["run"]
+    fake_gh = r'''
+gh() {
+  local endpoint="${!#}"
+  if test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/rulesets?per_page=100"; then
+    printf '[%s]\n' "${RULESET_LIST}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/rulesets/1"; then
+    printf '%s\n' "${BRANCH_RULESET}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/rulesets/2"; then
+    printf '%s\n' "${TAG_RULESET}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/branches/main/protection"; then
+    printf '%s\n' "${BRANCH_PROTECTION}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/environments/release"; then
+    printf '%s\n' "${ENVIRONMENT_RESPONSE}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/environments/release/deployment-branch-policies?per_page=100"; then
+    printf '%s\n' "${DEPLOYMENT_POLICIES}"
+  elif test "${endpoint}" = "repos/MetaInFLow/EvoZeus-CoEvolve/immutable-releases"; then
+    printf '%s\n' "${IMMUTABLE_RELEASES}"
+  else
+    printf 'unexpected endpoint: %s\n' "${endpoint}" >&2
+    return 90
+  fi
+}
+'''
+    environment = {
+        **os.environ,
+        "ATTESTATION": attestation,
+        "EXPECTED_ATTESTATION": "evozeus-release-governance-v1",
+        "GH_REPO": "MetaInFLow/EvoZeus-CoEvolve",
+        "GH_TOKEN": "admin-read-token",
+        "RELEASE_ENVIRONMENT": "release",
+        "REQUIRED_CI_CONTEXT": "CI / test",
+        "REQUIRED_OFFICIAL_CONTEXT": (
+            "EvoZeus Official Upgrade Profile / classify-and-verify"
+        ),
+        "RUNNER_TEMP": str(tmp_path),
+        "RULESET_LIST": json.dumps(responses["ruleset_list"]),
+        "BRANCH_RULESET": json.dumps(responses["branch_ruleset"]),
+        "TAG_RULESET": json.dumps(responses["tag_ruleset"]),
+        "BRANCH_PROTECTION": json.dumps(responses["branch_protection"]),
+        "ENVIRONMENT_RESPONSE": json.dumps(responses["environment"]),
+        "DEPLOYMENT_POLICIES": json.dumps(responses["deployment_policies"]),
+        "IMMUTABLE_RELEASES": json.dumps(responses["immutable_releases"]),
+    }
+    return subprocess.run(
+        ["bash"],
+        input=fake_gh + gate,
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+
+
+def test_release_governance_gate_accepts_only_the_complete_external_contract(
+    tmp_path: Path,
+) -> None:
+    result = _run_release_governance_gate(
+        tmp_path,
+        _valid_release_governance_responses(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "downgrade",
+    [
+        "branch_bypass_actor",
+        "tag_bypass_actor",
+        "missing_ci_context",
+        "missing_official_context",
+        "unprotected_environment",
+        "mutable_future_releases",
+        "invalid_attestation",
+    ],
+)
+def test_release_governance_gate_rejects_external_control_downgrades(
+    tmp_path: Path,
+    downgrade: str,
+) -> None:
+    responses = copy.deepcopy(_valid_release_governance_responses())
+    attestation = "evozeus-release-governance-v1"
+    if downgrade == "branch_bypass_actor":
+        responses["branch_ruleset"]["bypass_actors"] = [{"actor_id": 1}]
+    elif downgrade == "tag_bypass_actor":
+        responses["tag_ruleset"]["bypass_actors"] = [{"actor_id": 1}]
+    elif downgrade == "missing_ci_context":
+        checks = responses["branch_ruleset"]["rules"][3]["parameters"][
+            "required_status_checks"
+        ]
+        checks[:] = [item for item in checks if item["context"] != "CI / test"]
+    elif downgrade == "missing_official_context":
+        responses["branch_protection"]["required_status_checks"]["checks"] = []
+    elif downgrade == "unprotected_environment":
+        responses["environment"]["protection_rules"] = []
+    elif downgrade == "mutable_future_releases":
+        responses["immutable_releases"]["enabled"] = False
+    elif downgrade == "invalid_attestation":
+        attestation = "unreviewed"
+    else:
+        raise AssertionError(f"unknown governance downgrade: {downgrade}")
+    result = _run_release_governance_gate(
+        tmp_path,
+        responses,
+        attestation=attestation,
+    )
+    assert result.returncode != 0
+
+
+def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> None:
     _text, workflow = _release_workflow()
     jobs = workflow["jobs"]
     verify = jobs["verify"]
+    test_job = jobs["test"]
+    package = jobs["package"]
     publish = jobs["publish"]
-    all_steps = [*verify["steps"], *publish["steps"]]
+    all_steps = [
+        step
+        for job in jobs.values()
+        for step in job["steps"]
+    ]
     action_uses = [step["uses"] for step in all_steps if "uses" in step]
 
     assert set(action_uses) == {
@@ -3004,37 +3344,85 @@ def test_release_verify_job_pins_actions_and_orders_read_only_verification() -> 
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
     }
-    assert len(action_uses) == 3
+    assert len(action_uses) == 6
     assert all(
         re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", action) is not None
         for action in action_uses
     )
-    checkout = next(step for step in verify["steps"] if "actions/checkout@" in step.get("uses", ""))
-    assert checkout["with"] == {
+    trusted_checkout, candidate_checkout = _checkout_steps(verify)
+    assert trusted_checkout["with"] == {
+        "ref": "${{ github.workflow_sha }}",
+        "path": "trusted",
+        "fetch-depth": "1",
+        "persist-credentials": "false",
+    }
+    assert candidate_checkout["with"] == {
         "ref": "refs/tags/${{ inputs.tag }}",
+        "path": "candidate",
         "fetch-depth": "0",
         "persist-credentials": "false",
     }
-    step_names = [step["name"] for step in verify["steps"]]
-    assert step_names.index("Verify release trust boundary") < step_names.index(
-        "Run repository tests after release verification"
-    )
-    assert step_names.index("Run repository tests after release verification") < step_names.index(
-        "Build immutable release payload"
-    )
-    assert step_names.index("Build immutable release payload") < step_names.index(
-        "Upload immutable release payload"
-    )
-    release_gate = next(
-        step for step in verify["steps"] if step["name"] == "Verify release trust boundary"
-    )["run"]
-    assert "verify-release" in release_gate
-    assert "refs/remotes/origin/main" in release_gate
+    identity_gate = next(step for step in verify["steps"] if step.get("id") == "identities")[
+        "run"
+    ]
+    assert 'refs/tags/${REQUESTED_TAG}^{object}' in identity_gate
+    assert 'refs/tags/${REQUESTED_TAG}^{commit}' in identity_gate
+    assert 'test "${TRUSTED_WORKFLOW_SHA}" = "${EXPECTED_HEAD_SHA}"' in identity_gate
+    release_gate = verify["steps"][-1]["run"]
+    assert "python trusted/scripts/evozeus_official_upgrade_verify.py" in release_gate
+    assert "--repo-root candidate" in release_gate
+    assert "--main-ref refs/remotes/origin/main" in release_gate
+    assert "candidate/scripts/evozeus_official_upgrade_verify.py" not in release_gate
     assert verify["outputs"] == {
+        "head_sha": "${{ steps.identities.outputs.head_sha }}",
+        "raw_tag_oid": "${{ steps.identities.outputs.raw_tag_oid }}",
+        "run_id": "${{ steps.identities.outputs.run_id }}",
+        "tag_commit": "${{ steps.identities.outputs.tag_commit }}",
+        "workflow_sha": "${{ steps.identities.outputs.workflow_sha }}",
+    }
+    test_checkout = _checkout_steps(test_job)[0]
+    package_checkout = _checkout_steps(package)[0]
+    for checkout in (test_checkout, package_checkout):
+        assert checkout["with"]["ref"] == "${{ needs.verify.outputs.tag_commit }}"
+        assert checkout["with"]["fetch-depth"] == "1"
+        assert checkout["with"]["persist-credentials"] == "false"
+    test_commands = _job_commands(test_job)
+    assert "python -m pytest -q" in test_commands
+    assert "verify-base" not in test_commands
+    assert "verify-release" not in test_commands
+    assert all("actions/checkout@" not in step.get("uses", "") for step in publish["steps"])
+
+
+def test_release_package_uses_only_peeled_commit_and_binds_three_files() -> None:
+    _text, workflow = _release_workflow()
+    package = workflow["jobs"]["package"]
+    package_step = next(step for step in package["steps"] if step.get("id") == "package")
+    run = package_step["run"]
+    assert 'git -C candidate ls-tree "${TAG_COMMIT}" -- "${NOTES_SOURCE}"' in run
+    assert 'git -C candidate show "${TAG_COMMIT}:${NOTES_SOURCE}"' in run
+    assert "git -C candidate archive" in run
+    assert '"${TAG_COMMIT}"' in run
+    assert 'git -C candidate ls-tree "${REQUESTED_TAG}"' not in run
+    assert 'git -C candidate show "${REQUESTED_TAG}' not in run
+    assert 'git -C candidate archive "${REQUESTED_TAG}"' not in run
+    for digest in ("ARCHIVE_SHA256", "CHECKSUM_SHA256", "NOTES_SHA256"):
+        assert digest in run
+    assert (
+        'ARTIFACT_NAME="evozeus-release-${REQUESTED_TAG}-${GITHUB_RUN_ID}-'
+        '${GITHUB_RUN_ATTEMPT}-${TAG_COMMIT}"'
+    ) in run
+    assert package["outputs"] == {
         "archive_sha256": "${{ steps.package.outputs.archive_sha256 }}",
+        "artifact_digest": "${{ steps.upload.outputs.artifact-digest }}",
         "artifact_id": "${{ steps.upload.outputs.artifact-id }}",
         "artifact_name": "${{ steps.package.outputs.artifact_name }}",
+        "checksum_sha256": "${{ steps.package.outputs.checksum_sha256 }}",
+        "notes_sha256": "${{ steps.package.outputs.notes_sha256 }}",
     }
+    upload = next(step for step in package["steps"] if step.get("id") == "upload")
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["compression-level"] == "0"
+    assert len(upload["with"]["path"].strip().splitlines()) == 3
 
 
 def test_release_publish_job_only_publishes_verified_exact_payload() -> None:
@@ -3048,23 +3436,126 @@ def test_release_publish_job_only_publishes_verified_exact_payload() -> None:
     assert "python" not in publish_commands
     assert "pytest" not in publish_commands
     assert "pip install" not in publish_commands
-    download = steps[0]
+    assert "candidate" not in publish_commands
+    artifact_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step["name"] == "Verify artifact API provenance before download"
+    )
+    download_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "actions/download-artifact@" in step.get("uses", "")
+    )
+    payload_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step["name"] == "Verify exact downloaded payload and all file digests"
+    )
+    publish_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "gh release create" in step.get("run", "")
+    )
+    assert artifact_index == 1
+    assert artifact_index < download_index < payload_index < publish_index
+    assert steps[0] == workflow["jobs"]["governance"]["steps"][0]
+    assert steps[publish_index - 1] == workflow["jobs"]["governance"]["steps"][0]
+    artifact_gate = steps[artifact_index]
+    assert artifact_gate["env"]["EXPECTED_ARTIFACT_DIGEST"] == (
+        "${{ needs.package.outputs.artifact_digest }}"
+    )
+    for field in (
+        ".id == $artifact_id",
+        ".name == $name",
+        ".expired == false",
+        ".digest == $digest",
+        ".workflow_run.id == $run_id",
+        ".workflow_run.head_sha == $head_sha",
+    ):
+        assert field in artifact_gate["run"]
+    assert "repos/${GH_REPO}/actions/artifacts/${EXPECTED_ARTIFACT_ID}" in artifact_gate["run"]
+
+    download = steps[download_index]
     assert download["uses"] == (
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
     )
-    assert download["with"]["artifact-ids"] == "${{ needs.verify.outputs.artifact_id }}"
-    verify_index = next(index for index, step in enumerate(steps) if step.get("id") == "verify_payload")
-    publish_index = next(
-        index for index, step in enumerate(steps) if "gh release" in step.get("run", "")
-    )
-    assert verify_index < publish_index
-    payload_gate = steps[verify_index]["run"]
+    assert download["with"]["artifact-ids"] == "${{ needs.package.outputs.artifact_id }}"
+    payload_gate = steps[payload_index]["run"]
     assert "EXPECTED_ARCHIVE_SHA256" in payload_gate
-    assert "EXPECTED_ARTIFACT_ID" in payload_gate
+    assert "EXPECTED_CHECKSUM_SHA256" in payload_gate
+    assert "EXPECTED_NOTES_SHA256" in payload_gate
     assert "EXPECTED_FILES" in payload_gate
     assert "ACTUAL_ENTRY_COUNT" in payload_gate
-    assert "shasum -a 256" in payload_gate
+    assert payload_gate.count("sha256sum") == 3
+    assert '| cmp -s - "${PAYLOAD_DIR}/${CHECKSUM}"' in payload_gate
+
     publish_run = steps[publish_index]["run"]
     assert steps[publish_index]["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert "repos/${GH_REPO}/git/ref/tags/${REQUESTED_TAG}" in publish_run
+    assert "repos/${GH_REPO}/git/tags/${OBJECT_SHA}" in publish_run
+    assert 'test "${REMOTE_RAW_TAG_OID}" = "${EXPECTED_RAW_TAG_OID}"' in publish_run
+    assert 'test "${OBJECT_SHA}" = "${EXPECTED_TAG_COMMIT}"' in publish_run
+    assert 'test "${TAG_DEPTH}" -le 16' in publish_run
+    assert "repos/${GH_REPO}/releases/tags/${REQUESTED_TAG}" in publish_run
+    assert 'test "${RELEASE_STATUS}" -eq 0' in publish_run
+    assert '"HTTP 404"' in publish_run
     assert "gh release create" in publish_run
-    assert "gh release upload" in publish_run
+    assert publish_commands.count("gh release create") == 1
+    assert "--verify-tag" in publish_run
+    assert '"${PAYLOAD_DIR}/${ARCHIVE}"' in publish_run
+    assert '"${PAYLOAD_DIR}/${CHECKSUM}"' in publish_run
+    assert "gh release upload" not in publish_run
+    assert "--clobber" not in publish_run
+    assert "gh release view" not in publish_run
+    _assert_release_security_invariants(workflow)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (
+            "python trusted/scripts/evozeus_official_upgrade_verify.py verify-release",
+            "python candidate/scripts/evozeus_official_upgrade_verify.py verify-release",
+        ),
+        (
+            "ref: ${{ needs.verify.outputs.tag_commit }}",
+            "ref: refs/tags/${{ inputs.tag }}",
+        ),
+        (
+            "needs: [governance, verify, test, package]",
+            "needs: [verify, test, package]",
+        ),
+        (
+            "EXPECTED_ARTIFACT_DIGEST: ${{ needs.package.outputs.artifact_digest }}",
+            "EXPECTED_ARTIFACT_DIGEST: unbound",
+        ),
+        (
+            "((.bypass_actors // []) | length == 0)",
+            "true # ruleset bypass actors were not rejected",
+        ),
+        (
+            "REQUIRED_CI_CONTEXT: CI / test",
+            "REQUIRED_CI_CONTEXT: unbound",
+        ),
+        (
+            "- *release_governance_gate",
+            "- name: Governance recheck was removed\n        run: 'true'",
+        ),
+        (
+            'test "${REMOTE_RAW_TAG_OID}" = "${EXPECTED_RAW_TAG_OID}"',
+            "true # remote raw tag identity was not checked",
+        ),
+        ("--verify-tag", "--clobber"),
+    ],
+)
+def test_release_security_contract_rejects_unsafe_workflow_mutations(
+    old: str,
+    new: str,
+) -> None:
+    text, _workflow = _release_workflow()
+    assert old in text
+    mutated = text.replace(old, new, 1)
+    document = yaml.load(mutated, Loader=yaml.BaseLoader)
+    with pytest.raises(AssertionError):
+        _assert_release_security_invariants(document)
