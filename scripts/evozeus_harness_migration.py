@@ -1627,6 +1627,53 @@ class SecureTargetFS:
         finally:
             os.close(descriptor)
 
+    def _verify_published_postimage(
+        self,
+        parent_fd: int,
+        name: str,
+        relative: Path,
+        *,
+        expected_identity: tuple[int, int],
+        expected_data: bytes,
+        expected_mode: int,
+    ) -> None:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            raise ValueError(
+                f"secure target published path cannot be opened: "
+                f"{relative.as_posix()}: {exc}"
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(
+                    f"secure target published path is not regular: "
+                    f"{relative.as_posix()}"
+                )
+            if (metadata.st_dev, metadata.st_ino) != expected_identity:
+                raise ValueError(
+                    f"secure target published identity changed: {relative.as_posix()}"
+                )
+            if self._read_descriptor(descriptor) != expected_data:
+                raise ValueError(
+                    f"secure target published bytes changed: {relative.as_posix()}"
+                )
+            if stat.S_IMODE(metadata.st_mode) != expected_mode:
+                raise ValueError(
+                    f"secure target published mode changed: {relative.as_posix()}"
+                )
+        finally:
+            os.close(descriptor)
+        if self._named_identity(parent_fd, name) != expected_identity:
+            raise ValueError(
+                f"secure target published identity changed: {relative.as_posix()}"
+            )
+
     def _cleanup_created_directory_paths(self, paths: list[str]) -> None:
         removed: set[str] = set()
         for relative_text in sorted(
@@ -1809,6 +1856,15 @@ class SecureTargetFS:
                     raise ValueError(
                         f"secure target create CAS changed: {relative.as_posix()}"
                     ) from exc
+                self._verify_parent_binding(relative, parent_fd)
+                self._verify_published_postimage(
+                    parent_fd,
+                    name,
+                    relative,
+                    expected_identity=staging_identity,
+                    expected_data=data,
+                    expected_mode=mode,
+                )
                 os.unlink(staging_name, dir_fd=parent_fd)
             else:
                 self._verified_replace_preimage(
@@ -1825,6 +1881,15 @@ class SecureTargetFS:
                     name,
                     src_dir_fd=parent_fd,
                     dst_dir_fd=parent_fd,
+                )
+                self._verify_parent_binding(relative, parent_fd)
+                self._verify_published_postimage(
+                    parent_fd,
+                    name,
+                    relative,
+                    expected_identity=staging_identity,
+                    expected_data=data,
+                    expected_mode=mode,
                 )
             staging_name = None
             os.fsync(parent_fd)

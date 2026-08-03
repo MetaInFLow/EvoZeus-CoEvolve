@@ -1039,6 +1039,133 @@ def test_secure_replace_breaks_external_hardlink_without_mutating_approved_inode
     assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
 
 
+@pytest.mark.parametrize("operation", ["create", "replace"])
+def test_secure_publish_rejects_a_wrong_staging_inode_after_the_atomic_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    target = tmp_path / f"secure-published-identity-{operation}"
+    target.mkdir()
+    destination = target / "managed.txt"
+    expected_preimage: str | None = None
+    if operation == "replace":
+        destination.write_bytes(b"PREIMAGE\n")
+        expected_preimage = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+    target.joinpath("attacker.txt").write_bytes(b"ATTACKER\n")
+
+    with monkeypatch.context() as publication_patch:
+        if operation == "create":
+            original_link = os.link
+
+            def publish_wrong_link(
+                _source: object,
+                destination_name: object,
+                *,
+                src_dir_fd: int | None = None,
+                dst_dir_fd: int | None = None,
+                follow_symlinks: bool = True,
+            ) -> None:
+                original_link(
+                    "attacker.txt",
+                    destination_name,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                    follow_symlinks=follow_symlinks,
+                )
+
+            publication_patch.setattr(os, "link", publish_wrong_link)
+        else:
+            original_replace = os.replace
+
+            def publish_wrong_replace(
+                _source: object,
+                destination_name: object,
+                *,
+                src_dir_fd: int | None = None,
+                dst_dir_fd: int | None = None,
+            ) -> None:
+                original_replace(
+                    "attacker.txt",
+                    destination_name,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            publication_patch.setattr(os, "replace", publish_wrong_replace)
+
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            with pytest.raises(ValueError, match="published identity changed"):
+                secure_target.write_exact(
+                    "managed.txt",
+                    b"POSTIMAGE\n",
+                    expected_preimage=expected_preimage,
+                    expected_mode=0o644 if expected_preimage is not None else None,
+                    mode=0o644,
+                )
+
+    assert destination.read_bytes() == b"ATTACKER\n"
+    assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
+
+
+def test_secure_create_unlink_failure_cleans_temp_and_remains_rollback_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _prepare_secure_target(tmp_path, "secure-create-unlink-failure")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / "secure-create-unlink-failure-base"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    item = next(
+        entry
+        for entry in plan["write_set"]
+        if entry["path"] == "generated/nested/new.txt"
+    )
+    original_unlink = os.unlink
+    failed_once = False
+
+    def fail_first_staging_unlink(
+        path: object,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal failed_once
+        if not failed_once and str(path).startswith(".evozeus-tmp-"):
+            failed_once = True
+            raise OSError("simulated staging unlink failure")
+        original_unlink(path, dir_fd=dir_fd)
+
+    with monkeypatch.context() as unlink_patch:
+        unlink_patch.setattr(os, "unlink", fail_first_staging_unlink)
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            with pytest.raises(OSError, match="simulated staging unlink failure"):
+                secure_target.write_exact(
+                    "generated/nested/new.txt",
+                    b"CREATED-POSTIMAGE\n",
+                    expected_preimage=None,
+                    mode=item["postimage_mode"],
+                )
+
+    assert failed_once is True
+    assert target.joinpath("generated/nested/new.txt").read_bytes() == (
+        b"CREATED-POSTIMAGE\n"
+    )
+    assert not any(
+        path.name.startswith(".evozeus-tmp-") for path in target.rglob("*")
+    )
+    result = migration_kernel.rollback_migration_snapshot(
+        target,
+        snapshot,
+        trusted_snapshot_root=trusted_base,
+    )
+    assert result["status"] == "rolled_back"
+    assert not target.joinpath("generated").exists()
+
+
 @pytest.mark.parametrize("swap", ["leaf", "parent"])
 def test_secure_apply_swap_never_writes_outside_the_target(
     monkeypatch: pytest.MonkeyPatch,
