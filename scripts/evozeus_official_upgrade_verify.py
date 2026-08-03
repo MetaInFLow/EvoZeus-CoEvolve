@@ -283,6 +283,10 @@ CONSTRUCTION_SOURCE_PATHS = (
     "scripts/evozeus_notice.py",
     "scripts/evozeus_wrapper_preflight.py",
 )
+STAGED_CONSTRUCTION_SOURCE_PATHS = (
+    "scripts/evozeus_branch_consumer.py",
+)
+VERSIONED_CONSTRUCTION_SOURCE_PREFIX = "construction/harness-skill/"
 AUTHORITY_ROTATION_PREFIXES = (
     ".github/workflows/",
     "contracts/v1/migrations/protocols/",
@@ -520,13 +524,17 @@ def _contract_manifest_mode(
 ) -> str:
     if relative in EXECUTABLE_MANIFEST_PATHS:
         return "100755"
-    if candidate and role == "immutable-target-closure-artifact" and re.fullmatch(
-        r"migrations/history/harness-skill/"
-        r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/"
-        r"artifacts/scripts/evozeus_wrapper_preflight\.py",
-        relative,
-    ):
-        return "100755"
+    if candidate and role == "immutable-target-closure-artifact":
+        executable_artifact = re.fullmatch(
+            r"migrations/history/harness-skill/"
+            r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/"
+            r"artifacts/(?:scripts/evozeus_wrapper_preflight\.py|"
+            r"\.evozeus-wrapper/scripts/(?:evozeus_wrapper_preflight\.py|"
+            r"evozeus_branch_consumer\.py|evozeus-branch-preflight\.mjs))",
+            relative,
+        )
+        if executable_artifact is not None:
+            return "100755"
     if (
         candidate
         and role == "target-closure-source"
@@ -1030,9 +1038,49 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
 
 
 def _construction_source_allowed(path: str) -> bool:
-    return path in CONSTRUCTION_SOURCE_PATHS or path.startswith(
-        CONSTRUCTION_SOURCE_PREFIXES
+    if (
+        path in CONSTRUCTION_SOURCE_PATHS
+        or path in STAGED_CONSTRUCTION_SOURCE_PATHS
+        or path.startswith(CONSTRUCTION_SOURCE_PREFIXES)
+    ):
+        return True
+    if not path.startswith(VERSIONED_CONSTRUCTION_SOURCE_PREFIX):
+        return False
+    relative = PurePosixPath(path).relative_to(VERSIONED_CONSTRUCTION_SOURCE_PREFIX)
+    parts = relative.parts
+    return (
+        len(parts) >= 3
+        and SEMVER_PATTERN.fullmatch(parts[0]) is not None
+        and parts[1] == "target"
     )
+
+
+def _bound_versioned_construction_sources(store: BlobStore) -> set[str]:
+    bound: set[str] = set()
+    for closure_path in store.canonical_harness_closure_paths():
+        _, entries = load_closure(store, closure_path)
+        for item in entries.values():
+            source_path = item.get("source_path")
+            if (
+                isinstance(source_path, str)
+                and source_path.startswith(VERSIONED_CONSTRUCTION_SOURCE_PREFIX)
+            ):
+                bound.add(_safe_relative(source_path, "versioned construction source"))
+    return bound
+
+
+def _bound_construction_sources(store: BlobStore) -> set[str]:
+    bound: set[str] = set()
+    for closure_path in store.canonical_harness_closure_paths():
+        _, entries = load_closure(store, closure_path)
+        for item in entries.values():
+            source_path = item.get("source_path")
+            if (
+                item.get("source_binding") == "construction_revision"
+                and isinstance(source_path, str)
+            ):
+                bound.add(_safe_relative(source_path, "construction source"))
+    return bound
 
 
 def classify_candidate_changes(
@@ -1053,7 +1101,11 @@ def classify_candidate_changes(
         _safe_relative(path, "candidate changed path")
         is_authority = (
             path in AUTHORITY_ROTATION_PATHS
+            or path in CONSTRUCTION_SOURCE_PATHS
+            or path in STAGED_CONSTRUCTION_SOURCE_PATHS
             or path.startswith(AUTHORITY_ROTATION_PREFIXES)
+            or path.startswith(VERSIONED_CONSTRUCTION_SOURCE_PREFIX)
+            or path.startswith(CONSTRUCTION_SOURCE_PREFIXES)
             or path.startswith(protected_legacy_prefixes)
             or path in INITIAL_BOOTSTRAP_SOURCE_ANCHORS
         )
@@ -3824,6 +3876,16 @@ def verify_candidate(
     base_protocol = load_protocol(base)
     base_report = verify_catalog(base)
     immutable_history_prefixes = _immutable_history_prefixes(base)
+    changed_bound_sources = sorted(
+        path
+        for path in _bound_construction_sources(base).intersection(changes)
+        if base.exists(path)
+    )
+    if changed_bound_sources:
+        raise VerificationError(
+            "candidate data modifies a construction source already bound by immutable history: "
+            + ", ".join(changed_bound_sources)
+        )
     for path, change in changes.items():
         _safe_relative(path, "candidate changed path")
         if path in PROTECTED_MIGRATION_CONSUMER_PATHS:
@@ -4214,6 +4276,13 @@ def verify_classified_pull_request(
             "candidate_files_executed": False,
         }
     if classification == "rotation_required":
+        bound_construction = _bound_versioned_construction_sources(base)
+        changed_bound_construction = sorted(bound_construction.intersection(changes))
+        if changed_bound_construction:
+            raise VerificationError(
+                "versioned construction sources are append-only after closure binding: "
+                + ", ".join(changed_bound_construction)
+            )
         return {
             "status": "rotation_required",
             "classification": classification,

@@ -56,6 +56,7 @@ from scripts.evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_transform_action,
     repo_from_remote,
+    require_contributor_gate_protection,
     require_repo_admin,
     resolve_harness_target,
     runtime_pointer_scope,
@@ -611,6 +612,66 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "ADMIN permission"):
                 require_repo_admin(root, "MetaInFLow/example", runner=runner)
+
+    def test_attach_requires_exact_default_branch_contributor_gate_check(self):
+        commands = []
+
+        def protected_runner(args, cwd=None):
+            commands.append(args)
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "strict": True,
+                        "contexts": ["build"],
+                        "checks": [{"context": "EvoZeus Contributor Gate", "app_id": 15368}],
+                    }
+                ),
+                "stderr": "",
+            }
+
+        evidence = require_contributor_gate_protection(
+            "MetaInFLow/example",
+            "release/current",
+            runner=protected_runner,
+        )
+
+        self.assertTrue(evidence["verified"])
+        self.assertFalse(evidence["writes"])
+        self.assertEqual(evidence["context"], "EvoZeus Contributor Gate")
+        self.assertEqual(evidence["app_id"], 15368)
+        self.assertIn("branches/release%2Fcurrent/protection/required_status_checks", commands[0][2])
+
+        def missing_runner(args, cwd=None):
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({"strict": True, "contexts": ["build"], "checks": []}),
+                "stderr": "",
+            }
+
+        with self.assertRaisesRegex(ValueError, "does not require"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=missing_runner)
+
+        def unbound_runner(args, cwd=None):
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({
+                    "contexts": ["EvoZeus Contributor Gate"],
+                    "checks": [
+                        {"context": "EvoZeus Contributor Gate", "app_id": 99999},
+                    ],
+                }),
+                "stderr": "",
+            }
+
+        with self.assertRaisesRegex(ValueError, "GitHub Actions app_id=15368"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=unbound_runner)
+
+        def unavailable_runner(args, cwd=None):
+            return {"returncode": 1, "stdout": "", "stderr": "not protected"}
+
+        with self.assertRaisesRegex(ValueError, "cannot verify"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=unavailable_runner)
 
     def test_replace_markdown_section_preserves_target_h1_and_suffix_bytes(self):
         frontmatter = (

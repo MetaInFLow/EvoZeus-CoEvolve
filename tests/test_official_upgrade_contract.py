@@ -453,7 +453,58 @@ def _candidate_star(
     )
     construction_files: dict[str, verifier.ConstructionBlob] = {}
     skill_target = ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
-    skill_source = "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
+    staged_root = "construction/harness-skill/v1.2.0/target/"
+    future_target_sources = {
+        ".evozeus-wrapper/contracts/v1/contributor-branch-contract.json": (
+            staged_root
+            + ".evozeus-wrapper/contracts/v1/contributor-branch-contract.json"
+        ),
+        ".evozeus-wrapper/contracts/v1/contributor-branch-provenance.json": (
+            staged_root
+            + ".evozeus-wrapper/contracts/v1/contributor-branch-provenance.json"
+        ),
+        ".evozeus-wrapper/docs/onboarding.md": (
+            staged_root + ".evozeus-wrapper/docs/onboarding.md"
+        ),
+        ".evozeus-wrapper/scripts/evozeus-branch-preflight.mjs": (
+            staged_root + ".evozeus-wrapper/scripts/evozeus-branch-preflight.mjs"
+        ),
+        ".evozeus-wrapper/scripts/evozeus_branch_consumer.py": (
+            "scripts/evozeus_branch_consumer.py"
+        ),
+        ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py": (
+            staged_root + ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+        ),
+        skill_target: (
+            staged_root
+            + ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+        ),
+        ".github/pull_request_template.md": (
+            staged_root + ".github/pull_request_template.md"
+        ),
+        ".github/workflows/evozeus-wrapper-preflight.yml": (
+            staged_root + ".github/workflows/evozeus-wrapper-preflight.yml"
+        ),
+    }
+    v12_by_target = {item["target_path"]: item for item in v12["files"]}
+    for target_path, source_path in future_target_sources.items():
+        if target_path in v12_by_target:
+            continue
+        source = root / source_path
+        source_mode = _filesystem_mode(source)
+        entry = {
+            "target_path": target_path,
+            "kind": "exact",
+            "mode": source_mode,
+            "ownership": "wrapper_managed",
+            "artifact_path": "artifacts/" + target_path,
+            "sha256": _sha256(source.read_bytes()),
+            "materialization": {"policy": "copy_exact"},
+            "source_path": source_path,
+            "source_binding": "construction_revision",
+        }
+        v12["files"].append(entry)
+        v12_by_target[target_path] = entry
     skill_before: dict[str, object] | None = None
     skill_after: dict[str, object] | None = None
     for item in v12["files"]:
@@ -472,7 +523,28 @@ def _candidate_star(
             continue
         old_artifact = (Path(v11_relative).parent / artifact).as_posix()
         new_artifact = (Path(v12_relative).parent / artifact).as_posix()
-        data = (root / old_artifact).read_bytes()
+        target_path = item["target_path"]
+        future_source = future_target_sources.get(target_path)
+        if future_source is not None:
+            source = root / future_source
+            data = source.read_bytes()
+            source_mode = _filesystem_mode(source)
+            item.update(
+                {
+                    "kind": "exact",
+                    "mode": source_mode,
+                    "artifact_path": "artifacts/" + target_path,
+                    "sha256": _sha256(data),
+                    "materialization": {"policy": "copy_exact"},
+                    "source_path": future_source,
+                    "source_binding": "construction_revision",
+                }
+            )
+            new_artifact = (
+                Path(v12_relative).parent / str(item["artifact_path"])
+            ).as_posix()
+        else:
+            data = (root / old_artifact).read_bytes()
         if item["target_path"] == ".evozeus-wrapper/contracts/harness-migration-contract-v1.json":
             data = migration_contract_data
             item["sha256"] = _sha256(data)
@@ -480,10 +552,7 @@ def _candidate_star(
             skill_before = next(
                 entry for entry in v11["files"] if entry["target_path"] == skill_target
             )
-            data += b"\n<!-- candidate-harness-v1.2 -->\n"
-            item["sha256"] = _sha256(data)
             skill_after = item
-            changes[skill_source] = _candidate_blob(skill_source, data)
         artifact_mode = (
             "100644"
             if item.get("materialization", {}).get("mode_policy")
@@ -498,17 +567,8 @@ def _candidate_star(
         )
         source_path = item.get("source_path")
         if source_path is not None and item.get("source_binding") == "construction_revision":
-            source_data = data if source_path == skill_source else (root / source_path).read_bytes()
+            source_data = (root / source_path).read_bytes()
             source_mode = artifact_mode
-            base_mode = (
-                "100755" if (root / source_path).stat().st_mode & 0o100 else "100644"
-            )
-            if source_path in changes or source_mode != base_mode:
-                changes[source_path] = _candidate_blob(
-                    source_path,
-                    source_data,
-                    mode=source_mode,
-                )
             construction_files[source_path] = verifier.ConstructionBlob(
                 path=source_path,
                 mode=source_mode,
@@ -615,6 +675,57 @@ def _candidate_star(
                         if item["target_path"]
                         == ".evozeus-wrapper/wrapper.json"
                     )
+
+    def bind_future_exact_operations(
+        profile: dict[str, object],
+        before_closure: dict[str, object],
+    ) -> None:
+        before_entries = {
+            item["target_path"]: item for item in before_closure["files"]
+        }
+        operations = profile["operations"]
+        operation_indexes = {
+            item["target_path"]: index for index, item in enumerate(operations)
+        }
+        for target_path in sorted(future_target_sources):
+            after = v12_by_target[target_path]
+            before = before_entries.get(target_path)
+            operation_type = "replace_exact" if before is not None else "create_exact"
+            operation = {
+                "change_id": (
+                    ("replace:" if before is not None else "create:")
+                    + target_path
+                ),
+                "type": operation_type,
+                "target_path": target_path,
+                "preimage": (
+                    {"sha256": before["sha256"], "mode": before["mode"]}
+                    if before is not None
+                    else {"state": "absent"}
+                ),
+                "postimage": {
+                    "artifact_path": (
+                        "migrations/history/harness-skill/v1.2.0/"
+                        + str(after["artifact_path"])
+                    ),
+                    "sha256": after["sha256"],
+                    "mode": after["mode"],
+                },
+            }
+            existing = operation_indexes.get(target_path)
+            if existing is None:
+                operation_indexes[target_path] = len(operations)
+                operations.append(operation)
+            else:
+                operations[existing] = operation
+
+    v10 = json.loads(
+        (
+            root
+            / "contracts/v1/migrations/history/harness-skill/v1.0.0/closure.json"
+        ).read_text(encoding="utf-8")
+    )
+    bind_future_exact_operations(direct_v10, v10)
     current_ledger_operation = {
         "change_id": "create:" + current_ledger_target,
         "type": "create_exact",
@@ -742,6 +853,7 @@ def _candidate_star(
         "protected_business_surfaces": old_profile["protected_business_surfaces"],
         "fallback": old_profile["fallback"],
     }
+    bind_future_exact_operations(direct_v11, v11)
     profile_entries = []
     for filename, profile in (
         ("canonical-v1.0-to-v1.2-v1.json", direct_v10),
@@ -940,6 +1052,7 @@ def _bind_candidate_bundle_source(
     assert artifact_blob.loader is not None
     source_path = "contracts/v1/core-snapshots/evozeus_wrapper_preflight.py"
     closure_entry["source_path"] = source_path
+    closure_entry["source_binding"] = "required_release"
     changes[source_path] = _candidate_blob(
         source_path,
         artifact_blob.loader(),
@@ -1012,7 +1125,7 @@ def _attempt_to_bind_protected_consumer_as_skill_source(
     assert artifact_blob.loader is not None
     original_source = skill_entry["source_path"]
     skill_entry["source_path"] = protected_path
-    changes.pop(original_source)
+    changes.pop(original_source, None)
     changes[protected_path] = _candidate_blob(protected_path, artifact_blob.loader())
 
     closure_data = _json_bytes(closure)
@@ -2357,6 +2470,11 @@ def test_ordinary_pull_request_is_a_successful_official_upgrade_noop() -> None:
     [
         verifier.VERIFIER_REL,
         "scripts/evozeus_wrapper_lifecycle.py",
+        "scripts/evozeus_branch_consumer.py",
+        (
+            "construction/harness-skill/v1.2.0/target/"
+            ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+        ),
         ".github/workflows/ci.yml",
         verifier.PROTOCOL_REL,
     ],
@@ -2379,6 +2497,94 @@ def test_authority_or_consumer_pull_request_requires_source_rotation(
     assert report["classification"] == "rotation_required"
     assert report["candidate_files_executed"] is False
     assert "data-only migration PR" in report["next_step"]
+
+
+def test_live_target_template_change_requires_source_rotation() -> None:
+    path = "templates/target/.github/pull_request_template.md"
+    protocol = verifier.load_protocol(_base_store())
+
+    assert verifier.classify_candidate_changes(
+        protocol,
+        {path: _candidate_blob(path, b"source rotation\n")},
+    ) == "rotation_required"
+
+
+def test_live_target_template_and_data_change_must_be_split() -> None:
+    protocol = verifier.load_protocol(_base_store())
+    changes = {
+        "templates/target/.github/pull_request_template.md": _candidate_blob(
+            "templates/target/.github/pull_request_template.md",
+            b"source rotation\n",
+        ),
+        verifier.HISTORY_CURRENT_REL: _candidate_blob(
+            verifier.HISTORY_CURRENT_REL,
+            b"{}\n",
+        ),
+    }
+
+    with pytest.raises(verifier.VerificationError, match="must be split"):
+        verifier.classify_candidate_changes(protocol, changes)
+
+
+@pytest.mark.parametrize("path", verifier.CONSTRUCTION_SOURCE_PATHS)
+def test_live_construction_source_change_requires_rotation(path: str) -> None:
+    protocol = verifier.load_protocol(_base_store())
+
+    assert verifier.classify_candidate_changes(
+        protocol,
+        {path: _candidate_blob(path, b"source rotation\n")},
+    ) == "rotation_required"
+
+
+@pytest.mark.parametrize("path", verifier.CONSTRUCTION_SOURCE_PATHS)
+def test_live_construction_source_and_data_change_must_be_split(path: str) -> None:
+    protocol = verifier.load_protocol(_base_store())
+    changes = {
+        path: _candidate_blob(path, b"source rotation\n"),
+        verifier.HISTORY_CURRENT_REL: _candidate_blob(
+            verifier.HISTORY_CURRENT_REL,
+            b"{}\n",
+        ),
+    }
+
+    with pytest.raises(verifier.VerificationError, match="must be split"):
+        verifier.classify_candidate_changes(protocol, changes)
+
+
+def test_staged_construction_sources_are_narrow_and_bound_versions_are_append_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versioned = (
+        "construction/harness-skill/v1.2.0/target/"
+        ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    )
+    assert verifier._construction_source_allowed("scripts/evozeus_branch_consumer.py")
+    assert verifier._construction_source_allowed(versioned)
+    assert not verifier._construction_source_allowed(
+        "construction/harness-skill/not-semver/target/untrusted.py"
+    )
+    assert not verifier._construction_source_allowed(
+        "construction/harness-skill/v1.2.0/not-target/untrusted.py"
+    )
+
+    monkeypatch.setattr(
+        verifier,
+        "_bound_versioned_construction_sources",
+        lambda _store: {versioned},
+    )
+    with pytest.raises(
+        verifier.VerificationError,
+        match="versioned construction sources are append-only",
+    ):
+        verifier.verify_classified_pull_request(
+            _base_store(),
+            {versioned: _candidate_blob(versioned, b"mutated bound source\n")},
+            head_sha="2" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("bound source rejection must not resolve candidate data")
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -2891,8 +3097,58 @@ def test_candidate_rotates_to_a_direct_to_current_profile_star(
     assert report["classification"] == "data_candidate"
     assert report["base_closure_version"] == "v1.1.0"
     assert report["candidate_closure_version"] == "v1.2.0"
+    assert not any(path.startswith("templates/target/") for path in changes)
 
     candidate = verifier.CandidateStore(verifier.FilesystemStore(root), changes)
+    candidate_closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    )
+    _candidate_closure, candidate_entries = verifier.load_closure(
+        candidate,
+        candidate_closure_path,
+    )
+    staged_root = "construction/harness-skill/v1.2.0/target/"
+    expected_future_sources = {
+        target: staged_root + target
+        for target in {
+            ".evozeus-wrapper/contracts/v1/contributor-branch-contract.json",
+            ".evozeus-wrapper/contracts/v1/contributor-branch-provenance.json",
+            ".evozeus-wrapper/docs/onboarding.md",
+            ".evozeus-wrapper/scripts/evozeus-branch-preflight.mjs",
+            ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+            ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+            ".github/pull_request_template.md",
+            ".github/workflows/evozeus-wrapper-preflight.yml",
+        }
+    }
+    expected_future_sources[
+        ".evozeus-wrapper/scripts/evozeus_branch_consumer.py"
+    ] = "scripts/evozeus_branch_consumer.py"
+    assert {
+        target: candidate_entries[target]["source_path"]
+        for target in expected_future_sources
+    } == expected_future_sources
+    assert all(
+        candidate_entries[target]["source_binding"] == "construction_revision"
+        for target in expected_future_sources
+    )
+    inventory_path = "contracts/v1/target-template-inventory.json"
+    base_inventory = (root / inventory_path).read_bytes()
+    assert inventory_path not in changes
+    assert candidate.read_bytes(inventory_path) == base_inventory
+    base_manifest = json.loads((root / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    candidate_manifest = json.loads(candidate.read_bytes(CONTRACT_MANIFEST_REL))
+    base_inventory_entry = next(
+        item
+        for item in base_manifest["files"]
+        if item["path"] == "target-template-inventory.json"
+    )
+    candidate_inventory_entry = next(
+        item
+        for item in candidate_manifest["files"]
+        if item["path"] == "target-template-inventory.json"
+    )
+    assert candidate_inventory_entry == base_inventory_entry
     profiles = {}
     for entry in verifier.load_pointer(
         candidate,
@@ -2972,6 +3228,55 @@ def test_candidate_rejects_an_unbound_non_migration_change(tmp_path: Path) -> No
         )
 
 
+def test_candidate_rejects_target_inventory_rotation_for_v12_data(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    inventory_path = "contracts/v1/target-template-inventory.json"
+    inventory = json.loads((root / inventory_path).read_text(encoding="utf-8"))
+    inventory["inventory_version"] = "v1.1.0"
+    changes[inventory_path] = _candidate_blob(
+        inventory_path,
+        _json_bytes(inventory),
+    )
+    _bind_candidate_manifest(root, changes)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="outside the derived official-upgrade closure",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_direct_candidate_verification_rejects_bound_live_source_change(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    source_path = "templates/target/.github/pull_request_template.md"
+    changes[source_path] = _candidate_blob(
+        source_path,
+        (root / source_path).read_bytes() + b"\nsource rotation\n",
+    )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="construction source already bound by immutable history",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
 @pytest.mark.parametrize("bound", [False, True])
 def test_candidate_cannot_change_the_migration_consumer_even_when_closure_bound(
     tmp_path: Path,
@@ -3030,17 +3335,7 @@ def test_candidate_construction_source_mode_must_equal_closure_artifact_mode(
 ) -> None:
     root = _protocol_v1_base(tmp_path)
     changes, valid_resolver, head_sha = _candidate_star(root)
-    source_path = (
-        "templates/target/.evozeus_evoinfra/skills/"
-        "using-evozeus-harness/SKILL.md"
-    )
-    source = changes[source_path]
-    assert source.loader is not None
-    changes[source_path] = _candidate_blob(
-        source_path,
-        source.loader(),
-        mode="100755",
-    )
+    source_path = "templates/target/.codex/hooks.json"
 
     def mismatched_mode_resolver(
         repository: str,

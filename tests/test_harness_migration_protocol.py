@@ -2161,6 +2161,61 @@ def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) ->
     assert list(trusted.rglob("*.pyc")) == []
 
 
+def test_trusted_structure_runner_injects_v12_branch_consumer() -> None:
+    notice_source = b"NOTICE_VALUE = 1\n"
+    consumer_source = b"CONSUMER_VALUE = 2\n"
+    preflight_source = (
+        b"import hashlib\n"
+        b"notice = globals().pop('_EVOZEUS_TRUSTED_NOTICE_SOURCE')\n"
+        b"notice_sha = globals().pop('_EVOZEUS_TRUSTED_NOTICE_SHA256')\n"
+        b"consumer = globals().pop('_EVOZEUS_TRUSTED_CONTRIBUTOR_SOURCE')\n"
+        b"consumer_sha = globals().pop('_EVOZEUS_TRUSTED_CONTRIBUTOR_SHA256')\n"
+        b"assert hashlib.sha256(notice).hexdigest() == notice_sha\n"
+        b"assert hashlib.sha256(consumer).hexdigest() == consumer_sha\n"
+        b"raise SystemExit(0)\n"
+    )
+    snapshot = lifecycle._TrustedStructureSnapshot(
+        preflight_source=preflight_source,
+        notice_source=notice_source,
+        consumer_source=consumer_source,
+        preflight_sha256=hashlib.sha256(preflight_source).hexdigest(),
+        notice_sha256=hashlib.sha256(notice_source).hexdigest(),
+        consumer_sha256=hashlib.sha256(consumer_source).hexdigest(),
+    )
+
+    result = lifecycle._run_harness_structure_check(
+        Path("/unused"),
+        trusted_preflight=snapshot,
+    )
+
+    assert result["returncode"] == 0
+
+
+@pytest.mark.parametrize("fault", ["source_only", "sha_only", "digest"])
+def test_trusted_structure_snapshot_rejects_invalid_consumer_binding(
+    fault: str,
+) -> None:
+    consumer_source = b"VALUE = 1\n"
+    consumer_sha256 = hashlib.sha256(consumer_source).hexdigest()
+    if fault == "source_only":
+        consumer_sha256 = None
+    elif fault == "sha_only":
+        consumer_source = None
+    elif fault == "digest":
+        consumer_sha256 = "0" * 64
+    snapshot = lifecycle._TrustedStructureSnapshot(
+        preflight_source=b"pass\n",
+        notice_source=b"VALUE = 1\n",
+        consumer_source=consumer_source,
+        preflight_sha256=hashlib.sha256(b"pass\n").hexdigest(),
+        notice_sha256=hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+        consumer_sha256=consumer_sha256,
+    )
+
+    with pytest.raises(ValueError, match="source bytes changed"):
+        snapshot.verify()
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_error"),
     [
@@ -2183,18 +2238,25 @@ def test_trusted_structure_runner_rejects_invalid_frames(
         (
             len(preflight_source).to_bytes(8, "big"),
             len(notice_source).to_bytes(8, "big"),
+            (0).to_bytes(8, "big"),
             preflight_source,
             notice_source,
         )
     )
     if failure == "short_header":
-        payload = b"\0" * 15
+        payload = b"\0" * 23
     elif failure == "invalid_length":
-        payload = (1).to_bytes(8, "big") + (1).to_bytes(8, "big") + b"x"
+        payload = (
+            (1).to_bytes(8, "big")
+            + (1).to_bytes(8, "big")
+            + (0).to_bytes(8, "big")
+            + b"x"
+        )
     elif failure == "oversize":
         payload = (
             (lifecycle._TRUSTED_STRUCTURE_SOURCE_MAX_BYTES + 1).to_bytes(8, "big")
             + (1).to_bytes(8, "big")
+            + (0).to_bytes(8, "big")
         )
     elif failure == "preflight_digest":
         preflight_sha256 = "0" * 64
@@ -2209,6 +2271,7 @@ def test_trusted_structure_runner_rejects_invalid_frames(
             lifecycle._TRUSTED_STRUCTURE_RUNNER,
             preflight_sha256,
             notice_sha256,
+            "-",
             "structure",
             "--target",
             "/unused",

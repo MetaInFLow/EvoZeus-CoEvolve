@@ -65,6 +65,8 @@ Evolution Harness 的治理单位是独立 Git Repo：Issue、PR、Owner、UAT�
 
 EvoZeus 负责选择入口和解释结果；CoEvolve 负责 Repo 级治理与执行合同。任何外部写入都要经过明确授权。
 
+从 Feedback Issue 进入实现时，CoEvolve 会在首个业务文件写入前展示 Contributor Branch Plan，并要求独立 branch/worktree。权限由 EvoZeus Core 的实时 GitHub 证据解析；证据缺失时收敛到 local patch。canonical checkout 保持 clean，多位参与者各自拥有可恢复的私有 ledger 上下文。
+
 ## 维护者快速开始
 
 ### 1. 诊断目标 Repo
@@ -137,6 +139,7 @@ target-repo/
 │   ├── CHANGELOG.md
 │   ├── policies/
 │   ├── hooks/
+│   ├── contracts/v1/       # pinned EvoZeus Core contributor branch contract
 │   ├── scripts/
 │   └── docs/
 ├── .github/

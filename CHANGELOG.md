@@ -13,6 +13,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Added distinct release-lineage and applied-migration-lineage records. The reviewed v0.14 bridge writes its own profile-bound arrival receipt while fresh attach and canonical automatic upgrades retain only the shared v1.1 release lineage.
 - Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
 - Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound v1.1.0 contract file that remains compatible with the Core v1 bundle loader.
+- Added a target-local Contributor Branch Gate backed by a hash-bound EvoZeus Core v1 contract/planner snapshot, read-only live-evidence consumer, private resume ledger, and public-safe PR metadata.
 
 ### Changed
 
@@ -22,6 +23,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Made automatic migration profile selection data-driven through verified current pointers and direct-to-current historical closures. The current v1.0→v1.1 profile preserves the instruction surface byte-for-byte and requires the complete v1.0 closure—every exact hash/mode, required-absent path, manifest-owned state, operation precondition, and postimage—to match.
 - Enabled the exact reviewed v0.14 three-section migration through `decision=supervised_migration_available` and `--approve-plan <operation_sha256>`. Frontmatter and regex remain discovery-only; the bound CommonMark transform retires only proven legacy spans, preserves the business-byte complement, and inserts one canonical Harness Skill activation block.
 - Made v0.15.0 the fresh-attach baseline and separated the target wrapper v0.14→v0.15 axis from artifact provenance: v1.0 comes from exact construction revision `44d1fbdefc1e1de47a35c3ca39d2ba083661d569`, while v1.1 requires the official v0.15.0 release.
+- Staged the v1.2 Contributor Branch Gate target construction under an append-only versioned namespace while keeping every active v1.1 template, preflight, manifest, and inventory byte unchanged.
+- Required Issue-to-PR implementation to show and pass a canonical repo/base/Issue/actor/permission/worktree plan before target-file writes; v1.2 activation remains deferred to its Data rotation.
 
 ### Security
 
@@ -30,6 +33,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Bound supervised apply to the verified profile/closure/adapter/source tag, target root, source and target Git indexes, full preimage hash/mode/inode, and the fixed `supervised_exact_plan_v1` authority class. Authorization exists only for the current CLI invocation and is never persisted.
 - Isolated trust entrypoints from repository-local bytecode: local EvoZeus modules load from regular source only, the reviewed adapter executes from already-verified source bytes, and migration structure verification runs the trusted-release closure preflight/notice rather than target-owned Python before a final target-state recheck.
 - Blocked lifecycle installation until the Core-owned dispatcher is byte-identical to the active product component and all control paths pass HOME containment and symlink checks; CoEvolve does not read prompts, select targets, execute Session Signal, or own product transport.
+- Added fail-closed contributor snapshot provenance/digest validation, partial GitHub evidence fallback, bounded planner execution, private atomic ledger permissions, full resume identity binding, and stderr/path redaction.
 
 ### Verification
 
@@ -38,6 +42,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Migration plans declare explicit write/delete/move sets, protected business surfaces, validation, rollback, and self-excluding `plan_sha256`; every write item carries a precomputed postimage hash.
 - Added LF/CRLF golden apply-and-rollback coverage; mixed newline, duplicate/Setext ambiguity, target/source/root/index drift, forged authority, inode CAS, each-operation failure, postcondition failure, replay rejection, and concurrent-content quarantine coverage for supervised migration.
 - Added lifecycle coverage for missing or incompatible Core runtime markers, dual-event idempotency, third-party Hook preservation, trust isolation, uninstall ownership, and optional zero-mutation execution against a real Core checkout.
+- Added Contributor Branch Gate coverage for clean new/resume, dirty tree, wrong base, collision, fork/local fallback, incomplete live evidence, snapshot integrity, private ledger binding, planner timeout, consistency, and redaction.
 
 ### Fixed
 

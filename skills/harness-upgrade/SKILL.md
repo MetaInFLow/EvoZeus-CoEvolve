@@ -51,6 +51,8 @@ Batch apply requires both `--approve` and the exact dry-run `batch_plan_sha256` 
 
 `one_time` means one explicit CLI invocation. Approval is never saved to a config file, manifest, snapshot preference, or reusable authorization store. A successful apply changes the preimage, so replaying its old digest against that applied state is rejected. If the owner explicitly rolls back and later manually supplies the same digest in a new invocation, that is a new approval event; the contract does not claim global permanent consumption.
 
+The v1.2 Contributor Branch Gate stages eight versioned target sources under `construction/harness-skill/v1.2.0/target/`; the ninth target artifact, `.evozeus-wrapper/scripts/evozeus_branch_consumer.py`, binds the root `scripts/evozeus_branch_consumer.py` at the same source-first revision. Source rotation does not refresh any active v1.1 target file. A later verified Data rotation must bind all nine target artifacts before wrapper v0.16.0 / Harness v1.2 activation. Existing branch ledgers remain local runtime state and never enter that write set; upgraded plans still collect live GitHub evidence.
+
 ## Versioned authority profiles
 
 - `legacy-scattered-to-canonical-v1.0@v1.0.0`：manual review, `writes=false`. Regex, frontmatter, heading, terminal text, path names, and inferred layout remain discovery-only evidence for every protocol version.
