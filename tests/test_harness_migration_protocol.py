@@ -2121,24 +2121,43 @@ def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) ->
     target = tmp_path / "structure-no-pyc"
     target.mkdir()
     trusted = tmp_path / "trusted-structure-source"
-    script = trusted / "evozeus_wrapper_preflight.py"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        "import sys\n"
-        "sys.path.insert(0, __file__.rsplit('/', 1)[0])\n"
-        "import helper_probe\n"
-        "raise SystemExit(0)\n",
+    trusted.mkdir()
+    trusted.joinpath("preflight_helper_probe.py").write_text(
+        "VALUE = 1\n",
         encoding="utf-8",
     )
-    script.parent.joinpath("helper_probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trusted.joinpath("notice_helper_probe.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    notice_source = b"import notice_helper_probe\n"
+    preflight_source = (
+        "import hashlib\n"
+        "import sys\n"
+        "sys.dont_write_bytecode = True\n"
+        f"sys.path.insert(0, {str(trusted)!r})\n"
+        "notice_source = globals().pop('_EVOZEUS_TRUSTED_NOTICE_SOURCE')\n"
+        "notice_sha256 = globals().pop('_EVOZEUS_TRUSTED_NOTICE_SHA256')\n"
+        "assert hashlib.sha256(notice_source).hexdigest() == notice_sha256\n"
+        "exec(compile(notice_source, '<trusted-notice>', 'exec'), {})\n"
+        "import preflight_helper_probe\n"
+        "raise SystemExit(0)\n"
+    ).encode("utf-8")
+    trusted_snapshot = lifecycle._TrustedStructureSnapshot(
+        preflight_source=preflight_source,
+        notice_source=notice_source,
+        preflight_sha256=hashlib.sha256(preflight_source).hexdigest(),
+        notice_sha256=hashlib.sha256(notice_source).hexdigest(),
+    )
 
     result = lifecycle._run_harness_structure_check(
         target,
-        trusted_preflight=script,
+        trusted_preflight=trusted_snapshot,
     )
 
     assert result["returncode"] == 0
-    assert not script.parent.joinpath("__pycache__").exists()
+    assert not trusted.joinpath("__pycache__").exists()
+    assert list(trusted.rglob("*.pyc")) == []
 
 
 def test_current_harness_version_is_derived_from_the_verified_closure(
