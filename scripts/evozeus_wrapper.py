@@ -1,12 +1,106 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import sys
+
+
+def _bootstrap_trusted_sources() -> dict:
+    trusted_loader = globals().get("_EVOZEUS_TRUSTED_SOURCE_LOADER")
+    if trusted_loader is not None:
+        if trusted_loader not in sys.meta_path:
+            raise RuntimeError("trusted source loader is not authoritative")
+        sys.meta_path.remove(trusted_loader)
+        sys.meta_path.insert(0, trusted_loader)
+        scripts_dir = trusted_loader.scripts_dir
+        return {
+            "scripts_dir": scripts_dir,
+            "repository_root": scripts_dir.rsplit("/", 1)[0],
+            "pycache_prefix": sys.pycache_prefix,
+            "loader": trusted_loader,
+        }
+    posix = __import__("posix")
+    cwd = posix.getcwd()
+    original_sys_path = tuple(sys.path)
+
+    def lexical_absolute(raw: str) -> str:
+        value = raw if raw.startswith("/") else cwd + "/" + raw
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/" + "/".join(parts)
+
+    script = lexical_absolute(__file__)
+    scripts_dir = script.rsplit("/", 1)[0]
+    system_roots = {
+        lexical_absolute(sys.base_prefix),
+        lexical_absolute(sys.prefix),
+    }
+    sys.path[:] = [
+        item
+        for item in original_sys_path
+        if any(
+            lexical_absolute(item or cwd) == root
+            or lexical_absolute(item or cwd).startswith(root + "/")
+            for root in system_roots
+        )
+    ]
+    guard_path = scripts_dir + "/evozeus_source_guard.py"
+    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    if nofollow == 0:
+        raise RuntimeError("trusted source bootstrap requires O_NOFOLLOW")
+    descriptor = posix.open(guard_path, flags | nofollow)
+    try:
+        metadata = posix.fstat(descriptor)
+        if metadata.st_mode & 0o170000 != 0o100000:
+            raise RuntimeError("trusted source bootstrap is not a regular file")
+        source = b""
+        while len(source) < metadata.st_size:
+            chunk = posix.read(descriptor, metadata.st_size - len(source))
+            if not chunk:
+                raise RuntimeError("trusted source bootstrap changed while reading")
+            source += chunk
+        if posix.read(descriptor, 1):
+            raise RuntimeError("trusted source bootstrap grew while reading")
+        final_metadata = posix.fstat(descriptor)
+        if (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        ) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_mode,
+            final_metadata.st_size,
+            final_metadata.st_mtime_ns,
+            final_metadata.st_ctime_ns,
+        ):
+            raise RuntimeError("trusted source bootstrap changed while reading")
+    finally:
+        posix.close(descriptor)
+    namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
+    exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
+    return namespace["bootstrap"](__file__, original_sys_path)
+
+
+_TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()
+
 import argparse
 import json
-import sys
 from pathlib import Path
 
-from evozeus_wrapper_lifecycle import (
+from scripts.evozeus_wrapper_lifecycle import (
     REQUIRED_WRAPPER_FILES,
     TARGET_HARNESS_SKILL,
     apply_reinstall,
@@ -25,7 +119,7 @@ from evozeus_wrapper_lifecycle import (
     run_command,
     stage_label,
 )
-from evozeus_wrapper_global_hook import (
+from scripts.evozeus_wrapper_global_hook import (
     apply_upgrade_all,
     apply_global_hook_install,
     apply_global_hook_uninstall,
@@ -186,7 +280,10 @@ def main() -> int:
     upgrade.add_argument("--dry-run", action="store_true")
     upgrade.add_argument(
         "--approve-plan",
-        help="Approve one exact sha256:<digest> migration plan for this target.",
+        help=(
+            "Approve the exact operation_sha256 (supervised) or plan_sha256 "
+            "(automatic) emitted for this target; valid for this invocation only."
+        ),
     )
     upgrade.add_argument("--json", action="store_true")
     migrate_layout = harness_sub.add_parser(
@@ -198,7 +295,10 @@ def main() -> int:
     migrate_layout.add_argument("--dry-run", action="store_true")
     migrate_layout.add_argument(
         "--approve-plan",
-        help="Approve one exact sha256:<digest> migration plan for this target.",
+        help=(
+            "Approve the exact operation_sha256 (supervised) or plan_sha256 "
+            "(automatic) emitted for this target; valid for this invocation only."
+        ),
     )
     migrate_layout.add_argument("--json", action="store_true")
     rollback_migration = harness_sub.add_parser(

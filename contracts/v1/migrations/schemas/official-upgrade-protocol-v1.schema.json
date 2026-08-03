@@ -152,7 +152,7 @@
         "ledger_history": { "const": "one_current_hop_plus_zero_or_more_prior_records" },
         "unknown_or_scattered": { "const": "manual_migration_required_zero_write" },
         "supervised_legacy": {
-          "const": "exact_envelope_exact_plan_one_time_approval_no_runtime_apply"
+          "const": "exact_envelope_exact_operation_one_time_approval_trusted_kernel_apply"
         }
       }
     }

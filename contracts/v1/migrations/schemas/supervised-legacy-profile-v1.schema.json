@@ -16,6 +16,10 @@
     "release_axis",
     "execution",
     "automatic",
+    "release_lineage_records",
+    "migration_records",
+    "current_migration_record",
+    "applied_lineage",
     "operations",
     "deferred_rendered_surfaces",
     "protected_business_surfaces",
@@ -115,20 +119,51 @@
         "mode": { "const": "supervised_exact_plan" },
         "discovery_authority": { "const": false },
         "adapter_write_authority": { "const": false },
-        "approval": { "const": "one_time_exact_plan_digest" },
+        "approval": { "const": "one_time_exact_operation_sha256" },
         "approval_scope": { "const": "one_target_one_preimage_one_postimage" },
         "compare_and_swap": { "const": "full_file_preimage" },
         "snapshot": { "const": "required_before_any_write" },
         "post_verify": { "const": "adapter_proof_and_current_closure" },
         "rollback": { "const": "restore_snapshot_on_any_failure" },
-        "runtime_apply": { "const": "not_implemented" }
+        "runtime_apply": { "const": "trusted_kernel_exact_apply" }
       }
     },
     "automatic": { "const": false },
+    "release_lineage_records": {
+      "const": [
+        ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md"
+      ]
+    },
+    "migration_records": {
+      "const": [
+        ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+      ]
+    },
+    "current_migration_record": {
+      "const": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+    },
+    "applied_lineage": {
+      "const": {
+        "role": "applied_migration_lineage",
+        "target_path": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+        "artifact": {
+          "path": "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
+          "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+          "mode": "100644"
+        },
+        "profile": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
+        "source_envelope": "legacy-wrapper-v0.14-three-section@v1.0.0",
+        "wrapper_transition": "v0.14.0-to-v0.15.0",
+        "harness_transition": "absent-to-v1.1.0",
+        "instruction_transition": "reviewed-three-section-to-single-canonical-activation",
+        "retained_complement_sha256": "3822b34e173d290cd2a93ccd083f706546dcc90c2069c77d4d9b3bcf74db8b2e",
+        "rollback": "receipt_bound_snapshot_restore_on_any_failure"
+      }
+    },
     "operations": {
       "type": "array",
-      "minItems": 6,
-      "maxItems": 6,
+      "minItems": 7,
+      "maxItems": 7,
       "items": {
         "oneOf": [
           { "$ref": "#/$defs/exactOperation" },
@@ -304,9 +339,9 @@
           "properties": {
             "decision": { "const": "supervised_migration_available" },
             "writes": { "const": false },
-            "approval": { "const": "one_time_exact_proof_sha256" },
+            "approval": { "const": "one_time_exact_operation_sha256" },
             "compare_and_swap": { "const": "full_file_preimage" },
-            "runtime_apply": { "const": "not_implemented" }
+            "runtime_apply": { "const": "trusted_kernel_exact_apply" }
           }
         }
       }

@@ -268,7 +268,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements-commonmark.lock
           python -m pip install --upgrade pytest pydantic pyyaml
-          python -m pytest -q
+          python scripts/evozeus_test.py -q
 
   package:
     needs: [governance, verify, test]

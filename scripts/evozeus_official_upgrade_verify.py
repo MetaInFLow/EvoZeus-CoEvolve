@@ -3,6 +3,101 @@
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import sys
+
+
+def _bootstrap_trusted_sources() -> dict:
+    trusted_loader = globals().get("_EVOZEUS_TRUSTED_SOURCE_LOADER")
+    if trusted_loader is not None:
+        if trusted_loader not in sys.meta_path:
+            raise RuntimeError("trusted source loader is not authoritative")
+        sys.meta_path.remove(trusted_loader)
+        sys.meta_path.insert(0, trusted_loader)
+        scripts_dir = trusted_loader.scripts_dir
+        return {
+            "scripts_dir": scripts_dir,
+            "repository_root": scripts_dir.rsplit("/", 1)[0],
+            "pycache_prefix": sys.pycache_prefix,
+            "loader": trusted_loader,
+        }
+    posix = __import__("posix")
+    cwd = posix.getcwd()
+    original_sys_path = tuple(sys.path)
+
+    def lexical_absolute(raw: str) -> str:
+        value = raw if raw.startswith("/") else cwd + "/" + raw
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/" + "/".join(parts)
+
+    script = lexical_absolute(__file__)
+    scripts_dir = script.rsplit("/", 1)[0]
+    system_roots = {
+        lexical_absolute(sys.base_prefix),
+        lexical_absolute(sys.prefix),
+    }
+    sys.path[:] = [
+        item
+        for item in original_sys_path
+        if any(
+            lexical_absolute(item or cwd) == root
+            or lexical_absolute(item or cwd).startswith(root + "/")
+            for root in system_roots
+        )
+    ]
+    guard_path = scripts_dir + "/evozeus_source_guard.py"
+    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    if nofollow == 0:
+        raise RuntimeError("trusted source bootstrap requires O_NOFOLLOW")
+    descriptor = posix.open(guard_path, flags | nofollow)
+    try:
+        metadata = posix.fstat(descriptor)
+        if metadata.st_mode & 0o170000 != 0o100000:
+            raise RuntimeError("trusted source bootstrap is not a regular file")
+        source = b""
+        while len(source) < metadata.st_size:
+            chunk = posix.read(descriptor, metadata.st_size - len(source))
+            if not chunk:
+                raise RuntimeError("trusted source bootstrap changed while reading")
+            source += chunk
+        if posix.read(descriptor, 1):
+            raise RuntimeError("trusted source bootstrap grew while reading")
+        final_metadata = posix.fstat(descriptor)
+        if (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        ) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_mode,
+            final_metadata.st_size,
+            final_metadata.st_mtime_ns,
+            final_metadata.st_ctime_ns,
+        ):
+            raise RuntimeError("trusted source bootstrap changed while reading")
+    finally:
+        posix.close(descriptor)
+    namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
+    exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
+    return namespace["bootstrap"](__file__, original_sys_path)
+
+
+_TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()
+
 import argparse
 import base64
 import hashlib
@@ -12,7 +107,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,6 +142,18 @@ LEGACY_ENVELOPE_SCHEMA_REL = (
 LEGACY_ADAPTER_IMPLEMENTATION_REL = (
     "scripts/evozeus_harness_legacy_prompt_adapter.py"
 )
+LEGACY_APPLIED_LINEAGE_ARTIFACT_REL = (
+    "migrations/history/legacy-wrapper/v0.14.0/artifacts/generated/"
+    "reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+)
+LEGACY_APPLIED_LINEAGE_TARGET = (
+    ".evozeus-wrapper/docs/migrations/"
+    "reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+)
+CANONICAL_V11_RELEASE_LINEAGE_TARGET = (
+    ".evozeus-wrapper/docs/migrations/"
+    "harness-skill-v1.0.0-to-v1.1.0.md"
+)
 COMMONMARK_LOCK_REL = "requirements-commonmark.lock"
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
@@ -57,7 +163,10 @@ PROTECTED_MIGRATION_CONSUMER_PATHS = frozenset(
         COMMONMARK_LOCK_REL,
         LEGACY_ADAPTER_IMPLEMENTATION_REL,
         "scripts/evozeus_harness_migration.py",
+        "scripts/evozeus_source_guard.py",
+        "scripts/evozeus_test.py",
         "scripts/evozeus_wrapper.py",
+        "scripts/evozeus_wrapper_bootstrap.py",
         "scripts/evozeus_wrapper_global_hook.py",
         "scripts/evozeus_wrapper_lifecycle.py",
     }
@@ -544,7 +653,7 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError("unknown/scattered fallback policy is invalid")
     if (
         target.get("supervised_legacy")
-        != "exact_envelope_exact_plan_one_time_approval_no_runtime_apply"
+        != "exact_envelope_exact_operation_one_time_approval_trusted_kernel_apply"
     ):
         raise VerificationError("supervised legacy target policy is invalid")
     return protocol
@@ -1624,6 +1733,8 @@ def load_supervised_legacy_profile(
         "adapter",
         "target_closure_pointer",
         "release_lineage",
+        "release_lineage_records",
+        "applied_lineage",
         "execution",
     }
     if set(contract_binding) != expected_contract_keys:
@@ -1964,17 +2075,66 @@ def load_supervised_legacy_profile(
         "target_release"
     ) != target_closure["source"]["required_release"]:
         raise VerificationError("reviewed legacy profile release lineage is invalid")
+    release_lineage_records = [CANONICAL_V11_RELEASE_LINEAGE_TARGET]
+    if (
+        contract_binding.get("release_lineage_records")
+        != release_lineage_records
+        or profile.get("release_lineage_records") != release_lineage_records
+    ):
+        raise VerificationError(
+            "reviewed legacy release lineage records are invalid"
+        )
+    expected_applied_lineage = {
+        "role": "applied_migration_lineage",
+        "target_path": LEGACY_APPLIED_LINEAGE_TARGET,
+        "artifact": {
+            "path": LEGACY_APPLIED_LINEAGE_ARTIFACT_REL,
+            "sha256": "9b6176c533515b252e0f15faadadc4d8fd6323570676995b4da6db4567893986",
+            "mode": "100644",
+        },
+        "profile": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
+        "source_envelope": "legacy-wrapper-v0.14-three-section@v1.0.0",
+        "wrapper_transition": "v0.14.0-to-v0.15.0",
+        "harness_transition": "absent-to-v1.1.0",
+        "instruction_transition": (
+            "reviewed-three-section-to-single-canonical-activation"
+        ),
+        "retained_complement_sha256": (
+            "3822b34e173d290cd2a93ccd083f706546dcc90c2069c77d4d9b3bcf74db8b2e"
+        ),
+        "rollback": "receipt_bound_snapshot_restore_on_any_failure",
+    }
+    if (
+        contract_binding.get("applied_lineage") != expected_applied_lineage
+        or profile.get("applied_lineage") != expected_applied_lineage
+        or profile.get("migration_records") != [LEGACY_APPLIED_LINEAGE_TARGET]
+        or profile.get("current_migration_record")
+        != LEGACY_APPLIED_LINEAGE_TARGET
+    ):
+        raise VerificationError("reviewed legacy applied lineage is invalid")
+    applied_artifact = expected_applied_lineage["artifact"]
+    applied_manifest_item = manifest_files.get(applied_artifact["path"])
+    if applied_manifest_item != {
+        "sha256": applied_artifact["sha256"],
+        "mode": applied_artifact["mode"],
+        "role": "trusted-legacy-applied-lineage-artifact",
+    } or _sha256(
+        store.read_bytes(BUNDLE_PREFIX + applied_artifact["path"])
+    ) != applied_artifact["sha256"]:
+        raise VerificationError(
+            "reviewed legacy applied lineage artifact is not manifest-bound"
+        )
     expected_execution = {
         "mode": "supervised_exact_plan",
         "discovery_authority": False,
         "adapter_write_authority": False,
-        "approval": "one_time_exact_plan_digest",
+        "approval": "one_time_exact_operation_sha256",
         "approval_scope": "one_target_one_preimage_one_postimage",
         "compare_and_swap": "full_file_preimage",
         "snapshot": "required_before_any_write",
         "post_verify": "adapter_proof_and_current_closure",
         "rollback": "restore_snapshot_on_any_failure",
-        "runtime_apply": "not_implemented",
+        "runtime_apply": "trusted_kernel_exact_apply",
     }
     if profile.get("execution") != expected_execution or profile.get("automatic") is not False:
         raise VerificationError("reviewed legacy profile execution authority is invalid")
@@ -1994,6 +2154,24 @@ def load_supervised_legacy_profile(
         envelope,
         legacy_entries,
         target_entries,
+    )
+    if LEGACY_APPLIED_LINEAGE_TARGET in changes or (
+        LEGACY_APPLIED_LINEAGE_TARGET in legacy_entries
+        or LEGACY_APPLIED_LINEAGE_TARGET in target_entries
+    ):
+        raise VerificationError(
+            "reviewed legacy applied lineage collides with closure state"
+        )
+    changes[LEGACY_APPLIED_LINEAGE_TARGET] = (
+        "create_exact",
+        None,
+        {
+            "target_path": LEGACY_APPLIED_LINEAGE_TARGET,
+            "kind": "exact",
+            "mode": applied_artifact["mode"],
+            "sha256": applied_artifact["sha256"],
+            "artifact_path": applied_artifact["path"],
+        },
     )
     operations = profile.get("operations")
     if not isinstance(operations, list) or not operations:
@@ -2062,9 +2240,9 @@ def load_supervised_legacy_profile(
                 "plan_contract": {
                     "decision": "supervised_migration_available",
                     "writes": False,
-                    "approval": "one_time_exact_proof_sha256",
+                    "approval": "one_time_exact_operation_sha256",
                     "compare_and_swap": "full_file_preimage",
-                    "runtime_apply": "not_implemented",
+                    "runtime_apply": "trusted_kernel_exact_apply",
                 },
             }:
                 raise VerificationError("reviewed legacy supervised transform is invalid")

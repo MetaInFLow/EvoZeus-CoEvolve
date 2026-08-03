@@ -183,7 +183,6 @@ def _supervised_profile(bundle: dict[str, Any]) -> dict[str, Any]:
 
 def _assert_plan_only(plan: dict[str, Any]) -> None:
     assert plan["writes"] is False
-    assert plan["can_apply"] is False
     assert plan["delete_set"] == []
     assert plan["move_set"] == []
 
@@ -203,13 +202,19 @@ def test_reviewed_lf_fixture_produces_contract_derived_zero_write_golden_plan(
     assert first["decision"] == "supervised_migration_available"
     assert first["compatibility_state"] == "reviewed_legacy"
     assert first["supervised_profile_authorized"] is True
-    assert first["supervised_runtime_apply"] == "not_implemented"
-    assert first["apply_blockers"] == [
-        "supervised legacy runtime apply is not enabled by the verified profile"
-    ]
+    assert first["supervised_runtime_apply"] == "trusted_kernel_exact_apply"
+    assert first["can_apply"] is True
+    assert first["apply_blockers"] == []
+    assert first["operation_sha256"] == first["plan_sha256"]
     assert first["plan_sha256"] == second["plan_sha256"]
     assert first["write_set"] == second["write_set"]
     assert _target_snapshot(target) == before
+    assert first["release_lineage_records"] == profile[
+        "release_lineage_records"
+    ]
+    assert first["migration_records"] == profile["migration_records"]
+    assert first["migration_record"] == profile["current_migration_record"]
+    assert first["release_lineage_records"] != first["migration_records"]
 
     expected_projection = profile["static_write_set"]
     assert [
@@ -240,7 +245,10 @@ def test_reviewed_lf_fixture_produces_contract_derived_zero_write_golden_plan(
     assert all(item["preimage_sha256"] is None for item in creates)
     assert all(item["preimage_identity"] is None for item in creates)
     assert all(item["source_root"] == "repository_root" for item in creates)
-    assert all(item["ownership"] == "wrapper_managed" for item in creates)
+    assert {item["ownership"] for item in creates} == {
+        "wrapper_managed",
+        "migration_applied_lineage",
+    }
 
     by_path = {item["path"]: item for item in first["write_set"]}
     preflight = by_path[lifecycle.TARGET_PREFLIGHT_SCRIPT]
@@ -263,7 +271,10 @@ def test_reviewed_lf_fixture_produces_contract_derived_zero_write_golden_plan(
 
     skill_write = by_path["SKILL.md"]
     assert skill_write["operation"] == "supervised_transform"
-    assert skill_write["ownership"] == "adapter_proven_complement_bytes_exact"
+    assert skill_write["ownership"] == "business_preserved"
+    assert skill_write["proof_policy"] == (
+        "adapter_proven_complement_bytes_exact"
+    )
     assert skill_write["postimage_sha256"] == (
         "sha256:0d44ec65677c0dad94491362541fc1fbaf67fecc89f2a917f4f6bb5a8e52bc29"
     )
@@ -303,6 +314,7 @@ def test_reviewed_crlf_fixture_preserves_style_in_zero_write_plan(
 
     _assert_plan_only(plan)
     assert plan["decision"] == "supervised_migration_available"
+    assert plan["can_apply"] is True
     transform = plan["supervised_adapter_proof"]["instruction_surface_transform"]
     assert transform["newline_style"] == "crlf"
     assert transform["postimage_sha256"] == (
@@ -330,6 +342,19 @@ def test_reviewed_crlf_fixture_preserves_style_in_zero_write_plan(
             ),
             id="duplicate-visible-heading",
         ),
+        pytest.param(
+            lambda value: value.replace(
+                "# 企业 AI 场景诊断\n".encode(),
+                (
+                    "# 企业 AI 场景诊断\n\n"
+                    "EvoZeus-CoEvolve 状态检查\n"
+                    "-------------------------------\n\n"
+                    "Setext duplicate.\n"
+                ).encode(),
+                1,
+            ),
+            id="duplicate-setext-heading",
+        ),
     ],
 )
 def test_ambiguous_reviewed_surface_fails_closed_without_a_write_plan(
@@ -346,6 +371,7 @@ def test_ambiguous_reviewed_surface_fails_closed_without_a_write_plan(
 
     _assert_plan_only(plan)
     assert plan["decision"] == "manual_migration_required"
+    assert plan["can_apply"] is False
     assert plan["write_set"] == []
     assert plan["supervised_profile_matches"] == []
     evidence = plan["supervised_candidate_evidence"]
@@ -369,6 +395,7 @@ def test_dirty_reviewed_target_retains_exact_plan_but_blocks_apply(
 
     _assert_plan_only(plan)
     assert plan["decision"] == "supervised_migration_available"
+    assert plan["can_apply"] is False
     assert plan["worktree_clean"] is False
     assert "target Git worktree is not clean" in plan["apply_blockers"]
     assert any(
@@ -378,25 +405,51 @@ def test_dirty_reviewed_target_retains_exact_plan_but_blocks_apply(
     assert _target_snapshot(target) == before
 
 
-def test_unbound_executing_adapter_fails_closed_before_write_planning(
+def test_committed_host_entrypoint_drift_requires_manual_zero_write(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = _prepare_reviewed_legacy_target(tmp_path)
-    fake_implementation = tmp_path / "unbound_adapter.py"
-    fake_implementation.write_bytes(b"def untrusted():\n    pass\n")
-    monkeypatch.setattr(legacy_adapter, "__file__", str(fake_implementation))
+    host_entrypoint = target / ".codex/hooks.json"
+    host_entrypoint.write_bytes(host_entrypoint.read_bytes() + b"\n")
+    _git(target, "add", ".codex/hooks.json")
+    _git(target, "commit", "-m", "Simulate independent host drift")
     before = _target_snapshot(target)
 
     plan = _plan(target)
 
     _assert_plan_only(plan)
     assert plan["decision"] == "manual_migration_required"
+    assert plan["can_apply"] is False
     assert plan["write_set"] == []
     evidence = plan["supervised_candidate_evidence"]
-    assert evidence[0]["proof"]["reasons"] == [
-        "executing supervised legacy adapter is not release-bound"
-    ]
+    assert len(evidence) == 1
+    assert any(
+        "legacy exact managed file differs: .codex/hooks.json" in reason
+        for reason in evidence[0]["proof"]["reasons"]
+    )
+    assert _target_snapshot(target) == before
+
+
+def test_poisoned_regular_adapter_module_is_ignored_by_verified_source_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _prepare_reviewed_legacy_target(tmp_path)
+    fake_implementation = tmp_path / "unbound_adapter.py"
+    marker = tmp_path / "untrusted-adapter-executed"
+    fake_implementation.write_bytes(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n".encode()
+    )
+    monkeypatch.setattr(legacy_adapter, "__file__", str(fake_implementation))
+    before = _target_snapshot(target)
+
+    plan = _plan(target)
+
+    _assert_plan_only(plan)
+    assert plan["decision"] == "supervised_migration_available"
+    assert plan["can_apply"] is True
+    assert len(plan["write_set"]) == 7
+    assert not marker.exists()
     assert _target_snapshot(target) == before
 
 

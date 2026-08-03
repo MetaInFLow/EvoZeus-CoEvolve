@@ -99,7 +99,8 @@ Harness Skill 使用独立合同版本 `v1.1.0`。该版本描述 Prompt / front
 | --- | --- | --- | --- |
 | canonical v1.1 | 严格通过 | 正常继续 | 无 |
 | canonical v1.0 exact artifact | 要求迁移 | apply 前阻断 | plan 后批准 exact digest |
-| compatible legacy Prompt | manual migration | advisory / fail-open | 只读 discovery + reviewed adapter backlog |
+| reviewed v0.14 three-section Prompt | supervised migration | apply 前阻断 | frozen envelope + CommonMark proof + exact `operation_sha256` |
+| other compatible legacy Prompt | manual migration | advisory / fail-open | 只读 discovery + reviewed adapter backlog |
 | manifest 声明 canonical 但文件缺失或损坏 | 阻断 | 阻断 | approved repair / versioned profile |
 | 路径错配、absolute、traversal、symlink escape | 阻断 | 阻断 | 恢复 canonical path 后重跑 |
 | Harness Skill major version 不兼容 | 阻断 | 阻断 | 使用兼容 release 迁移 |
@@ -107,23 +108,23 @@ Harness Skill 使用独立合同版本 `v1.1.0`。该版本描述 Prompt / front
 ## 版本化迁移协议
 
 1. **Inspect**：解析 manifest、canonical marker 与历史候选。Regex、frontmatter、heading、terminal signature、旧路径和 Markdown 边界只生成 diagnostic candidates，`destructive_authority=false`。
-2. **Profile**：`legacy-scattered-to-canonical-v1.0@v1.0.0`、`prerelease-ambiguous-to-manual-review@v1.0.0` 与 unknown profile 固定进入 manual review。Runtime 从受验证的 current pointers 派生候选，按 from closure 与 current closure 动态选择唯一 direct-to-current profile；profile id 不进入硬编码分支。
-3. **Evidence**：automatic profile 同时要求完整 from closure、唯一 stable marker block、adapter id/version/digest。完整 closure evidence 包含每个 exact 文件的 hash/mode、每个 absent 条目的真实缺失、manifest owned fields、`managed_files_require` 子集关系和规范化 managed-block path。任一证据缺失、重复 marker、候选为零或多于一个，都降级为 manual、`writes=false`。
-4. **Plan**：输出 migration protocol、contract、profile、adapter、from/to、write/delete/move set、protected business surfaces、每个 preimage/postimage、source release attestation、validation、rollback 与 self-excluding `plan_sha256`。
-5. **Approve**：用户批准 exact `plan_sha256`；apply 使用 `--approve-plan` 进行 compare-and-swap。GitHub `ADMIN` 仍需验证，但不构成 plan approval。
+2. **Profile**：`legacy-scattered-to-canonical-v1.0@v1.0.0`、`prerelease-ambiguous-to-manual-review@v1.0.0` 与 unknown profile 固定进入 manual review。`legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0` 是 reviewed supervised profile；canonical v1.0→v1.1 继续使用 automatic profile。Runtime 从受验证的 current pointers 派生候选，按完整 authority envelope 与 current closure 选择唯一 direct-to-current profile；profile id 不作为独立写入授权。
+3. **Evidence**：automatic profile 要求完整 from closure、唯一 stable marker block、adapter id/version/digest。reviewed legacy profile 要求冻结 v0.14 source envelope、受信 source/tag、固定 CommonMark parser lock、唯一可解释三段 AST、全 `SKILL.md` preimage、删除 span 与 retained business complement proof。Frontmatter/regex 只参与候选发现。任一 exact byte/mode/absence/manifest/inode/Git index/root/AST 证据缺失或发生漂移，都降级为 manual/blocked、`writes=false`。
+4. **Plan**：输出 migration protocol、contract、profile、adapter、from/to、write/delete/move set、protected business surfaces、每个 preimage/postimage、source release attestation、validation 与 rollback。automatic 输出 self-excluding `plan_sha256`；supervised 额外输出 `decision=supervised_migration_available`、`operation_sha256`、固定 `supervised_exact_plan_v1` authorization class，以及分离的 `release_lineage_records` 与 `migration_records/current_migration_record`。
+5. **Approve**：automatic 批准 exact `plan_sha256`；supervised legacy 只接受 exact `operation_sha256`。apply 使用 `--approve-plan` 进行 compare-and-swap。`one_time` 仅表示当前 CLI invocation，不持久化授权；成功 apply 后 preimage 变化会阻止旧 digest 重放。显式 rollback 后再次手工传入同 digest 属于新的明确 invocation。GitHub `ADMIN` 仍需验证，但不构成 digest approval。
 6. **Source trust**：官方 GitHub tag attestation 是远端事实源；local tag object、peeled commit、clean `HEAD` 必须与它一致。tagged manifest 绑定 contract，实际 postimage bytes 与 tag 逐字节一致。未发布 branch 保持 `source_unreleased`、`writes=false`。
-7. **Snapshot/apply**：在 target Repo 外创建带 descriptor digest receipt 与 backup-set digest 的完整 snapshot；复验所有 target preimages 和 protected surface CAS；预先 staging 全部 postimage；只写批准集合。
-8. **Verify/rollback**：验证全部 postimage、instruction surface byte-exact 与 structure。任何失败先完整校验 snapshot metadata、receipt、备份 hash、路径类型和当前状态，再执行恢复。手工 rollback 还需显式 `--approve`。
+7. **Snapshot/apply**：在 target Repo 外创建带 descriptor digest receipt 与 backup-set digest 的完整 snapshot；复验 verifier/profile/closure/adapter/source/tag、target root、双 Git index、所有 preimage bytes/mode/inode 与 protected surface CAS；预先 staging 全部 postimage；通过单个 secure mutation batch 只写批准集合。
+8. **Verify/rollback**：验证全部 postimage 与 structure。automatic profile 要求 instruction surface byte-exact；supervised profile 要求 retained business complement byte-exact、全部 retired span 不再出现、canonical activation 的 CommonMark AST 唯一、manifest、公共 release lineage、profile-bound applied lineage 与 current closure 精确匹配。structure 只执行 trusted-release closure 中验过 bytes/mode 的 preflight 与 notice，不执行 target-owned Python；返回后再次验证完整 target state。任何失败先完整校验 snapshot metadata、receipt、备份 hash、路径类型和当前状态，再执行反向恢复；未知并发内容进入 quarantine 并报告 `rollback_failed`。手工 rollback 还需显式 `--approve`。
 
 Fresh attach 只在 instruction surface 同时满足“零 canonical markers、零 historical candidates”时 additive 插入四行块。预存未知 managed destination 文件会被保留并阻断，即使调用 `--force`。
 
 ### 历史版本演进
 
-每次发布新 Harness 版本时，先新增不可变 current closure，再为每个仍受支持的历史 closure 新增一条直达新 current closure 的 profile，最后原子更新两个 current pointers。旧 closure 与旧 profile 文件保留原字节；旧 profile 可退出 active pointer，但不得改写。候选 PR 只能新增下一版本历史、直达当前版本的完整 profile 星型和受绑定 artifacts。可信 base verifier 会拒绝改写历史、遗漏历史覆盖、非唯一 from closure、构建修订来源不一致以及未绑定的 candidate 数据。
+每次发布新 Harness 版本时，先新增不可变 current closure，再为每个仍受支持的历史 closure 新增一条直达新 current closure 的 profile，最后原子更新两个 current pointers。旧 closure 与旧 profile 文件保留原字节；旧 profile 可退出 active pointer，但不得改写。v0.15 尚未发布时，本开发线可以在发布前补全 v1.1 closure/profile/contract；v0.15 发布后，任何证据、权限或 postimage 调整都必须新增版本。当前 supervised v1 schema/verifier 的 authority envelope 固定为 v0.14→v1.1，v1.2 支持必须先通过 protected source rotation 发布新 schema/verifier/consumer authority，再由后续 data-only PR 新增 closure/profile/artifacts。当前 verifier 必须把仅靠 candidate data 提交的 v1.2 supervised 方案分类为 `rotation_required` 或拒绝执行。
 
-计划中的 `migration_records` 按 closure semver hop 顺序确定性列出 selected closure diff 要创建的全部累计历史账本；从更早版本直达 current 时允许多条。可信 verifier 必须为每个 active profile 推导唯一 `current_migration_record`。任一字段缺失、相互矛盾或与 verified operations 不一致时，runtime 固定 fail closed。全部 records 都进入存在性、路径安全、write set、batch preflight 与 rollback 校验。
+账本分为两类。`release_lineage_records` 是 current closure 的公共发布谱系，fresh attach、automatic 与 supervised 到达 v1.1 时都物化 canonical `harness-skill-v1.0.0-to-v1.1.0.md`。`migration_records/current_migration_record` 是实际到达路径：reviewed v0.14 supervised 独占 `reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md`，该 record 精确绑定 profile、v0.14 envelope、wrapper v0.14→v0.15、Harness absent→v1.1、三段 Prompt→单一 activation、retained complement 与 rollback policy；fresh attach 不创建它，automatic profile 不引用它。任一字段缺失、相互矛盾或与 verified operations 不一致时 runtime fail closed。
 
-trusted verifier、migration consumer、protocol、schema 或仓库治理文件变更固定走两 PR：protected source rotation 先进入 main，data-only migration PR 随后基于该 canonical reachable Commit 冻结 closure 与 profiles；该拆分与 merge strategy 无关。official PR workflow 使用 trusted base code 对完整 diff 分类，普通 PR 输出 `not_applicable`，protected source 输出 `rotation_required` 且不执行候选，data-only migration 才执行 candidate verifier。workflow 覆盖全部 PR，便于设置 required check；当前 `main` ruleset 的外部 GitHub 配置继续承担最终 merge gate。
+trusted verifier、migration consumer、protocol、schema 或仓库治理文件变更固定走两 PR：protected source rotation 先进入 main，data-only migration PR 随后基于该 canonical reachable Commit 冻结 closure 与 profiles；该拆分与 merge strategy 无关。official PR workflow 使用 trusted base code 对完整 diff 分类，普通 PR 输出 `not_applicable`，protected source 输出 `rotation_required` 且不执行候选，data-only migration 才执行 candidate verifier。当前检查事实为 `rulesets=[]`、branch protection 404、required environments 0、immutable release false；因此 apply 等待 v0.15 official release，publish 等待外部治理配置完成并复核，不能把仓库 workflow 描述为已生效的 merge gate。
 
 candidate construction source 的完整 allowlist 写入 trusted protocol；trusted verifier 只接受 `templates/target/` 与协议逐项审定的 source scripts。仓库 workflow/治理文件、普通 docs、未知 scripts 与未声明路径无法通过 closure 绑定取得候选写入资格。
 
@@ -153,7 +154,7 @@ candidate construction source 的完整 allowlist 写入 trusted protocol；trus
 | --- | --- | --- | --- |
 | A | fresh attach 只注入四行块并生成 Harness Skill | bootstrap + contract unit tests | Eng / DX |
 | B | structure / doctor 拒绝损坏与越界合同 | security matrix tests | Code / Security |
-| C | legacy/ambiguous 候选零写入，完整 v1.0 closure 可验证迁移 | exact byte/mode、absent path、manifest state、LF/CRLF、unknown layout、rollback tests | Eng / QA |
+| C | ambiguous legacy 候选零写入；reviewed v0.14 supervised apply；完整 v1.0 closure automatic apply | exact byte/mode/inode、absent path、manifest state、LF/CRLF、mixed/duplicate/Setext、双 Git index/root/source drift、逐操作失败、postcondition rollback、unknown concurrent quarantine | Eng / QA |
 | D | single / AGENTS / hooked bundle 使用同一模式 | parameterized structure tests | QA / DX |
 | E | 全量回归和真实公开 Repo 只读副本 smoke | pytest、py_compile、preflight、diff check | Release |
 

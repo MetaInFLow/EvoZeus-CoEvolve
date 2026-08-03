@@ -317,17 +317,146 @@ def run_command(
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
 
-def _run_harness_structure_check(target: Path) -> dict[str, Any]:
+def _trusted_structure_preflight(
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+) -> Path:
+    if (migration_bundle.get("source_trust") or {}).get("status") != (
+        "trusted_release"
+    ):
+        raise ValueError("structure validation source is not a trusted release")
+    wrapper_root = migration_bundle.get("wrapper_root")
+    current = migration_bundle.get("current_closure") or {}
+    closure = current.get("closure")
+    closure_path = current.get("path")
+    if (
+        not isinstance(wrapper_root, Path)
+        or not isinstance(closure, dict)
+        or not isinstance(closure_path, str)
+        or (
+            profile.get("_verified_target_closure")
+            or profile.get("_verified_to_closure")
+        )
+        != closure
+    ):
+        raise ValueError("structure validation closure binding is unavailable")
+    closure_entries = {
+        item.get("target_path"): item
+        for item in closure.get("files", [])
+        if isinstance(item, dict)
+    }
+
+    def verified_closure_source(
+        target_path: str,
+        expected_target_mode: str,
+        expected_artifact_mode: str,
+    ) -> Path:
+        entry = closure_entries.get(target_path)
+        if (
+            not isinstance(entry, dict)
+            or entry.get("kind") != "exact"
+            or entry.get("mode") != expected_target_mode
+            or not isinstance(entry.get("artifact_path"), str)
+            or not isinstance(entry.get("sha256"), str)
+        ):
+            raise ValueError(
+                f"structure validation dependency is not closure-exact: {target_path}"
+            )
+        relative = migration_kernel._safe_relative_path(
+            (
+                Path(closure_path).parent / str(entry["artifact_path"])
+            ).as_posix(),
+            "trusted structure validation source",
+        )
+        source = migration_kernel._safe_file_below(
+            wrapper_root,
+            relative,
+            "trusted structure validation source",
+        )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if nofollow == 0:
+            raise ValueError("trusted structure source requires O_NOFOLLOW")
+        descriptor = os.open(source, flags | nofollow)
+        try:
+            metadata = os.fstat(descriptor)
+            chunks: list[bytes] = []
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise ValueError(
+                        "trusted structure source changed while reading"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise ValueError("trusted structure source grew while reading")
+            final_metadata = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        data = b"".join(chunks)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            != (
+                final_metadata.st_dev,
+                final_metadata.st_ino,
+                final_metadata.st_mode,
+                final_metadata.st_size,
+                final_metadata.st_mtime_ns,
+                final_metadata.st_ctime_ns,
+            )
+            or stat.S_IMODE(metadata.st_mode)
+            != (int(expected_artifact_mode, 8) & 0o7777)
+            or hashlib.sha256(data).hexdigest() != entry["sha256"]
+        ):
+            raise ValueError(
+                f"trusted structure source bytes/mode changed: {target_path}"
+            )
+        return source
+
+    preflight = verified_closure_source(
+        TARGET_PREFLIGHT_SCRIPT,
+        "100755",
+        "100755",
+    )
+    notice = verified_closure_source(
+        TARGET_NOTICE_SCRIPT,
+        "100755",
+        "100644",
+    )
+    if notice.parent != preflight.parent:
+        raise ValueError("trusted structure dependencies are not adjacent")
+    return preflight
+
+
+def _run_harness_structure_check(
+    target: Path,
+    *,
+    trusted_preflight: Path,
+) -> dict[str, Any]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONSAFEPATH"] = "1"
+    environment.pop("PYTHONPATH", None)
     return run_command(
         [
             sys.executable,
-            str(target / TARGET_PREFLIGHT_SCRIPT),
+            str(trusted_preflight),
             "structure",
             "--target",
             str(target),
         ],
+        cwd=trusted_preflight.parent,
         env=environment,
     )
 
@@ -3481,7 +3610,8 @@ def _supervised_legacy_profile_candidates(
             or execution.get("mode") != "supervised_exact_plan"
             or execution.get("discovery_authority") is not False
             or execution.get("adapter_write_authority") is not False
-            or execution.get("approval") != "one_time_exact_plan_digest"
+            or execution.get("approval")
+            != "one_time_exact_operation_sha256"
         ):
             continue
         candidates.append(profile)
@@ -3550,6 +3680,56 @@ def _verified_profile_migration_records(
             "verified automatic profile current_migration_record is missing or invalid"
         )
     return migration_records, current_record
+
+
+def _verified_supervised_lineage_records(
+    profile: dict[str, Any],
+) -> tuple[list[str], list[str], str]:
+    release_records = profile.get("release_lineage_records")
+    migration_records = profile.get("migration_records")
+    current_record = profile.get("current_migration_record")
+    operations = profile.get("operations")
+    if (
+        not isinstance(release_records, list)
+        or not release_records
+        or not isinstance(migration_records, list)
+        or len(migration_records) != 1
+        or not isinstance(current_record, str)
+        or current_record != migration_records[0]
+        or not isinstance(operations, list)
+        or set(release_records).intersection(migration_records)
+    ):
+        raise ValueError("verified supervised lineage records are invalid")
+    records = [*release_records, *migration_records]
+    if len(records) != len(set(records)) or any(
+        not isinstance(item, str)
+        or not item.startswith(f"{TARGET_EVOINFRA_DIR}/docs/migrations/")
+        or Path(item).is_absolute()
+        or ".." in Path(item).parts
+        or "\\" in item
+        or Path(item).as_posix() != item
+        for item in records
+    ):
+        raise ValueError("verified supervised lineage paths are unsafe")
+    created_records = [
+        item.get("target_path")
+        for item in operations
+        if isinstance(item, dict)
+        and item.get("type") == "create_exact"
+        and item.get("target_path") in set(records)
+    ]
+    if set(created_records) != set(records) or len(created_records) != len(records):
+        raise ValueError(
+            "verified supervised lineage records disagree with operations"
+        )
+    applied = profile.get("applied_lineage")
+    if (
+        not isinstance(applied, dict)
+        or applied.get("role") != "applied_migration_lineage"
+        or applied.get("target_path") != current_record
+    ):
+        raise ValueError("verified supervised applied lineage is invalid")
+    return list(release_records), list(migration_records), current_record
 
 
 def _automatic_profile_candidates(
@@ -3630,6 +3810,61 @@ def _approved_automatic_profile(
         raise ValueError(
             "migration apply is blocked: approved profile artifact binding differs "
             "from the verified contract"
+        )
+    return profile
+
+
+def _approved_supervised_legacy_profile(
+    migration_bundle: dict[str, Any],
+    planned_identity: object,
+) -> dict[str, Any]:
+    """Rebind one approved supervised plan to the same verifier-approved profile."""
+    if not isinstance(planned_identity, dict):
+        raise ValueError(
+            "supervised migration apply is blocked: approved profile identity is missing"
+        )
+    matches = [
+        profile
+        for profile in _supervised_legacy_profiles(migration_bundle)
+        if migration_kernel.supervised_legacy_profile_identity(profile)
+        == planned_identity
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "supervised migration apply is blocked: approved verifier profile "
+            "does not have one exact match"
+        )
+    profile = matches[0]
+    execution = profile.get("execution")
+    if (
+        profile.get("automatic") is not False
+        or profile.get("_active_for_current") is not True
+        or not isinstance(execution, dict)
+        or execution
+        != {
+            "mode": "supervised_exact_plan",
+            "discovery_authority": False,
+            "adapter_write_authority": False,
+            "approval": "one_time_exact_operation_sha256",
+            "approval_scope": "one_target_one_preimage_one_postimage",
+            "compare_and_swap": "full_file_preimage",
+            "snapshot": "required_before_any_write",
+            "post_verify": "adapter_proof_and_current_closure",
+            "rollback": "restore_snapshot_on_any_failure",
+            "runtime_apply": "trusted_kernel_exact_apply",
+        }
+    ):
+        raise ValueError(
+            "supervised migration apply is blocked: verified execution authority "
+            "is incomplete"
+        )
+    trusted_assets = migration_kernel.verify_supervised_legacy_source_assets(
+        migration_bundle,
+        profile,
+    )
+    if trusted_assets != planned_identity.get("trusted_source_assets"):
+        raise ValueError(
+            "supervised migration apply is blocked: trusted source assets changed"
         )
     return profile
 
@@ -4203,36 +4438,67 @@ def _supervised_legacy_write_plan(
         if operation_type in {"create_exact", "replace_exact"}:
             closure_entry = closure_entries.get(relative)
             postimage = operation.get("postimage")
-            if (
-                not isinstance(closure_entry, dict)
-                or closure_entry.get("kind") != "exact"
-                or closure_entry.get("ownership") != "wrapper_managed"
-                or not isinstance(postimage, dict)
-                or postimage.get("sha256") != closure_entry.get("sha256")
-                or postimage.get("mode") != closure_entry.get("mode")
-            ):
-                raise ValueError(
-                    f"supervised legacy exact operation differs from closure: {relative}"
-                )
+            applied_lineage = profile.get("applied_lineage")
+            applied_artifact = (
+                applied_lineage.get("artifact")
+                if isinstance(applied_lineage, dict)
+                and applied_lineage.get("target_path") == relative
+                else None
+            )
+            is_applied_lineage = isinstance(applied_artifact, dict)
+            if is_applied_lineage:
+                if (
+                    operation_type != "create_exact"
+                    or not isinstance(postimage, dict)
+                    or applied_lineage.get("role")
+                    != "applied_migration_lineage"
+                    or postimage.get("artifact_path")
+                    != applied_artifact.get("path")
+                    or postimage.get("sha256")
+                    != applied_artifact.get("sha256")
+                    or postimage.get("mode") != applied_artifact.get("mode")
+                    or profile.get("migration_records") != [relative]
+                    or profile.get("current_migration_record") != relative
+                ):
+                    raise ValueError(
+                        "supervised applied lineage operation differs from profile"
+                    )
+                operation_ownership = "migration_applied_lineage"
+            else:
+                if (
+                    not isinstance(closure_entry, dict)
+                    or closure_entry.get("kind") != "exact"
+                    or closure_entry.get("ownership") != "wrapper_managed"
+                    or not isinstance(postimage, dict)
+                    or postimage.get("sha256") != closure_entry.get("sha256")
+                    or postimage.get("mode") != closure_entry.get("mode")
+                ):
+                    raise ValueError(
+                        "supervised legacy exact operation differs from closure: "
+                        + relative
+                    )
+                operation_ownership = closure_entry["ownership"]
             source_path = (
                 Path("contracts/v1") / str(postimage.get("artifact_path"))
-            ).as_posix()
-            closure_source_path = (
-                Path(str(current_closure_path)).parent
-                / str(closure_entry.get("artifact_path"))
             ).as_posix()
             source_relative = migration_kernel._safe_relative_path(
                 source_path,
                 "supervised legacy exact postimage path",
             )
-            closure_source_relative = migration_kernel._safe_relative_path(
-                closure_source_path,
-                "supervised legacy target closure artifact path",
-            )
-            if source_relative != closure_source_relative:
-                raise ValueError(
-                    f"supervised legacy exact source differs from closure: {relative}"
+            if not is_applied_lineage:
+                closure_source_path = (
+                    Path(str(current_closure_path)).parent
+                    / str(closure_entry.get("artifact_path"))
+                ).as_posix()
+                closure_source_relative = migration_kernel._safe_relative_path(
+                    closure_source_path,
+                    "supervised legacy target closure artifact path",
                 )
+                if source_relative != closure_source_relative:
+                    raise ValueError(
+                        "supervised legacy exact source differs from closure: "
+                        + relative
+                    )
             source_file = migration_kernel._safe_file_below(
                 wrapper_root,
                 source_relative,
@@ -4339,7 +4605,7 @@ def _supervised_legacy_write_plan(
                     "source_root": "repository_root",
                     "source_path": source_path,
                     "source_sha256": expected_postimage,
-                    "ownership": closure_entry["ownership"],
+                    "ownership": operation_ownership,
                     "authority": operation.get("change_id"),
                     "operation_sha256": operation_sha256,
                     "target_closure_path": current_closure_path,
@@ -4462,7 +4728,8 @@ def _supervised_legacy_write_plan(
                     "source_root": "target_repository_root",
                     "source_path": relative,
                     "source_sha256": transform.get("preimage_sha256"),
-                    "ownership": protected_rule,
+                    "ownership": "business_preserved",
+                    "proof_policy": protected_rule,
                     "authority": operation.get("change_id"),
                     "operation_sha256": operation_sha256,
                     "adapter_proof_sha256": proof.get("proof_sha256"),
@@ -4495,6 +4762,8 @@ def _supervised_legacy_write_plan(
         {
             "path": "SKILL.md",
             "rule": "adapter_proven_complement_bytes_exact",
+            "ownership": "business_preserved",
+            "proof_policy": "adapter_proven_complement_bytes_exact",
             "planned_write": True,
             "preimage_sha256": transform["preimage_sha256"],
             "preimage_mode": _official_exact_file_mode(transform["preimage_mode"]),
@@ -4532,6 +4801,55 @@ def _supervised_legacy_write_plan(
             }
         )
     return write_set, staged, protected
+
+
+def _supervised_exact_plan_authorization(plan: dict[str, Any]) -> dict[str, Any]:
+    proof = plan.get("supervised_adapter_proof")
+    profile_identity = plan.get("profile")
+    write_set = plan.get("write_set")
+    planned_protected = [
+        item
+        for item in plan.get("protected_business_surfaces", [])
+        if isinstance(item, dict) and item.get("planned_write") is True
+    ]
+    if (
+        plan.get("decision") != "supervised_migration_available"
+        or not isinstance(proof, dict)
+        or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(proof.get("proof_sha256"))
+        )
+        or not isinstance(profile_identity, dict)
+        or not isinstance(write_set, list)
+        or len(planned_protected) != 1
+    ):
+        raise ValueError("supervised exact plan authorization inputs are invalid")
+    protected = planned_protected[0]
+    if (
+        protected.get("path") != plan.get("instruction_surface")
+        or protected.get("ownership") != "business_preserved"
+        or protected.get("proof_policy")
+        != "adapter_proven_complement_bytes_exact"
+    ):
+        raise ValueError("supervised protected write authorization is invalid")
+    return {
+        "class": migration_kernel.SUPERVISED_AUTHORIZATION_CLASS,
+        "profile_identity": copy.deepcopy(profile_identity),
+        "adapter_proof_sha256": proof["proof_sha256"],
+        "write_set_sha256": (
+            "sha256:" + migration_kernel.canonical_json_sha256(write_set)
+        ),
+        "instruction_surface": protected["path"],
+        "planned_protected_postconditions": [
+            {
+                "path": protected["path"],
+                "kind": "file",
+                "sha256": protected["postimage_sha256"],
+                "mode": protected["postimage_mode"],
+                "ownership": protected["ownership"],
+                "proof_policy": protected["proof_policy"],
+            }
+        ],
+    }
 
 
 def _invalid_manifest_migration_plan(
@@ -4621,6 +4939,7 @@ def _invalid_manifest_migration_plan(
         "version_refresh_required": False,
         "instruction_surface_migration_required": False,
         "manifest_validation_failed": True,
+        "release_lineage_records": [],
         "migration_records": [],
         "migration_record": None,
         "moves": [],
@@ -5100,7 +5419,7 @@ def plan_target_layout_migration(
             supervised_execution.get("discovery_authority") is False,
             supervised_execution.get("adapter_write_authority") is False,
             supervised_execution.get("approval")
-            == "one_time_exact_plan_digest",
+            == "one_time_exact_operation_sha256",
             supervised_execution.get("approval_scope")
             == "one_target_one_preimage_one_postimage",
             supervised_execution.get("compare_and_swap")
@@ -5157,6 +5476,7 @@ def plan_target_layout_migration(
             if harness_managed is not True:
                 conflicts.append("manifest canonical Harness Skill must remain wrapper managed")
 
+    release_lineage_records: list[str] = []
     migration_records: list[str] = []
     migration_record = None
     if requires_migration:
@@ -5166,29 +5486,23 @@ def plan_target_layout_migration(
                 migration_records, migration_record = (
                     _verified_profile_migration_records(selected_profile)
                 )
+                release_lineage_records = list(migration_records)
             except ValueError as exc:
                 conflicts.append(str(exc))
         elif decision == "supervised_migration_available" and isinstance(
             selected_profile, dict
         ):
-            migration_records = [
-                item["target_path"]
-                for item in selected_profile.get("operations", [])
-                if isinstance(item, dict)
-                and item.get("type") == "create_exact"
-                and isinstance(item.get("target_path"), str)
-                and item["target_path"].startswith(
-                    f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
-                )
-            ]
-            if len(migration_records) != len(set(migration_records)):
-                conflicts.append(
-                    "supervised legacy migration records are duplicated"
-                )
+            try:
+                (
+                    release_lineage_records,
+                    migration_records,
+                    migration_record,
+                ) = _verified_supervised_lineage_records(selected_profile)
+            except ValueError as exc:
+                conflicts.append(str(exc))
+                release_lineage_records = []
                 migration_records = []
-            migration_record = (
-                migration_records[-1] if migration_records else None
-            )
+                migration_record = None
         elif layout_migration_required:
             migration_record = (
                 f"{TARGET_EVOINFRA_DIR}/docs/migrations/{day}-layout-v1-to-v2.md"
@@ -5202,7 +5516,9 @@ def plan_target_layout_migration(
             migration_records = [migration_record]
     if requires_migration and not manifest_status["active_manifest_path"]:
         conflicts.append("legacy wrapper manifest is missing; repair or adopt the harness before migration")
-    for record in migration_records:
+    for record in dict.fromkeys(
+        [*release_lineage_records, *migration_records]
+    ):
         record_path = target / record
         if record_path.exists() or record_path.is_symlink():
             conflicts.append(f"migration record already exists: {record}")
@@ -5436,6 +5752,9 @@ def plan_target_layout_migration(
         "layout_migration_required": layout_migration_required,
         "version_refresh_required": version_refresh_required,
         "instruction_surface_migration_required": instruction_surface_migration_required,
+        "release_lineage_records": (
+            release_lineage_records if requires_migration else []
+        ),
         "migration_records": migration_records if requires_migration else [],
         "migration_record": migration_record if requires_migration else None,
         "moves": [],
@@ -5549,7 +5868,17 @@ def plan_target_layout_migration(
             else None
         ),
     }
-    plan["plan_sha256"] = f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+    if plan.get("decision") == "supervised_migration_available":
+        plan["write_authorization"] = _supervised_exact_plan_authorization(plan)
+        operation_sha256 = (
+            f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+        )
+        plan["operation_sha256"] = operation_sha256
+        plan["plan_sha256"] = operation_sha256
+    else:
+        plan["plan_sha256"] = (
+            f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+        )
     return plan
 
 
@@ -5656,6 +5985,536 @@ def _canonical_v1_migration_record(
     return "\n".join(lines)
 
 
+def _supervised_activation_has_unique_commonmark_ast(
+    block: bytes,
+    legacy_adapter: Any,
+) -> bool:
+    try:
+        text = block.decode("utf-8", errors="strict").replace("\r\n", "\n")
+        tokens = legacy_adapter._commonmark_parser().parse(text)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if [token.type for token in tokens] != [
+        "html_block",
+        "paragraph_open",
+        "inline",
+        "paragraph_close",
+        "html_block",
+    ]:
+        return False
+    if tokens[0].content.strip() != migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+        "begin_marker"
+    ] or tokens[-1].content.strip() != migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+        "end_marker"
+    ]:
+        return False
+    inline = tokens[2]
+    children = list(inline.children or [])
+    child_types = [child.type for child in children]
+    if child_types != [
+        "text",
+        "strong_open",
+        "text",
+        "softbreak",
+        "link_open",
+        "text",
+        "link_close",
+        "text",
+        "strong_close",
+        "text",
+    ]:
+        return False
+    link = children[4]
+    return (
+        link.attrs.get("href") == TARGET_HARNESS_SKILL
+        and children[5].content == TARGET_HARNESS_SKILL
+    )
+
+
+def _verify_supervised_legacy_postconditions(
+    target: Path,
+    plan: dict[str, Any],
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    preimage_surface: bytes,
+    staged: dict[str, bytes],
+    legacy_adapter: Any,
+) -> dict[str, Any]:
+    migration_kernel.validate_supervised_authorization(plan)
+    if (
+        plan.get("release_lineage_records")
+        != profile.get("release_lineage_records")
+        or plan.get("migration_records") != profile.get("migration_records")
+        or plan.get("migration_record")
+        != profile.get("current_migration_record")
+    ):
+        raise ValueError("supervised lineage plan differs from verified profile")
+    proof = plan["supervised_adapter_proof"]
+    transform = proof.get("instruction_surface_transform")
+    instruction_path = plan.get("instruction_surface")
+    if (
+        not isinstance(transform, dict)
+        or instruction_path != "SKILL.md"
+        or transform.get("path") != instruction_path
+    ):
+        raise ValueError("supervised adapter postcondition proof is incomplete")
+    instruction_write = next(
+        (
+            item
+            for item in plan["write_set"]
+            if item.get("path") == instruction_path
+        ),
+        None,
+    )
+    if not isinstance(instruction_write, dict):
+        raise ValueError("supervised instruction write postcondition is missing")
+    expected_binding = plan["target_git_state"]["target_binding"]
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=expected_binding,
+    ) as secure_target:
+        state = secure_target.file_state(instruction_path)
+        if (
+            state.get("kind") != "file"
+            or state.get("sha256") != instruction_write.get("postimage_sha256")
+            or state.get("mode") != instruction_write.get("postimage_mode")
+        ):
+            raise ValueError("supervised instruction postimage changed")
+        postimage_surface = secure_target.read_exact(
+            instruction_path,
+            instruction_write["postimage_sha256"],
+        )
+
+        current_closure = (migration_bundle.get("current_closure") or {}).get(
+            "closure"
+        )
+        if (
+            not isinstance(current_closure, dict)
+            or current_closure != profile.get("_verified_target_closure")
+        ):
+            raise ValueError("supervised current closure binding changed")
+        closure_entries = current_closure.get("files")
+        if not isinstance(closure_entries, list):
+            raise ValueError("supervised current closure files are missing")
+        for entry in closure_entries:
+            if not isinstance(entry, dict):
+                raise ValueError("supervised current closure file is invalid")
+            if entry.get("kind") != "exact":
+                continue
+            current = secure_target.file_state(entry.get("target_path"))
+            if (
+                current.get("kind") != "file"
+                or current.get("sha256")
+                != "sha256:" + str(entry.get("sha256"))
+                or current.get("mode")
+                != _official_exact_file_mode(entry.get("mode"))
+            ):
+                raise ValueError(
+                    "supervised current closure exact file changed: "
+                    f"{entry.get('target_path')}"
+                )
+        manifest_postimage = staged.get(TARGET_WRAPPER_MANIFEST)
+        if not isinstance(manifest_postimage, bytes) or secure_target.read_exact(
+            TARGET_WRAPPER_MANIFEST,
+            "sha256:" + hashlib.sha256(manifest_postimage).hexdigest(),
+        ) != manifest_postimage:
+            raise ValueError("supervised manifest differs from the closure postimage")
+        ledger_path = plan.get("migration_record")
+        ledger_postimage = staged.get(ledger_path)
+        if (
+            not isinstance(ledger_path, str)
+            or not isinstance(ledger_postimage, bytes)
+            or secure_target.read_exact(
+                ledger_path,
+                "sha256:" + hashlib.sha256(ledger_postimage).hexdigest(),
+            )
+            != ledger_postimage
+        ):
+            raise ValueError(
+                "supervised applied migration lineage differs from the profile"
+            )
+
+    if (
+        "sha256:" + hashlib.sha256(preimage_surface).hexdigest()
+        != transform.get("preimage_sha256")
+        or "sha256:" + hashlib.sha256(postimage_surface).hexdigest()
+        != transform.get("postimage_sha256")
+        or staged.get(instruction_path) != postimage_surface
+    ):
+        raise ValueError("supervised adapter full-file proof changed")
+
+    deleted_spans = transform.get("deleted_spans")
+    retained = transform.get("retained_target_bytes")
+    retained_segments = (
+        retained.get("segments") if isinstance(retained, dict) else None
+    )
+    if (
+        not isinstance(deleted_spans, list)
+        or not deleted_spans
+        or not isinstance(retained_segments, list)
+    ):
+        raise ValueError("supervised adapter complement proof is incomplete")
+    cursor = 0
+    expected_retained_bounds: list[tuple[int, int]] = []
+    for span in deleted_spans:
+        if not isinstance(span, dict):
+            raise ValueError("supervised deleted span proof is invalid")
+        start = span.get("start_byte")
+        end = span.get("end_byte")
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < cursor
+            or end <= start
+            or end > len(preimage_surface)
+        ):
+            raise ValueError("supervised deleted span boundaries are invalid")
+        expected_retained_bounds.append((cursor, start))
+        deleted = preimage_surface[start:end]
+        if (
+            len(deleted) != span.get("byte_length")
+            or "sha256:" + hashlib.sha256(deleted).hexdigest()
+            != span.get("sha256")
+            or postimage_surface.count(deleted) != 0
+        ):
+            raise ValueError("supervised deleted span remains in the postimage")
+        cursor = end
+    expected_retained_bounds.append((cursor, len(preimage_surface)))
+    actual_retained_bounds = [
+        (item.get("start_byte"), item.get("end_byte"))
+        for item in retained_segments
+        if isinstance(item, dict)
+    ]
+    if actual_retained_bounds != expected_retained_bounds:
+        raise ValueError("supervised retained complement boundaries changed")
+    retained_bytes = b""
+    for item in retained_segments:
+        start = item["start_byte"]
+        end = item["end_byte"]
+        segment = preimage_surface[start:end]
+        if (
+            len(segment) != item.get("byte_length")
+            or "sha256:" + hashlib.sha256(segment).hexdigest()
+            != item.get("sha256")
+        ):
+            raise ValueError("supervised retained business segment changed")
+        retained_bytes += segment
+    if (
+        len(retained_bytes) != retained.get("byte_length")
+        or "sha256:" + hashlib.sha256(retained_bytes).hexdigest()
+        != retained.get("concatenated_sha256")
+    ):
+        raise ValueError("supervised retained business complement changed")
+
+    inserted = transform.get("inserted_envelope")
+    if not isinstance(inserted, dict):
+        raise ValueError("supervised activation proof is missing")
+    inserted_start = inserted.get("start_byte")
+    inserted_end = inserted.get("end_byte")
+    if (
+        not isinstance(inserted_start, int)
+        or not isinstance(inserted_end, int)
+        or inserted_start < 0
+        or inserted_end <= inserted_start
+        or inserted_end > len(postimage_surface)
+    ):
+        raise ValueError("supervised activation boundaries are invalid")
+    inserted_bytes = postimage_surface[inserted_start:inserted_end]
+    if (
+        len(inserted_bytes) != inserted.get("byte_length")
+        or "sha256:" + hashlib.sha256(inserted_bytes).hexdigest()
+        != inserted.get("sha256")
+        or postimage_surface[:inserted_start] + postimage_surface[inserted_end:]
+        != retained_bytes
+    ):
+        raise ValueError("supervised postimage projection changed")
+    canonical_activation = inserted_bytes.rstrip(b"\r\n")
+    canonical_activation_lf = canonical_activation.replace(b"\r\n", b"\n")
+    if (
+        "sha256:" + hashlib.sha256(canonical_activation).hexdigest()
+        != inserted.get("activation_sha256")
+        or "sha256:" + hashlib.sha256(canonical_activation_lf).hexdigest()
+        != inserted.get("activation_sha256_lf")
+        or canonical_activation_lf
+        != build_harness_activation_block().encode("utf-8")
+        or postimage_surface.count(
+            migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+                "begin_marker"
+            ].encode("utf-8")
+        )
+        != 1
+        or postimage_surface.count(
+            migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+                "end_marker"
+            ].encode("utf-8")
+        )
+        != 1
+        or not _supervised_activation_has_unique_commonmark_ast(
+            inserted_bytes,
+            legacy_adapter,
+        )
+    ):
+        raise ValueError("supervised canonical activation AST is not unique")
+    return {
+        "adapter_proof": "passed",
+        "business_retained_complement": "byte_exact",
+        "current_closure": "passed",
+        "deleted_spans_remaining": 0,
+        "activation_block": "unique_commonmark_ast",
+        "manifest": "closure_exact",
+        "release_lineage": "closure_exact",
+        "migration_ledger": "profile_exact_applied_lineage",
+    }
+
+
+def _rebuild_supervised_apply_material(
+    target: Path,
+    approved_plan: dict[str, Any],
+    *,
+    latest_version: str | None,
+    today: date | None,
+    wrapper_root: Path | None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, bytes],
+]:
+    migration_bundle = migration_kernel.load_migration_contract(
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
+    )
+    fresh_plan = plan_target_layout_migration(
+        target,
+        latest_version,
+        today,
+        require_clean_git=True,
+        wrapper_root=wrapper_root,
+        _migration_bundle=migration_bundle,
+    )
+    if (
+        fresh_plan.get("decision") != "supervised_migration_available"
+        or fresh_plan.get("can_apply") is not True
+        or fresh_plan.get("operation_sha256")
+        != approved_plan.get("operation_sha256")
+        or migration_kernel.migration_plan_payload(fresh_plan)
+        != migration_kernel.migration_plan_payload(approved_plan)
+    ):
+        raise ValueError(
+            "supervised migration operation changed during pre-apply revalidation"
+        )
+    profile = _approved_supervised_legacy_profile(
+        migration_bundle,
+        fresh_plan.get("profile"),
+    )
+    expected_binding = fresh_plan["target_git_state"]["target_binding"]
+    evidence = migration_kernel.collect_supervised_legacy_evidence(
+        target,
+        migration_bundle,
+        profile,
+        expected_binding=expected_binding,
+    )
+    write_set, staged, protected = _supervised_legacy_write_plan(
+        migration_bundle,
+        profile,
+        evidence,
+    )
+    if (
+        evidence.get("proof") != fresh_plan.get("supervised_adapter_proof")
+        or write_set != fresh_plan.get("write_set")
+        or protected != fresh_plan.get("protected_business_surfaces")
+        or set(staged) != {item["path"] for item in write_set}
+    ):
+        raise ValueError("supervised migration proof or exact write material changed")
+    for item in write_set:
+        data = staged.get(item["path"])
+        if (
+            not isinstance(data, bytes)
+            or "sha256:" + hashlib.sha256(data).hexdigest()
+            != item.get("postimage_sha256")
+            or not isinstance(item.get("postimage_mode"), int)
+        ):
+            raise ValueError(
+                f"supervised staged postimage changed: {item.get('path')}"
+            )
+    source_root = migration_bundle.get("wrapper_root")
+    expected_source_index = fresh_plan.get("zero_write_git_indexes", {}).get(
+        "source"
+    )
+    if (
+        not isinstance(source_root, Path)
+        or not isinstance(expected_source_index, dict)
+        or migration_bundle.get("source_git_index") != expected_source_index
+        or migration_kernel.git_index_state(source_root) != expected_source_index
+        or migration_kernel.verify_supervised_legacy_source_assets(
+            migration_bundle,
+            profile,
+        )
+        != fresh_plan["profile"].get("trusted_source_assets")
+    ):
+        raise ValueError("supervised trusted source changed before snapshot")
+    migration_kernel.verify_plan_preimages(target, fresh_plan)
+    fresh_plan["approval"] = copy.deepcopy(approved_plan.get("approval"))
+    return fresh_plan, migration_bundle, profile, evidence, staged
+
+
+def _apply_supervised_legacy_upgrade(
+    target: Path,
+    approved_plan: dict[str, Any],
+    latest_version: str | None,
+    today: date | None,
+    wrapper_root: Path | None,
+    snapshot_root: Path | None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None,
+) -> dict[str, Any]:
+    plan, migration_bundle, profile, evidence, staged = (
+        _rebuild_supervised_apply_material(
+            target,
+            approved_plan,
+            latest_version=latest_version,
+            today=today,
+            wrapper_root=wrapper_root,
+            remote_tag_resolver=remote_tag_resolver,
+        )
+    )
+    approved_target_binding = plan["target_git_state"]["target_binding"]
+    migration_kernel.verify_target_binding(target, approved_target_binding)
+    trusted_preflight = _trusted_structure_preflight(
+        migration_bundle,
+        profile,
+    )
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=snapshot_root,
+    )
+    changed_files: list[str] = []
+    migration_kernel.mark_migration_transaction(
+        snapshot,
+        state="in_progress",
+        changed_paths=[],
+    )
+    try:
+        source_root = migration_bundle["wrapper_root"]
+        if (
+            migration_kernel.git_index_state(source_root)
+            != plan["zero_write_git_indexes"]["source"]
+            or migration_kernel.verify_supervised_legacy_source_assets(
+                migration_bundle,
+                profile,
+            )
+            != plan["profile"]["trusted_source_assets"]
+        ):
+            raise ValueError("supervised trusted source changed after snapshot")
+        migration_kernel.verify_plan_preimages(target, plan)
+        write_items = {item["path"]: item for item in plan["write_set"]}
+        with migration_kernel.SecureTargetFS(
+            target,
+            expected_binding=approved_target_binding,
+            retirement_root=snapshot / "quarantine",
+        ) as secure_target:
+            secure_target.prepare_mutation_batch(sorted(staged))
+            for relative in sorted(staged):
+                item = write_items[relative]
+                identity = item.get("preimage_identity")
+                expected_identity = (
+                    (identity["st_dev"], identity["st_ino"])
+                    if isinstance(identity, dict)
+                    else None
+                )
+                changed_files.append(relative)
+                migration_kernel.mark_migration_transaction(
+                    snapshot,
+                    state="in_progress",
+                    changed_paths=changed_files,
+                )
+                secure_target.write_exact(
+                    relative,
+                    staged[relative],
+                    expected_preimage=item.get("preimage_sha256"),
+                    expected_mode=item.get("preimage_mode"),
+                    expected_identity=expected_identity,
+                    mode=item["postimage_mode"],
+                )
+                actual = secure_target.file_state(relative)
+                if (
+                    actual.get("kind") != "file"
+                    or actual.get("sha256") != item["postimage_sha256"]
+                    or actual.get("mode") != item["postimage_mode"]
+                ):
+                    raise ValueError(
+                        f"supervised staged operation postimage failed: {relative}"
+                    )
+
+        validation = _verify_supervised_legacy_postconditions(
+            target,
+            plan,
+            migration_bundle,
+            profile,
+            evidence["_surface_bytes"],
+            staged,
+            evidence["_verified_adapter_module"],
+        )
+        migration_kernel.verify_post_apply_target_state(target, plan)
+        structure = _run_harness_structure_check(
+            target,
+            trusted_preflight=trusted_preflight,
+        )
+        if structure["returncode"] != 0:
+            detail = (structure["stderr"] or structure["stdout"]).strip()
+            raise ValueError(
+                f"supervised migration structure validation failed: {detail}"
+            )
+        migration_kernel.verify_post_apply_target_state(target, plan)
+        migration_kernel.mark_migration_transaction(
+            snapshot,
+            state="applied",
+            changed_paths=changed_files,
+        )
+    except Exception as exc:
+        try:
+            rollback = migration_kernel.rollback_migration_snapshot(
+                target,
+                snapshot,
+                trusted_snapshot_root=snapshot_root,
+            )
+        except Exception as rollback_exc:
+            migration_kernel.mark_migration_transaction(
+                snapshot,
+                state="rollback_failed",
+                changed_paths=changed_files,
+                error=f"apply={exc}; rollback={rollback_exc}",
+            )
+            return {
+                **plan,
+                "status": "rollback_failed",
+                "writes": True,
+                "rollback_verified": False,
+                "snapshot": str(snapshot),
+                "changed_files": changed_files,
+                "error": str(exc),
+                "rollback_error": str(rollback_exc),
+            }
+        raise ValueError(
+            f"supervised migration failed and snapshot rollback passed: {exc}; "
+            f"snapshot={rollback['snapshot']}"
+        ) from exc
+
+    return {
+        **plan,
+        "status": "applied",
+        "writes": True,
+        "migration_required": False,
+        "can_apply": False,
+        "snapshot": str(snapshot),
+        "changed_files": changed_files,
+        "approved_operation_sha256": plan["operation_sha256"],
+        "validation": validation,
+    }
+
+
 def _apply_canonical_v1_upgrade(
     target: Path,
     plan: dict[str, Any],
@@ -5720,6 +6579,10 @@ def _apply_canonical_v1_upgrade(
                 f"migration staged postimage differs from approved plan: {item['path']}"
             )
 
+    trusted_preflight = _trusted_structure_preflight(
+        migration_bundle,
+        official_profile,
+    )
     snapshot = migration_kernel.create_migration_snapshot(
         target,
         plan,
@@ -5782,7 +6645,10 @@ def _apply_canonical_v1_upgrade(
                     raise ValueError(
                         f"protected business surface changed outside the plan: {relative}"
                     )
-        structure = _run_harness_structure_check(target)
+        structure = _run_harness_structure_check(
+            target,
+            trusted_preflight=trusted_preflight,
+        )
         if structure["returncode"] != 0:
             detail = (structure["stderr"] or structure["stdout"]).strip()
             raise ValueError(f"migration post-validation failed: {detail}")
@@ -5892,32 +6758,66 @@ def migrate_target_layout(
             "actions": [],
             "changed_files": [],
         }
+    supervised_apply = plan.get("decision") == "supervised_migration_available"
+    expected_approval_sha256 = (
+        plan.get("operation_sha256")
+        if supervised_apply
+        else plan.get("plan_sha256")
+    )
     if approved_plan_sha256 is None:
+        approval = {
+            "required": True,
+            "expected_plan_sha256": plan["plan_sha256"],
+        }
+        if supervised_apply:
+            approval["expected_operation_sha256"] = expected_approval_sha256
         return {
             **plan,
             "status": "approval_required",
             "writes": False,
-            "approval": {
-                "required": True,
-                "expected_plan_sha256": plan["plan_sha256"],
-            },
+            "approval": approval,
         }
-    if approved_plan_sha256 != plan["plan_sha256"]:
+    if approved_plan_sha256 != expected_approval_sha256:
+        approval = {
+            "required": True,
+            "approved_plan_sha256": approved_plan_sha256,
+            "expected_plan_sha256": plan["plan_sha256"],
+            "matched": False,
+        }
+        if supervised_apply:
+            approval["expected_operation_sha256"] = expected_approval_sha256
         return {
             **plan,
             "status": "blocked",
             "writes": False,
-            "approval": {
-                "required": True,
-                "approved_plan_sha256": approved_plan_sha256,
-                "expected_plan_sha256": plan["plan_sha256"],
-                "matched": False,
-            },
+            "approval": approval,
             "apply_blockers": [
                 *plan["apply_blockers"],
-                "approved plan digest does not match the current plan",
+                (
+                    "approved operation digest does not match the current "
+                    "supervised plan"
+                    if supervised_apply
+                    else "approved plan digest does not match the current plan"
+                ),
             ],
         }
+    plan["approval"] = {
+        "approved_plan_sha256": approved_plan_sha256,
+        "approved_operation_sha256": (
+            approved_plan_sha256 if supervised_apply else None
+        ),
+        "matched": True,
+    }
+    if supervised_apply:
+        return _apply_supervised_legacy_upgrade(
+            target,
+            plan,
+            latest_version,
+            today,
+            wrapper_root,
+            snapshot_root,
+            remote_tag_resolver,
+        )
     approved_profile = _approved_automatic_profile(
         migration_bundle,
         plan.get("profile"),
@@ -5934,10 +6834,6 @@ def migrate_target_layout(
         or authority_rules.get("post_verify_failure") != "restore_snapshot"
     ):
         raise ValueError("migration apply is blocked: profile authority is incomplete")
-    plan["approval"] = {
-        "approved_plan_sha256": approved_plan_sha256,
-        "matched": True,
-    }
     return _apply_canonical_v1_upgrade(
         target,
         plan,

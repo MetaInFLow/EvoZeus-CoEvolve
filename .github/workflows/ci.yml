@@ -24,7 +24,7 @@ jobs:
       - name: Install hash-locked CommonMark parser
         run: python -m pip install --require-hashes -r requirements-commonmark.lock
       - run: python -m pip install --upgrade pytest pydantic pyyaml
-      - run: python -m pytest -q
+      - run: python scripts/evozeus_test.py -q
       - name: Verify immutable Harness history and release bindings
         run: python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .
-      - run: python -m py_compile scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py
+      - run: python -m py_compile scripts/evozeus_source_guard.py scripts/evozeus_test.py scripts/evozeus_wrapper.py scripts/evozeus_wrapper_bootstrap.py scripts/evozeus_wrapper_global_hook.py scripts/evozeus_wrapper_lifecycle.py scripts/evozeus_wrapper_preflight.py

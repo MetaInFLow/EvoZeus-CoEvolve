@@ -2119,15 +2119,23 @@ def test_snapshot_then_unplanned_race_blocks_before_the_first_target_write(
 
 def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) -> None:
     target = tmp_path / "structure-no-pyc"
-    script = target / lifecycle.TARGET_PREFLIGHT_SCRIPT
+    target.mkdir()
+    trusted = tmp_path / "trusted-structure-source"
+    script = trusted / "evozeus_wrapper_preflight.py"
     script.parent.mkdir(parents=True)
     script.write_text(
-        "import helper_probe\nraise SystemExit(0)\n",
+        "import sys\n"
+        "sys.path.insert(0, __file__.rsplit('/', 1)[0])\n"
+        "import helper_probe\n"
+        "raise SystemExit(0)\n",
         encoding="utf-8",
     )
     script.parent.joinpath("helper_probe.py").write_text("VALUE = 1\n", encoding="utf-8")
 
-    result = lifecycle._run_harness_structure_check(target)
+    result = lifecycle._run_harness_structure_check(
+        target,
+        trusted_preflight=script,
+    )
 
     assert result["returncode"] == 0
     assert not script.parent.joinpath("__pycache__").exists()
@@ -2537,6 +2545,12 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     assert plan["source_trust"]["remote_tag_verified"] is True
     assert plan["decision"] == "automatic_migration_available"
     assert plan["can_apply"] is True
+    applied_lineage = (
+        ".evozeus-wrapper/docs/migrations/"
+        "reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+    )
+    assert applied_lineage not in plan["release_lineage_records"]
+    assert applied_lineage not in plan["migration_records"]
     assert plan["profile"]["from_state"]["harness_skill_version"] == "v1.0.0"
     assert plan["profile"]["to_state"]["harness_skill_version"] == "v1.1.0"
     assert all(item.get("postimage_sha256") for item in plan["write_set"])
@@ -2578,6 +2592,7 @@ def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> 
     )
     assert applied["status"] == "applied"
     assert applied["writes"] is True
+    assert not target.joinpath(applied_lineage).exists()
     assert target.joinpath("SKILL.md").read_bytes() == protected_before
     record = target.joinpath(plan["migration_record"]).read_bytes()
     assert record == source.joinpath(
@@ -4282,6 +4297,11 @@ def test_fresh_attach_commits_the_complete_hash_and_mode_bound_artifact_set(
         "instruction_surface": "SKILL.md",
     }
     lineage = bootstrap.current_release_lineage_artifacts(bundle, target)
+    applied_lineage = (
+        ".evozeus-wrapper/docs/migrations/"
+        "reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+    )
+    assert all(destination.relative_to(target).as_posix() != applied_lineage for destination, _, _ in lineage)
 
     bootstrap.attach_harness_transaction(
         target,
@@ -4303,3 +4323,4 @@ def test_fresh_attach_commits_the_complete_hash_and_mode_bound_artifact_set(
         assert stat.S_IMODE(destination.stat().st_mode) == (
             0o755 if executable else 0o644
         )
+    assert not target.joinpath(applied_lineage).exists()

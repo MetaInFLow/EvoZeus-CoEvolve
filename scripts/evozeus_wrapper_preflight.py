@@ -1,21 +1,135 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import sys
+
+
+def _bootstrap_preflight_sources() -> tuple[dict, dict]:
+    posix = __import__("posix")
+    cwd = posix.getcwd()
+    original_sys_path = tuple(sys.path)
+
+    def lexical_absolute(raw: str) -> str:
+        value = raw if raw.startswith("/") else cwd + "/" + raw
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/" + "/".join(parts)
+
+    script = lexical_absolute(__file__)
+    scripts_dir = script.rsplit("/", 1)[0]
+    sidecar_root = scripts_dir.rsplit("/", 1)[0]
+    system_roots = {
+        lexical_absolute(sys.base_prefix),
+        lexical_absolute(sys.prefix),
+    }
+    sys.path[:] = [
+        item
+        for item in original_sys_path
+        if any(
+            lexical_absolute(item or cwd) == root
+            or lexical_absolute(item or cwd).startswith(root + "/")
+            for root in system_roots
+        )
+    ]
+
+    os_module = __import__("os")
+    temp_root = os_module.path.realpath(
+        os_module.environ.get("TMPDIR") or "/tmp"
+    )
+    if any(
+        temp_root == root or temp_root.startswith(root + os_module.sep)
+        for root in (os_module.path.realpath(sidecar_root),)
+    ):
+        raise RuntimeError("bytecode cache root must be outside the Harness")
+    cache = ""
+    for _attempt in range(32):
+        candidate = os_module.path.join(
+            temp_root,
+            f"evozeus-pycache-{os_module.getpid()}-{os_module.urandom(16).hex()}",
+        )
+        try:
+            os_module.mkdir(candidate, 0o700)
+        except FileExistsError:
+            continue
+        cache = candidate
+        break
+    if not cache:
+        raise RuntimeError("cannot allocate an external bytecode cache directory")
+    sys.pycache_prefix = cache
+    sys.dont_write_bytecode = True
+    atexit_module = __import__("atexit")
+
+    def remove_empty_cache() -> None:
+        try:
+            os_module.rmdir(cache)
+        except OSError:
+            pass
+
+    atexit_module.register(remove_empty_cache)
+
+    notice_path = scripts_dir + "/evozeus_notice.py"
+    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    if nofollow == 0:
+        raise RuntimeError("trusted notice loading requires O_NOFOLLOW")
+    descriptor = posix.open(notice_path, flags | nofollow)
+    try:
+        metadata = posix.fstat(descriptor)
+        if metadata.st_mode & 0o170000 != 0o100000:
+            raise RuntimeError("trusted notice source is not a regular file")
+        source = b""
+        while len(source) < metadata.st_size:
+            chunk = posix.read(descriptor, metadata.st_size - len(source))
+            if not chunk:
+                raise RuntimeError("trusted notice source changed while reading")
+            source += chunk
+        if posix.read(descriptor, 1):
+            raise RuntimeError("trusted notice source grew while reading")
+        final_metadata = posix.fstat(descriptor)
+        if (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        ) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_mode,
+            final_metadata.st_size,
+            final_metadata.st_mtime_ns,
+            final_metadata.st_ctime_ns,
+        ):
+            raise RuntimeError("trusted notice source changed while reading")
+    finally:
+        posix.close(descriptor)
+    namespace = {"__file__": notice_path, "__name__": "_evozeus_notice"}
+    exec(compile(source, notice_path, "exec", dont_inherit=True), namespace)
+    return namespace, {"pycache_prefix": cache, "scripts_dir": scripts_dir}
+
+
+_NOTICE_SOURCE, _TRUSTED_SOURCE_RUNTIME = _bootstrap_preflight_sources()
+
 import argparse
 import hashlib
 import json
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-
-try:
-    from .evozeus_notice import load_notice_policy, render_notice
-except ImportError:
-    from evozeus_notice import load_notice_policy, render_notice
+load_notice_policy = _NOTICE_SOURCE["load_notice_policy"]
+render_notice = _NOTICE_SOURCE["render_notice"]
 
 
 GLOBAL_EVOZEUS_HOME = ".evozeus"

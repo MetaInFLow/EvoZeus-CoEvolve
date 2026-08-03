@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,6 +43,7 @@ SNAPSHOT_TRANSACTION_SCHEMA_VERSION = (
     "evozeus.coevolve.harness-migration-transaction.v1"
 )
 TARGET_BINDING_SCHEMA_VERSION = "evozeus.target-root-binding.v1"
+SUPERVISED_AUTHORIZATION_CLASS = "supervised_exact_plan_v1"
 OFFICIAL_SOURCE_REPOSITORY = "MetaInFLow/EvoZeus-CoEvolve"
 OFFICIAL_SOURCE_URLS = {
     "https://github.com/MetaInFLow/EvoZeus-CoEvolve.git",
@@ -584,6 +586,19 @@ def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
     target = Path(binding["canonical_path"])
     if baseline.get("target_binding") != expected_binding:
         raise ValueError("post-apply target baseline binding differs from the plan")
+    supervised_authorization = (
+        validate_supervised_authorization(plan)
+        if plan.get("decision") == "supervised_migration_available"
+        else None
+    )
+    supervised_postconditions = {
+        item["path"]: item
+        for item in (
+            supervised_authorization[0]["planned_protected_postconditions"]
+            if supervised_authorization is not None
+            else []
+        )
+    }
     current_git = target_git_state(requested_target)
     for field in ("head_commit", "head_tree_oid", "index_sha256"):
         if current_git.get(field) != baseline.get(field):
@@ -595,6 +610,19 @@ def verify_post_apply_target_state(target: Path, plan: dict[str, Any]) -> None:
     ) as secure_target:
         for item in plan.get("protected_business_surfaces", []):
             current = secure_target.file_state(item.get("path"))
+            if item.get("planned_write") is True:
+                postcondition = supervised_postconditions.get(item.get("path"))
+                if (
+                    not isinstance(postcondition, dict)
+                    or current.get("kind") != postcondition.get("kind")
+                    or current.get("sha256") != postcondition.get("sha256")
+                    or current.get("mode") != postcondition.get("mode")
+                ):
+                    raise ValueError(
+                        "post-apply planned protected postcondition failed: "
+                        f"{item.get('path')}"
+                    )
+                continue
             if current.get("sha256") != item.get("preimage_sha256"):
                 raise ValueError(
                     f"post-apply protected business surface changed: {item.get('path')}"
@@ -2000,6 +2028,12 @@ def supervised_legacy_profile_identity(profile: dict[str, Any]) -> dict[str, Any
         "release_axis": copy.deepcopy(profile.get("release_axis")),
         "execution": copy.deepcopy(profile.get("execution")),
         "automatic": profile.get("automatic"),
+        "release_lineage_records": copy.deepcopy(
+            profile.get("release_lineage_records")
+        ),
+        "migration_records": copy.deepcopy(profile.get("migration_records")),
+        "current_migration_record": profile.get("current_migration_record"),
+        "applied_lineage": copy.deepcopy(profile.get("applied_lineage")),
         "trusted_source_assets": copy.deepcopy(
             profile.get("_verified_trusted_source_assets")
         ),
@@ -3202,8 +3236,11 @@ class SecureTargetFS:
         *,
         expected_preimage: str | None,
         expected_mode: int | None = None,
+        expected_identity: tuple[int, int] | None = None,
         mode: int,
     ) -> None:
+        if expected_preimage is None and expected_identity is not None:
+            raise ValueError("secure target create cannot declare a preimage identity")
         created_directory_start = len(self.created_directories)
         prepared_relative = _safe_relative_path(raw)
         descriptors: list[int] = []
@@ -3230,6 +3267,7 @@ class SecureTargetFS:
                     relative,
                     expected_preimage=expected_preimage,
                     expected_mode=expected_mode,
+                    expected_identity=expected_identity,
                 )
 
             candidate_name, candidate_descriptor, candidate_identity = (
@@ -3665,7 +3703,13 @@ def migration_plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in plan.items()
-        if key not in {"plan_sha256", "approval", "snapshot"}
+        if key
+        not in {
+            "plan_sha256",
+            "operation_sha256",
+            "approval",
+            "snapshot",
+        }
     }
 
 
@@ -3697,11 +3741,6 @@ def collect_supervised_legacy_evidence(
         for item in approved_profiles
     ):
         raise ValueError("supervised legacy profile is not verifier-approved")
-    try:
-        from . import evozeus_harness_legacy_prompt_adapter as legacy_adapter
-    except ImportError:
-        import evozeus_harness_legacy_prompt_adapter as legacy_adapter
-
     wrapper_root = migration_bundle.get("wrapper_root")
     if not isinstance(wrapper_root, Path):
         raise ValueError("supervised legacy adapter repository root is missing")
@@ -3709,6 +3748,80 @@ def collect_supervised_legacy_evidence(
         migration_bundle,
         profile,
     )
+    implementation_record = trusted_source_assets.get("implementation")
+    if not isinstance(implementation_record, dict):
+        raise ValueError("verified supervised adapter implementation is missing")
+    implementation_relative = _safe_relative_path(
+        implementation_record.get("path"),
+        "verified supervised adapter implementation",
+    )
+    implementation_path = _safe_file_below(
+        wrapper_root,
+        implementation_relative,
+        "verified supervised adapter implementation",
+    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow == 0:
+        raise ValueError("verified supervised adapter loading requires O_NOFOLLOW")
+    descriptor = os.open(implementation_path, flags | nofollow)
+    try:
+        metadata = os.fstat(descriptor)
+        source_chunks: list[bytes] = []
+        remaining = metadata.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError(
+                    "verified supervised adapter changed while reading"
+                )
+            source_chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("verified supervised adapter grew while reading")
+        source_bytes = b"".join(source_chunks)
+        post_metadata = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size)
+        != (
+            post_metadata.st_dev,
+            post_metadata.st_ino,
+            post_metadata.st_mode,
+            post_metadata.st_size,
+        )
+        or sha256_bytes(source_bytes) != implementation_record.get("sha256")
+        or ("100755" if metadata.st_mode & stat.S_IXUSR else "100644")
+        != implementation_record.get("mode")
+    ):
+        raise ValueError(
+            "verified supervised adapter bytes/mode changed before execution"
+        )
+    module_name = (
+        "_evozeus_verified_legacy_adapter_"
+        + str(implementation_record["sha256"])
+        + "_"
+        + uuid.uuid4().hex
+    )
+    legacy_adapter = types.ModuleType(module_name)
+    legacy_adapter.__file__ = str(implementation_path)
+    legacy_adapter.__package__ = ""
+    sys.modules[module_name] = legacy_adapter
+    try:
+        exec(
+            compile(
+                source_bytes,
+                str(implementation_path),
+                "exec",
+                dont_inherit=True,
+            ),
+            legacy_adapter.__dict__,
+        )
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     frozen = legacy_adapter.load_frozen_bundle(wrapper_root)
     expected_proof_assets = {
         key: copy.deepcopy(trusted_source_assets[key])
@@ -3740,8 +3853,7 @@ def collect_supervised_legacy_evidence(
     if (
         not isinstance(implementation, dict)
         or not isinstance(implementation_module, str)
-        or sha256_bytes(Path(implementation_module).read_bytes())
-        != implementation.get("sha256")
+        or sha256_bytes(source_bytes) != implementation.get("sha256")
         or not callable(entrypoint)
         or implementation.get("entrypoint") != entrypoint.__name__
     ):
@@ -3758,12 +3870,18 @@ def collect_supervised_legacy_evidence(
         for item in envelope.get("files", [])
         if isinstance(item, dict)
     ]
+    operation_paths = [
+        item.get("target_path")
+        for item in profile.get("operations", [])
+        if isinstance(item, dict)
+    ]
     if not isinstance(manifest_path, str) or not isinstance(surface_path, str):
         raise ValueError("supervised legacy source paths are invalid")
     paths = list(
         dict.fromkeys(
             [
                 *[path for path in declared_paths if isinstance(path, str)],
+                *[path for path in operation_paths if isinstance(path, str)],
                 manifest_path,
                 surface_path,
             ]
@@ -3828,6 +3946,7 @@ def collect_supervised_legacy_evidence(
         "target_file_states": raw_states,
         "profile_identity": planned_identity,
         "trusted_source_assets": trusted_source_assets,
+        "_verified_adapter_module": legacy_adapter,
         "_manifest_bytes": manifest_bytes,
         "_surface_bytes": surface_bytes,
     }
@@ -3850,13 +3969,184 @@ def planned_target_paths(plan: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def validate_supervised_authorization(
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    authorization = plan.get("write_authorization")
+    required_authorization_fields = {
+        "class",
+        "profile_identity",
+        "adapter_proof_sha256",
+        "write_set_sha256",
+        "instruction_surface",
+        "planned_protected_postconditions",
+    }
+    if (
+        not isinstance(authorization, dict)
+        or set(authorization) != required_authorization_fields
+        or authorization.get("class") != SUPERVISED_AUTHORIZATION_CLASS
+    ):
+        raise ValueError("supervised migration authorization class is invalid")
+
+    profile_identity = authorization.get("profile_identity")
+    plan_profile = plan.get("profile")
+    execution = (
+        profile_identity.get("execution")
+        if isinstance(profile_identity, dict)
+        else None
+    )
+    if (
+        not isinstance(profile_identity, dict)
+        or profile_identity != plan_profile
+        or profile_identity.get("automatic") is not False
+        or not isinstance(execution, dict)
+        or execution.get("mode") != "supervised_exact_plan"
+        or execution.get("approval") != "one_time_exact_operation_sha256"
+        or execution.get("compare_and_swap") != "full_file_preimage"
+        or execution.get("runtime_apply") != "trusted_kernel_exact_apply"
+    ):
+        raise ValueError("supervised migration verified profile identity is invalid")
+
+    proof = plan.get("supervised_adapter_proof")
+    proof_without_digest = copy.deepcopy(proof) if isinstance(proof, dict) else None
+    proof_sha256 = (
+        proof_without_digest.pop("proof_sha256", None)
+        if isinstance(proof_without_digest, dict)
+        else None
+    )
+    expected_proof_sha256 = (
+        "sha256:" + canonical_json_sha256(proof_without_digest)
+        if isinstance(proof_without_digest, dict)
+        else None
+    )
+    if (
+        not isinstance(proof, dict)
+        or proof.get("decision") != "supervised_migration_available"
+        or proof.get("writes") is not False
+        or proof.get("destructive_authority") is not False
+        or proof_sha256 != expected_proof_sha256
+        or authorization.get("adapter_proof_sha256") != proof_sha256
+    ):
+        raise ValueError("supervised migration adapter proof authorization is invalid")
+
+    write_set = plan.get("write_set")
+    if (
+        not isinstance(write_set, list)
+        or any(not isinstance(item, dict) for item in write_set)
+        or authorization.get("write_set_sha256")
+        != "sha256:" + canonical_json_sha256(write_set)
+    ):
+        raise ValueError("supervised migration exact write-set authorization is invalid")
+
+    instruction_surface = authorization.get("instruction_surface")
+    proof_operation = proof.get("write_operation")
+    if (
+        instruction_surface != "SKILL.md"
+        or instruction_surface != plan.get("instruction_surface")
+        or not isinstance(proof_operation, dict)
+        or proof_operation.get("path") != instruction_surface
+        or proof_operation.get("operation") != "replace_exact"
+    ):
+        raise ValueError("supervised migration verified instruction surface is invalid")
+
+    postconditions = authorization.get("planned_protected_postconditions")
+    if not isinstance(postconditions, list) or len(postconditions) != 1:
+        raise ValueError("supervised migration protected postcondition map is invalid")
+    postcondition = postconditions[0]
+    required_postcondition_fields = {
+        "path",
+        "kind",
+        "sha256",
+        "mode",
+        "ownership",
+        "proof_policy",
+    }
+    if (
+        not isinstance(postcondition, dict)
+        or set(postcondition) != required_postcondition_fields
+        or postcondition.get("path") != instruction_surface
+        or postcondition.get("kind") != "file"
+        or postcondition.get("ownership") != "business_preserved"
+        or postcondition.get("proof_policy")
+        != "adapter_proven_complement_bytes_exact"
+    ):
+        raise ValueError("supervised migration protected postcondition is invalid")
+
+    matching_writes = [
+        item for item in write_set if item.get("path") == instruction_surface
+    ]
+    if len(matching_writes) != 1:
+        raise ValueError("supervised migration instruction write is not unique")
+    instruction_write = matching_writes[0]
+    proof_preimage_mode = proof_operation.get("preimage_mode")
+    proof_postimage_mode = proof_operation.get("postimage_mode")
+    normalized_proof_modes = (
+        (
+            int(proof_preimage_mode, 8) & 0o7777,
+            int(proof_postimage_mode, 8) & 0o7777,
+        )
+        if proof_preimage_mode in {"100644", "100755"}
+        and proof_postimage_mode in {"100644", "100755"}
+        else (None, None)
+    )
+    if (
+        instruction_write.get("operation") != "supervised_transform"
+        or instruction_write.get("ownership") != "business_preserved"
+        or instruction_write.get("proof_policy")
+        != "adapter_proven_complement_bytes_exact"
+        or instruction_write.get("adapter_proof_sha256") != proof_sha256
+        or postcondition.get("sha256")
+        != instruction_write.get("postimage_sha256")
+        or postcondition.get("mode") != instruction_write.get("postimage_mode")
+        or proof_operation.get("preimage_sha256")
+        != instruction_write.get("preimage_sha256")
+        or normalized_proof_modes[0] != instruction_write.get("preimage_mode")
+        or proof_operation.get("postimage_sha256")
+        != instruction_write.get("postimage_sha256")
+        or normalized_proof_modes[1] != instruction_write.get("postimage_mode")
+    ):
+        raise ValueError("supervised migration instruction write proof is invalid")
+
+    protected = plan.get("protected_business_surfaces")
+    matching_protected = [
+        item
+        for item in protected or []
+        if isinstance(item, dict) and item.get("planned_write") is True
+    ]
+    if len(matching_protected) != 1:
+        raise ValueError("supervised migration planned protected surface is not unique")
+    protected_instruction = matching_protected[0]
+    if (
+        protected_instruction.get("path") != instruction_surface
+        or protected_instruction.get("ownership") != "business_preserved"
+        or protected_instruction.get("proof_policy")
+        != "adapter_proven_complement_bytes_exact"
+        or protected_instruction.get("preimage_sha256")
+        != instruction_write.get("preimage_sha256")
+        or protected_instruction.get("preimage_mode")
+        != instruction_write.get("preimage_mode")
+        or protected_instruction.get("postimage_sha256")
+        != instruction_write.get("postimage_sha256")
+        or protected_instruction.get("postimage_mode")
+        != instruction_write.get("postimage_mode")
+    ):
+        raise ValueError("supervised migration planned protected proof is invalid")
+    return authorization, instruction_write, protected_instruction
+
+
 def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
     expected_binding = (plan.get("target_git_state") or {}).get("target_binding")
     requested_target = Path(os.path.abspath(os.fspath(target.expanduser())))
     verify_target_binding(requested_target, expected_binding)
-    if plan.get("decision") != "automatic_migration_available":
+    decision = plan.get("decision")
+    supervised_authorization: tuple[
+        dict[str, Any], dict[str, Any], dict[str, Any]
+    ] | None = None
+    if decision == "supervised_migration_available":
+        supervised_authorization = validate_supervised_authorization(plan)
+    elif decision != "automatic_migration_available":
         raise ValueError(
-            f"migration plan is not writable: decision={plan.get('decision')}"
+            f"migration plan is not writable: decision={decision}"
         )
     if plan.get("can_apply") is not True:
         raise ValueError(
@@ -3874,6 +4164,11 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
             "migration plan digest mismatch: "
             f"expected={expected_plan_sha256}; actual={actual_plan_sha256}"
         )
+    if supervised_authorization is not None and (
+        plan.get("operation_sha256") != actual_plan_sha256
+        or plan.get("operation_sha256") != expected_plan_sha256
+    ):
+        raise ValueError("supervised migration operation digest mismatch")
     verify_target_git_state(requested_target, plan)
     operation_sets: dict[str, list[dict[str, Any]]] = {}
     for field in ("write_set", "delete_set", "move_set"):
@@ -3950,9 +4245,24 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
     if len(mutation_paths) != len(set(mutation_paths)):
         raise ValueError("migration plan contains duplicate or overlapping mutation paths")
     mutation_path_set = set(mutation_paths)
+    supervised_protected_path = (
+        supervised_authorization[2]["path"]
+        if supervised_authorization is not None
+        else None
+    )
     for item in protected:
         relative = _safe_relative_path(item.get("path")).as_posix()
-        if relative in mutation_path_set or item.get("planned_write") is not False:
+        if relative in mutation_path_set:
+            if (
+                supervised_authorization is None
+                or relative != supervised_protected_path
+                or item.get("planned_write") is not True
+            ):
+                raise ValueError(
+                    f"protected business surface overlaps the mutation set: {relative}"
+                )
+            continue
+        if item.get("planned_write") is not False:
             raise ValueError(
                 f"protected business surface overlaps the mutation set: {relative}"
             )
@@ -3968,10 +4278,15 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
         for item in operation_sets["write_set"]:
             state = secure_target.file_state(item.get("path"))
             expected = item.get("preimage_sha256")
+            expected_identity = item.get("preimage_identity")
             if expected is None:
                 if state["kind"] != "absent":
                     raise ValueError(
                         f"migration create path appeared after planning: {item.get('path')}"
+                    )
+                if expected_identity is not None:
+                    raise ValueError(
+                        f"migration create identity is invalid: {item.get('path')}"
                     )
                 continue
             if state.get("sha256") != expected:
@@ -3986,6 +4301,21 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
                     f"migration preimage mode changed: {item.get('path')}: "
                     f"expected={item.get('preimage_mode')}; actual={state.get('mode')}"
                 )
+            if expected_identity is not None:
+                if (
+                    not isinstance(expected_identity, dict)
+                    or set(expected_identity) != {"st_dev", "st_ino"}
+                    or any(
+                        not isinstance(expected_identity.get(field), int)
+                        or isinstance(expected_identity.get(field), bool)
+                        for field in ("st_dev", "st_ino")
+                    )
+                    or state.get("st_dev") != expected_identity.get("st_dev")
+                    or state.get("st_ino") != expected_identity.get("st_ino")
+                ):
+                    raise ValueError(
+                        f"migration preimage identity changed: {item.get('path')}"
+                    )
         for item in operation_sets["delete_set"]:
             state = secure_target.file_state(item.get("path"))
             if state.get("sha256") != item.get("preimage_sha256"):
@@ -4011,6 +4341,8 @@ def verify_plan_preimages(target: Path, plan: dict[str, Any]) -> None:
                     f"migration move destination preimage hash changed: {item.get('destination')}"
                 )
         for item in protected:
+            if item.get("planned_write") is True:
+                continue
             expected = item.get("preimage_sha256")
             state = secure_target.file_state(item.get("path"))
             if not isinstance(expected, str) or state.get("sha256") != expected:

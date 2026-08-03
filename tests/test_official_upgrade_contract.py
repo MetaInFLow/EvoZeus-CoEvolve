@@ -19,7 +19,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "688c156bfaebc4ed78508bfc93411b0bb5a53827f3c300e5668a765f8f7c5360"
+PROTOCOL_SHA256 = "b4ecf070c779d4f30b860975b595b689b1bc89b57db477d391319e6def4af589"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 LEGACY_PREFLIGHT_SHA256 = (
     "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1"
@@ -905,7 +905,7 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
             {
                 "identity": "legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0",
                 "active_for_current": True,
-                "runtime_apply": "not_implemented",
+                "runtime_apply": "trusted_kernel_exact_apply",
                 "static_write_set": [
                     {
                         "target_path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
@@ -913,6 +913,10 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
                     },
                     {
                         "target_path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+                        "type": "create_exact",
+                    },
+                    {
+                        "target_path": ".evozeus-wrapper/docs/migrations/reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md",
                         "type": "create_exact",
                     },
                     {
@@ -949,6 +953,28 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
     ]
     assert profile["current_migration_record"] == profile["migration_records"][0]
 
+    legacy_profile = json.loads(
+        (
+            ROOT
+            / "contracts/v1/migrations/profiles/"
+            "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert legacy_profile["release_lineage_records"] == [
+        ".evozeus-wrapper/docs/migrations/"
+        "harness-skill-v1.0.0-to-v1.1.0.md"
+    ]
+    assert legacy_profile["migration_records"] == [
+        ".evozeus-wrapper/docs/migrations/"
+        "reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md"
+    ]
+    assert legacy_profile["current_migration_record"] == legacy_profile[
+        "migration_records"
+    ][0]
+    assert legacy_profile["applied_lineage"]["target_path"] == legacy_profile[
+        "current_migration_record"
+    ]
+
 
 @pytest.mark.parametrize(
     "path",
@@ -959,6 +985,7 @@ def test_current_official_upgrade_catalog_is_hash_closed() -> None:
         verifier.LEGACY_ENVELOPE_SCHEMA_REL,
         verifier.LEGACY_ADAPTER_SCHEMA_REL,
         verifier.LEGACY_PROFILE_SCHEMA_REL,
+        verifier.BUNDLE_PREFIX + verifier.LEGACY_APPLIED_LINEAGE_ARTIFACT_REL,
         (
             "contracts/v1/migrations/profiles/"
             "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
@@ -1237,6 +1264,53 @@ def test_supervised_profile_cannot_rebind_the_frozen_preflight_artifact(
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_path", ".evozeus-wrapper/docs/migrations/forged.md"),
+        ("profile", "forged-profile@v1.0.0"),
+        ("retained_complement_sha256", "0" * 64),
+        ("rollback", "no_snapshot"),
+    ],
+)
+def test_supervised_applied_lineage_semantics_cannot_be_rebound(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    profile_path = (
+        root
+        / "contracts/v1/migrations/profiles/"
+        "legacy-v0.14-three-section-to-canonical-v1.1-v1.json"
+    )
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["applied_lineage"][field] = value
+    _write_json(profile_path, profile)
+    _rebind_filesystem_manifest(root)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="reviewed legacy applied lineage is invalid",
+    ):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
+
+
+def test_supervised_applied_lineage_artifact_cannot_be_rebound_by_manifest(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    artifact = root / "contracts/v1" / verifier.LEGACY_APPLIED_LINEAGE_ARTIFACT_REL
+    artifact.write_bytes(b"forged applied lineage\n")
+    _rebind_filesystem_manifest(root)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="reviewed legacy applied lineage artifact is not manifest-bound",
+    ):
+        verifier.verify_catalog(verifier.FilesystemStore(root))
+
+
+@pytest.mark.parametrize(
     "path",
     [
         verifier.LEGACY_ENVELOPE_REL,
@@ -1258,6 +1332,51 @@ def test_legacy_trust_rotation_requires_a_protected_source_pr(path: str) -> None
         match="trusted base authority|migration consumer",
     ):
         verifier.verify_candidate(_base_store(), changes, head_sha="6" * 40)
+
+
+def test_supervised_v12_schema_requires_source_first_authority_rotation() -> None:
+    schema_path = (
+        "contracts/v1/migrations/schemas/"
+        "supervised-legacy-profile-v2.schema.json"
+    )
+    changes = {
+        schema_path: _candidate_blob(
+            schema_path,
+            b'{"schema_version":"candidate-v2"}\n',
+            status="added",
+        )
+    }
+    protocol = verifier.load_protocol(_base_store())
+
+    assert verifier.classify_candidate_changes(protocol, changes) == (
+        "rotation_required"
+    )
+    report = verifier.verify_classified_pull_request(
+        _base_store(),
+        changes,
+        head_sha="7" * 40,
+        repository="MetaInFLow/EvoZeus-CoEvolve",
+        construction_resolver=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("rotation classification must not inspect construction data")
+        ),
+    )
+    assert report["status"] == "rotation_required"
+    assert report["candidate_files_executed"] is False
+
+    profile_path = (
+        "contracts/v1/migrations/profiles/"
+        "legacy-v0.14-three-section-to-canonical-v1.2-v2.json"
+    )
+    mixed = {
+        **changes,
+        profile_path: _candidate_blob(
+            profile_path,
+            b'{"schema_version":"candidate-v2-profile"}\n',
+            status="added",
+        ),
+    }
+    with pytest.raises(verifier.VerificationError, match="must be split"):
+        verifier.classify_candidate_changes(protocol, mixed)
 
 
 def test_candidate_protocol_cannot_reclassify_a_legacy_trust_rotation_as_data() -> None:
@@ -1432,8 +1551,12 @@ def test_repository_history_gate_verifies_every_immutable_closure() -> None:
     assert report["head"] == head_sha
     assert report["immutable_closures"] == 2
     assert report["construction_revisions"] == [
-        "44d1fbdefc1e1de47a35c3ca39d2ba083661d569",
-        "ee199b5d50bd12b26d8150538a85b1e959cadf0a",
+        json.loads(path.read_text(encoding="utf-8"))["source"][
+            "construction_revision"
+        ]
+        for path in sorted(
+            BUNDLE.glob("migrations/history/harness-skill/v*/closure.json")
+        )
     ]
 
 
@@ -1536,9 +1659,15 @@ def test_closure_release_status_does_not_claim_checkpoint_is_a_release() -> None
         "release_status": "unreleased_exact_snapshot",
         "required_release": None,
     }
+    v11_revision = v11["source"]["construction_revision"]
+    assert re.fullmatch(r"[0-9a-f]{40}", v11_revision)
+    assert subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", v11_revision, "HEAD"],
+        check=False,
+    ).returncode == 0
     assert v11["source"] == {
         "repository": "MetaInFLow/EvoZeus-CoEvolve",
-        "construction_revision": "ee199b5d50bd12b26d8150538a85b1e959cadf0a",
+        "construction_revision": v11_revision,
         "release_status": "release_required_for_apply",
         "required_release": "v0.15.0",
     }
@@ -3566,9 +3695,9 @@ def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> N
     test_commands = _job_commands(test_job)
     assert "python -m pip install --require-hashes -r requirements-commonmark.lock" in test_commands
     assert test_commands.index("--require-hashes -r requirements-commonmark.lock") < test_commands.index(
-        "python -m pytest -q"
+        "python scripts/evozeus_test.py -q"
     )
-    assert "python -m pytest -q" in test_commands
+    assert "python scripts/evozeus_test.py -q" in test_commands
     assert "verify-base" not in test_commands
     assert "verify-release" not in test_commands
     assert all("actions/checkout@" not in step.get("uses", "") for step in publish["steps"])

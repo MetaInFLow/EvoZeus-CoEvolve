@@ -241,16 +241,26 @@ python3 scripts/evozeus_wrapper.py harness migrate-layout \
 python3 scripts/evozeus_wrapper.py harness migrate-layout \
   --target /absolute/path/to/target-skill-or-kit \
   --latest-version v0.15.0 \
-  --approve-plan 'sha256:<exact-plan-digest>' \
+  --approve-plan 'sha256:<operation_sha256-or-plan_sha256>' \
   --json
 
 python3 scripts/evozeus_wrapper.py harness upgrade-all \
   --latest-version v0.15.0 \
   --dry-run \
   --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version v0.15.0 \
+  --approve \
+  --approve-plan 'sha256:<exact-batch-plan-digest>' \
+  --json
 ```
 
-Apply only after the plan has an automatic versioned profile, no blockers, and the user approves its exact `plan_sha256`. Historical headings, signatures, paths, and regex matches remain read-only discovery candidates with `writes=false`. The currently supported automatic profile upgrades exact canonical Harness Skill v1.0 artifacts to v1.1 while preserving the instruction surface byte-for-byte.
+Apply only after a verified versioned profile has no blockers and the user approves its applicable exact digest. Canonical v1.0→v1.1 uses automatic `plan_sha256` approval and preserves the instruction surface byte-for-byte. The reviewed v0.14 three-section bridge uses `decision=supervised_migration_available` plus exact `operation_sha256`; its hash-bound CommonMark adapter retires only the three proven legacy sections, preserves the remaining business-byte complement, and inserts one canonical Harness Skill activation block. Historical headings, frontmatter, paths, and regex matches cannot grant this authority and remain read-only discovery evidence when the exact profile does not match.
+
+Supervised `one_time` approval exists only in the current CLI invocation and is never persisted. Successful apply changes the preimage and makes replay against the applied target fail. An owner who explicitly rolls back and later supplies the digest again has made a new explicit approval in a new invocation.
+
+Read `release_lineage_records` as the shared current-release history and `migration_records/current_migration_record` as the actual arrival receipt. The reviewed v0.14 bridge creates a dedicated applied-lineage record bound to its exact profile and retained complement; fresh attach does not create it and canonical automatic profiles do not reference it. Final structure verification executes only the trusted-release closure preflight and exact notice source, then repeats the full target postcondition; target-owned Python is never part of migration authority.
 
 For wrapper `v0.10.0+`, treat target-local and user-level hooks as separate capabilities:
 

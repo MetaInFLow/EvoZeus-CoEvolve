@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts import evozeus_harness_migration as migration_kernel
+from scripts import evozeus_wrapper as wrapper_cli
 from scripts import evozeus_wrapper_lifecycle as lifecycle
 from scripts.evozeus_wrapper_bootstrap import (
     build_evolution_section,
@@ -96,26 +97,6 @@ from scripts.evozeus_wrapper_preflight import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_wrapper_cli_for_test():
-    scripts_dir = str(ROOT / "scripts")
-    spec = importlib.util.spec_from_file_location(
-        "evozeus_wrapper_cli_test",
-        ROOT / "scripts/evozeus_wrapper.py",
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load evozeus_wrapper.py for CLI tests")
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, scripts_dir)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path.remove(scripts_dir)
-    return module
-
-
-wrapper_cli = load_wrapper_cli_for_test()
 
 
 def trusted_attachment_bundle() -> dict[str, object]:
@@ -536,6 +517,53 @@ class LifecycleBasicsTest(unittest.TestCase):
 
     def test_harness_migrate_layout_cli_returns_failure_for_rollback_failed(self):
         self.assert_single_target_cli_rollback_failure_exits_nonzero("migrate-layout")
+
+    def test_harness_migrate_layout_cli_forwards_exact_operation_approval(self):
+        target = Path("/synthetic/target")
+        operation_sha256 = "sha256:" + "a" * 64
+        boundary = {
+            "repo_root": str(target),
+            "requested_is_repo_root": True,
+            "eligible": True,
+        }
+        argv = [
+            "evozeus_wrapper.py",
+            "harness",
+            "migrate-layout",
+            "--target",
+            str(target),
+            "--latest-version",
+            "v0.15.0",
+            "--approve-plan",
+            operation_sha256,
+            "--json",
+        ]
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", argv), patch.object(
+            wrapper_cli,
+            "repository_target",
+            return_value=(target, boundary),
+        ), patch.object(
+            wrapper_cli,
+            "require_repo_admin",
+            return_value={"permission": "ADMIN"},
+        ), patch.object(
+            wrapper_cli,
+            "migrate_target_layout",
+            return_value={
+                "status": "applied",
+                "writes": True,
+                "migration_required": False,
+            },
+        ) as migrate, contextlib.redirect_stdout(stdout):
+            returncode = wrapper_cli.main()
+
+        self.assertEqual(returncode, 0)
+        migrate.assert_called_once_with(
+            target=target,
+            latest_version="v0.15.0",
+            approved_plan_sha256=operation_sha256,
+        )
 
     def test_single_target_harness_mutation_unknown_status_fails_closed(self):
         self.assertEqual(

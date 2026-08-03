@@ -47,4 +47,4 @@ metadata:
 
 ## 维护闭环
 
-Harness 维护采用 Issue → design doc → focused implementation → tests → UAT → Release → rollback record。目标业务规则始终由业务入口拥有。历史标题、frontmatter、regex 命中或 terminal signature 只形成只读 discovery candidate；缺少受信 migration profile、stable block、exact preimage hash 或 adapter identity 时必须进入 manual review 且保持零写入。
+Harness 维护采用 Issue → design doc → focused implementation → tests → UAT → Release → rollback record。目标业务规则始终由业务入口拥有。历史标题、frontmatter、regex 命中或 terminal signature 只形成只读 discovery candidate。已安装 canonical v1.1 的 activation block 缺失或损坏时进入 manual repair。对于本 Skill 尚未存在的 reviewed v0.14→v1.1 transition，block absent 只能作为 CoEvolve external supervised profile 的受信 precondition；冻结 envelope、CommonMark AST、完整 `SKILL.md` preimage、retained complement 与 exact operation approval 全部通过后才可插入。其他证据缺失场景保持零写入并进入 manual review。
