@@ -27,6 +27,36 @@
       "scripts/evozeus_wrapper_global_hook.py",
       "scripts/evozeus_wrapper_lifecycle.py"
     ],
+    "construction_source_allowlist": {
+      "prefixes": [
+        "templates/target/"
+      ],
+      "paths": [
+        "scripts/evozeus_notice.py",
+        "scripts/evozeus_wrapper_preflight.py"
+      ]
+    },
+    "pull_request_classification": {
+      "authority_rotation_prefixes": [
+        ".github/workflows/",
+        "contracts/v1/migrations/protocols/",
+        "contracts/v1/migrations/schemas/"
+      ],
+      "authority_rotation_paths": [
+        "scripts/evozeus_official_upgrade_verify.py",
+        "scripts/evozeus_harness_migration.py",
+        "scripts/evozeus_wrapper.py",
+        "scripts/evozeus_wrapper_global_hook.py",
+        "scripts/evozeus_wrapper_lifecycle.py"
+      ],
+      "data_candidate_prefixes": [
+        "contracts/v1/migrations/history/",
+        "contracts/v1/migrations/profiles/"
+      ],
+      "data_candidate_paths": [
+        "contracts/v1/migrations/harness-migration-contract-v1.json"
+      ]
+    },
     "reject_symlinks": true,
     "reject_submodules": true,
     "reject_unknown_operations": true

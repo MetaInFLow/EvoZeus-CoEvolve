@@ -246,17 +246,17 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "4cbf7cffb2cdf6a68073d7780d3aa3293d41eeffc02b5a2a7ef76fc0dfc10685",
+      "sha256": "78a74daad0956bb5b801f2cf5f574d75fcc06fff2e2b1df3e5e2fd7506669ea5",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "40d7815c56fca571dac12f4d7c57e2018734973ed2957b0e8a9c7476e9da96a0",
+      "sha256": "3206f8cc25b626659415493badeedfaaf46af0fd0dea793ed1425cbe6f5c0ba0",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/protocols/official-upgrade-protocol-v1.json",
-      "sha256": "824a592275cdf95ee5c7cf2841fda5695bf0ba57b2faa7d441261ee2a72767c3",
+      "sha256": "fa98d61768b25dd7fa5dbb491c5b665572e24672d20d5b8d18fdff7eb1e917cf",
       "role": "official-upgrade-protocol"
     },
     {

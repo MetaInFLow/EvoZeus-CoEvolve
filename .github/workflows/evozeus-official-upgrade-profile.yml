@@ -3,10 +3,6 @@ name: EvoZeus Official Upgrade Profile
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
-    paths:
-      - "contracts/v1/migrations/**"
-      - "scripts/evozeus_official_upgrade_verify.py"
-      - ".github/workflows/evozeus-official-upgrade-profile.yml"
 
 permissions:
   contents: read
@@ -16,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-data-only-profile:
+  classify-and-verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -25,7 +21,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
-      - name: Verify candidate blobs as data
+      - name: Classify full diff and verify data-only candidates
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-

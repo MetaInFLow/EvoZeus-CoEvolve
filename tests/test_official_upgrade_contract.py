@@ -15,7 +15,7 @@ from scripts import evozeus_official_upgrade_verify as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts/v1"
-PROTOCOL_SHA256 = "824a592275cdf95ee5c7cf2841fda5695bf0ba57b2faa7d441261ee2a72767c3"
+PROTOCOL_SHA256 = "fa98d61768b25dd7fa5dbb491c5b665572e24672d20d5b8d18fdff7eb1e917cf"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
 
 
@@ -100,8 +100,19 @@ def _bind_candidate_manifest(
     changes: dict[str, verifier.CandidateBlob],
     *,
     new_roles: dict[str, str] | None = None,
+    bundle_version: str | None = None,
+    source_revision: str | None = None,
 ) -> None:
-    manifest = json.loads((root / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    current = changes.get(CONTRACT_MANIFEST_REL)
+    if current is not None:
+        assert current.loader is not None
+        manifest = json.loads(current.loader().decode("utf-8"))
+    else:
+        manifest = json.loads((root / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    if bundle_version is not None:
+        manifest["bundle_version"] = bundle_version
+    if source_revision is not None:
+        manifest["source_revision"] = source_revision
     entries = {entry["path"]: dict(entry) for entry in manifest["files"]}
     for relative, entry in list(entries.items()):
         repository_path = "contracts/v1/" + relative
@@ -113,7 +124,11 @@ def _bind_candidate_manifest(
             assert change.loader is not None
             data = change.loader()
         else:
-            data = (root / repository_path).read_bytes()
+            base_path = root / repository_path
+            if not base_path.exists():
+                del entries[relative]
+                continue
+            data = base_path.read_bytes()
         entry["sha256"] = _sha256(data)
     for repository_path, change in changes.items():
         if (
@@ -168,6 +183,15 @@ def _candidate_star(
         "harness_skill_version": "v1.2.0",
     }
     changes: dict[str, verifier.CandidateBlob] = {}
+    migration_contract = json.loads(
+        (root / verifier.MIGRATION_CONTRACT_REL).read_text(encoding="utf-8")
+    )
+    migration_contract["current_harness_skill_version"] = "v1.2.0"
+    migration_contract_data = _json_bytes(migration_contract)
+    changes[verifier.MIGRATION_CONTRACT_REL] = _candidate_blob(
+        verifier.MIGRATION_CONTRACT_REL,
+        migration_contract_data,
+    )
     construction_files: dict[str, verifier.ConstructionBlob] = {}
     skill_target = ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
     skill_source = "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"
@@ -186,6 +210,9 @@ def _candidate_star(
         old_artifact = (Path(v11_relative).parent / artifact).as_posix()
         new_artifact = (Path(v12_relative).parent / artifact).as_posix()
         data = (root / old_artifact).read_bytes()
+        if item["target_path"] == ".evozeus-wrapper/contracts/harness-migration-contract-v1.json":
+            data = migration_contract_data
+            item["sha256"] = _sha256(data)
         if item["target_path"] == skill_target:
             skill_before = next(
                 entry for entry in v11["files"] if entry["target_path"] == skill_target
@@ -252,6 +279,19 @@ def _candidate_star(
         )
     )
     assert skill_before is not None and skill_after is not None
+    migration_contract_target = (
+        ".evozeus-wrapper/contracts/harness-migration-contract-v1.json"
+    )
+    migration_contract_before = next(
+        entry
+        for entry in v11["files"]
+        if entry["target_path"] == migration_contract_target
+    )
+    migration_contract_after = next(
+        entry
+        for entry in v12["files"]
+        if entry["target_path"] == migration_contract_target
+    )
     changes[v12_relative] = _candidate_blob(
         v12_relative,
         _json_bytes(v12),
@@ -283,6 +323,15 @@ def _candidate_star(
                 ),
                 "sha256": skill_after["sha256"],
                 "mode": skill_after["mode"],
+            }
+        if operation["target_path"] == migration_contract_target:
+            operation["postimage"] = {
+                "artifact_path": (
+                    "migrations/history/harness-skill/v1.2.0/"
+                    + str(migration_contract_after["artifact_path"])
+                ),
+                "sha256": migration_contract_after["sha256"],
+                "mode": migration_contract_after["mode"],
             }
         if operation["target_path"] == ".evozeus-wrapper/wrapper.json":
             for action in operation["patch"]:
@@ -344,6 +393,23 @@ def _candidate_star(
         },
         "automatic": True,
         "operations": [
+            {
+                "change_id": "replace:" + migration_contract_target,
+                "type": "replace_exact",
+                "target_path": migration_contract_target,
+                "preimage": {
+                    "sha256": migration_contract_before["sha256"],
+                    "mode": migration_contract_before["mode"],
+                },
+                "postimage": {
+                    "artifact_path": (
+                        "migrations/history/harness-skill/v1.2.0/"
+                        + str(migration_contract_after["artifact_path"])
+                    ),
+                    "sha256": migration_contract_after["sha256"],
+                    "mode": migration_contract_after["mode"],
+                },
+            },
             {
                 "change_id": "replace:" + skill_target,
                 "type": "replace_exact",
@@ -431,7 +497,12 @@ def _candidate_star(
         verifier.PROFILES_CURRENT_REL,
         _json_bytes(profile_pointer),
     )
-    _bind_candidate_manifest(root, changes)
+    _bind_candidate_manifest(
+        root,
+        changes,
+        bundle_version="v1.3.0",
+        source_revision="v0.16.0",
+    )
 
     def resolver(
         repository: str,
@@ -439,15 +510,125 @@ def _candidate_star(
         resolved_head: str,
         source_paths: frozenset[str],
     ) -> verifier.ConstructionRevisionEvidence:
+        if revision == construction_revision:
+            resolved_files = {
+                path: construction_files[path] for path in source_paths
+            }
+        else:
+            historical_closure = next(
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (
+                    root / "contracts/v1/migrations/history/harness-skill"
+                ).glob("v*/closure.json")
+                if json.loads(path.read_text(encoding="utf-8"))["source"]
+                ["construction_revision"]
+                == revision
+            )
+            historical_root = (
+                root
+                / "contracts/v1/migrations/history/harness-skill"
+                / historical_closure["closure_version"]
+            )
+            historical_entries = {
+                item["source_path"]: item
+                for item in historical_closure["files"]
+                if item.get("source_binding") == "construction_revision"
+            }
+            resolved_files = {
+                path: verifier.ConstructionBlob(
+                    path=path,
+                    mode=(
+                        "100755"
+                        if (
+                            historical_root
+                            / historical_entries[path]["artifact_path"]
+                        ).stat().st_mode
+                        & 0o100
+                        else "100644"
+                    ),
+                    data=(
+                        historical_root / historical_entries[path]["artifact_path"]
+                    ).read_bytes(),
+                )
+                for path in source_paths
+            }
         return verifier.ConstructionRevisionEvidence(
             repository=repository,
             revision=revision,
             head_sha=resolved_head,
             is_ancestor=True,
-            files={path: construction_files[path] for path in source_paths},
+            files=resolved_files,
         )
 
     return changes, resolver, head_sha
+
+
+def _fault_candidate_release_binding(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+    fault: str,
+) -> None:
+    closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    )
+    closure_blob = changes[closure_path]
+    assert closure_blob.loader is not None
+    closure = json.loads(closure_blob.loader().decode("utf-8"))
+    if fault == "contract_bundle_version":
+        closure["state"]["contract_bundle_version"] = "v9.9.9"
+    elif fault == "required_release":
+        closure["source"]["required_release"] = "v0.17.0"
+    elif fault == "target_wrapper_version":
+        closure["state"]["target_wrapper_version"] = "v0.17.0"
+    elif fault == "current_harness_skill_version":
+        contract_blob = changes[verifier.MIGRATION_CONTRACT_REL]
+        assert contract_blob.loader is not None
+        contract = json.loads(contract_blob.loader().decode("utf-8"))
+        contract["current_harness_skill_version"] = "v9.9.9"
+        changes[verifier.MIGRATION_CONTRACT_REL] = _candidate_blob(
+            verifier.MIGRATION_CONTRACT_REL,
+            _json_bytes(contract),
+        )
+    else:
+        raise AssertionError(f"unknown release binding fault: {fault}")
+
+    closure_data = _json_bytes(closure)
+    closure_sha256 = _sha256(closure_data)
+    changes[closure_path] = _candidate_blob(
+        closure_path,
+        closure_data,
+        status="added",
+    )
+    history_pointer_blob = changes[verifier.HISTORY_CURRENT_REL]
+    assert history_pointer_blob.loader is not None
+    history_pointer = json.loads(history_pointer_blob.loader().decode("utf-8"))
+    history_pointer["entries"][0]["sha256"] = closure_sha256
+    changes[verifier.HISTORY_CURRENT_REL] = _candidate_blob(
+        verifier.HISTORY_CURRENT_REL,
+        _json_bytes(history_pointer),
+    )
+    profile_pointer_blob = changes[verifier.PROFILES_CURRENT_REL]
+    assert profile_pointer_blob.loader is not None
+    profile_pointer = json.loads(profile_pointer_blob.loader().decode("utf-8"))
+    for entry in profile_pointer["entries"]:
+        profile_path = "contracts/v1/" + entry["path"]
+        profile_blob = changes[profile_path]
+        assert profile_blob.loader is not None
+        profile = json.loads(profile_blob.loader().decode("utf-8"))
+        profile["to_closure"]["sha256"] = closure_sha256
+        profile_data = _json_bytes(profile)
+        changes[profile_path] = _candidate_blob(
+            profile_path,
+            profile_data,
+            status=profile_blob.status,
+            mode=profile_blob.mode,
+        )
+        entry["sha256"] = _sha256(profile_data)
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(profile_pointer),
+    )
+    _bind_candidate_manifest(root, changes)
 
 
 def _bind_candidate_bundle_source(
@@ -696,6 +877,16 @@ def test_protocol_declares_the_exact_protected_code_and_cumulative_ledger_policy
         protocol["target_policy"]["ledger_history"]
         == "one_current_hop_plus_zero_or_more_prior_records"
     )
+    assert protocol["candidate_policy"]["construction_source_allowlist"] == {
+        "prefixes": list(verifier.CONSTRUCTION_SOURCE_PREFIXES),
+        "paths": list(verifier.CONSTRUCTION_SOURCE_PATHS),
+    }
+    assert protocol["candidate_policy"]["pull_request_classification"] == {
+        "authority_rotation_prefixes": list(verifier.AUTHORITY_ROTATION_PREFIXES),
+        "authority_rotation_paths": list(verifier.AUTHORITY_ROTATION_PATHS),
+        "data_candidate_prefixes": list(verifier.DATA_CANDIDATE_PREFIXES),
+        "data_candidate_paths": list(verifier.DATA_CANDIDATE_PATHS),
+    }
 
 
 def test_migration_ledger_uses_closure_axis_and_sorts_operations_deterministically() -> None:
@@ -761,6 +952,111 @@ def test_frozen_closure_artifacts_equal_the_declared_construction_revision(
         )
         assert historical.returncode == 0, (version, source_path, historical.stderr)
         assert historical.stdout == (closure_path.parent / artifact_path).read_bytes()
+
+
+def test_repository_history_gate_verifies_every_immutable_closure() -> None:
+    head_sha = subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+    report = verifier.verify_repository_history(
+        _base_store(),
+        head_sha=head_sha,
+        construction_resolver=verifier._local_construction_revision_resolver(ROOT),
+    )
+
+    assert report["head"] == head_sha
+    assert report["immutable_closures"] == 2
+    assert report["construction_revisions"] == [
+        "44d1fbdefc1e1de47a35c3ca39d2ba083661d569",
+        "ee199b5d50bd12b26d8150538a85b1e959cadf0a",
+    ]
+
+
+def test_local_history_resolver_distinguishes_two_phase_merge_squash_and_side_branch(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "history-graph"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "EvoZeus Test")
+    git("config", "user.email", "evozeus-test@example.invalid")
+    source = repo / "source.txt"
+    source.write_text("base\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "base")
+
+    source.write_text("two-phase source\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "source first")
+    two_phase_revision = git("rev-parse", "HEAD")
+    (repo / "closure.txt").write_text("data only\n", encoding="utf-8")
+    git("add", "closure.txt")
+    git("commit", "-m", "data only")
+    two_phase_head = git("rev-parse", "HEAD")
+    resolver = verifier._local_construction_revision_resolver(repo)
+    assert resolver(
+        "MetaInFLow/EvoZeus-CoEvolve",
+        two_phase_revision,
+        two_phase_head,
+        frozenset({"source.txt"}),
+    ).is_ancestor
+
+    git("switch", "-c", "merge-source")
+    source.write_text("merge source\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "merge source")
+    merge_revision = git("rev-parse", "HEAD")
+    git("switch", "main")
+    git("merge", "--no-ff", "merge-source", "-m", "merge source history")
+    merge_head = git("rev-parse", "HEAD")
+    assert resolver(
+        "MetaInFLow/EvoZeus-CoEvolve",
+        merge_revision,
+        merge_head,
+        frozenset({"source.txt"}),
+    ).is_ancestor
+
+    git("switch", "-c", "squash-source")
+    source.write_text("squash source\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "squash source")
+    squash_revision = git("rev-parse", "HEAD")
+    git("switch", "main")
+    git("merge", "--squash", "squash-source")
+    git("commit", "-m", "squashed source")
+    squash_head = git("rev-parse", "HEAD")
+    assert not resolver(
+        "MetaInFLow/EvoZeus-CoEvolve",
+        squash_revision,
+        squash_head,
+        frozenset({"source.txt"}),
+    ).is_ancestor
+
+    git("switch", "-c", "unmerged-source")
+    source.write_text("side branch\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "unmerged source")
+    side_revision = git("rev-parse", "HEAD")
+    git("switch", "main")
+    side_head = git("rev-parse", "HEAD")
+    assert not resolver(
+        "MetaInFLow/EvoZeus-CoEvolve",
+        side_revision,
+        side_head,
+        frozenset({"source.txt"}),
+    ).is_ancestor
 
 
 def test_closure_release_status_does_not_claim_checkpoint_is_a_release() -> None:
@@ -1163,13 +1459,9 @@ def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     workflow = (ROOT / verifier.WORKFLOW_REL).read_text(encoding="utf-8")
 
     assert "pull_request_target:" in workflow
-    for protected_path in (
-        "contracts/v1/migrations/**",
-        "scripts/evozeus_official_upgrade_verify.py",
-        ".github/workflows/evozeus-official-upgrade-profile.yml",
-    ):
-        assert f'      - "{protected_path}"\n' in workflow
-    assert '      - "contracts/v1/manifest.json"\n' not in workflow
+    assert "    paths:" not in workflow
+    assert "classify-and-verify:" in workflow
+    assert "Classify full diff and verify data-only candidates" in workflow
     assert "permissions:\n  contents: read\n" in workflow
     assert "pull-requests:" not in workflow
     assert (
@@ -1181,6 +1473,68 @@ def test_pull_request_target_workflow_executes_only_trusted_base_code() -> None:
     assert "github.event.pull_request.head" not in workflow
     assert "verify-pull-request" in workflow
     assert "pip install" not in workflow
+
+
+def test_ordinary_pull_request_is_a_successful_official_upgrade_noop() -> None:
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("ordinary PR classification must not resolve candidate history")
+
+    report = verifier.verify_classified_pull_request(
+        _base_store(),
+        {"README.md": _candidate_blob("README.md", b"ordinary docs change\n")},
+        head_sha="1" * 40,
+        repository="someone/fork",
+        construction_resolver=must_not_resolve,
+    )
+
+    assert report == {
+        "status": "not_applicable",
+        "classification": "not_applicable",
+        "candidate_head": "1" * 40,
+        "candidate_files_executed": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        verifier.VERIFIER_REL,
+        "scripts/evozeus_wrapper_lifecycle.py",
+        ".github/workflows/ci.yml",
+        verifier.PROTOCOL_REL,
+    ],
+)
+def test_authority_or_consumer_pull_request_requires_source_rotation(
+    path: str,
+) -> None:
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("authority rotation must not execute candidate history")
+
+    report = verifier.verify_classified_pull_request(
+        _base_store(),
+        {path: _candidate_blob(path, b"trusted source rotation\n")},
+        head_sha="2" * 40,
+        repository="MetaInFLow/EvoZeus-CoEvolve",
+        construction_resolver=must_not_resolve,
+    )
+
+    assert report["status"] == "rotation_required"
+    assert report["classification"] == "rotation_required"
+    assert report["candidate_files_executed"] is False
+    assert "data-only migration PR" in report["next_step"]
+
+
+def test_main_uat_and_release_workflows_explicitly_run_history_gate() -> None:
+    command = (
+        "python scripts/evozeus_official_upgrade_verify.py "
+        "verify-base --repo-root ."
+    )
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert 'branches: [main, "uat/current"]' in ci
+    assert command in ci
+    assert command in release
 
 
 def test_catalog_requires_a_unique_direct_profile_from_each_historical_closure(
@@ -1223,7 +1577,10 @@ def test_catalog_rejects_an_active_profile_that_does_not_end_at_current(
     }
     _write_json(current_path, current)
 
-    with pytest.raises(verifier.VerificationError, match="point directly to the current"):
+    with pytest.raises(
+        verifier.VerificationError,
+        match="contract_bundle_version|point directly to the current",
+    ):
         verifier.verify_catalog(verifier.FilesystemStore(root))
 
 
@@ -1233,14 +1590,16 @@ def test_candidate_rotates_to_a_direct_to_current_profile_star(
     root = _protocol_v1_base(tmp_path)
     changes, resolver, head_sha = _candidate_star(root)
 
-    report = verifier.verify_candidate(
+    report = verifier.verify_classified_pull_request(
         verifier.FilesystemStore(root),
         changes,
         head_sha=head_sha,
+        repository="MetaInFLow/EvoZeus-CoEvolve",
         construction_resolver=resolver,
     )
 
     assert report["status"] == "verified_candidate"
+    assert report["classification"] == "data_candidate"
     assert report["base_closure_version"] == "v1.1.0"
     assert report["candidate_closure_version"] == "v1.2.0"
 
@@ -1279,6 +1638,33 @@ def test_candidate_rotates_to_a_direct_to_current_profile_star(
     } == {current_record}
 
 
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("contract_bundle_version", "contract_bundle_version"),
+        ("required_release", "required_release"),
+        ("target_wrapper_version", "target_wrapper_version"),
+        ("current_harness_skill_version", "current_harness_skill_version"),
+    ],
+)
+def test_candidate_current_closure_is_cross_bound_to_release_contract_axes(
+    tmp_path: Path,
+    fault: str,
+    message: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    _fault_candidate_release_binding(root, changes, fault)
+
+    with pytest.raises(verifier.VerificationError, match=message):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
 def test_candidate_rejects_an_unbound_non_migration_change(tmp_path: Path) -> None:
     root = _protocol_v1_base(tmp_path)
     changes, resolver, head_sha = _candidate_star(root)
@@ -1313,6 +1699,34 @@ def test_candidate_cannot_change_the_migration_consumer_even_when_closure_bound(
     with pytest.raises(
         verifier.VerificationError,
         match="trusted base authority or migration consumer",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scripts/unreviewed_upgrade_source.py",
+        "docs/unreviewed-governance.md",
+        ".github/workflows/unreviewed-governance.yml",
+    ],
+)
+def test_candidate_construction_sources_are_protocol_allowlisted(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    _attempt_to_bind_protected_consumer_as_skill_source(root, changes, path)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="outside the trusted protocol allowlist",
     ):
         verifier.verify_candidate(
             verifier.FilesystemStore(root),

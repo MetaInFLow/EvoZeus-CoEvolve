@@ -123,7 +123,11 @@ Fresh attach 只在 instruction surface 同时满足“零 canonical markers、�
 
 计划中的 `migration_records` 按 closure semver hop 顺序确定性列出 selected closure diff 要创建的全部累计历史账本；从更早版本直达 current 时允许多条。可信 verifier 必须为每个 active profile 推导唯一 `current_migration_record`。任一字段缺失、相互矛盾或与 verified operations 不一致时，runtime 固定 fail closed。全部 records 都进入存在性、路径安全、write set、batch preflight 与 rollback 校验。
 
-source 变更与新 closure 位于同一 PR 时，`construction_revision` 必须保持为最终 Release Commit 的可达祖先，该 PR 固定使用 merge Commit 合并；squash/rebase 会使单 PR provenance 失效，并阻断 CI、UAT 晋级和 Release。若仓库策略只允许 squash/rebase，则采用两阶段发布：先单独合并 source 变更并取得 canonical reachable Commit，再在后续 data-only PR 中基于该 Commit 冻结 closure 与 profiles。
+trusted verifier、migration consumer、protocol、schema 或仓库治理文件变更固定走两 PR：protected source rotation 先进入 main，data-only migration PR 随后基于该 canonical reachable Commit 冻结 closure 与 profiles；该拆分与 merge strategy 无关。official PR workflow 使用 trusted base code 对完整 diff 分类，普通 PR 输出 `not_applicable`，protected source 输出 `rotation_required` 且不执行候选，data-only migration 才执行 candidate verifier。workflow 覆盖全部 PR，便于设置 required check；当前 `main` ruleset 的外部 GitHub 配置继续承担最终 merge gate。
+
+candidate construction source 的完整 allowlist 写入 trusted protocol；trusted verifier 只接受 `templates/target/` 与协议逐项审定的 source scripts。仓库 workflow/治理文件、普通 docs、未知 scripts 与未声明路径无法通过 closure 绑定取得候选写入资格。
+
+每个 immutable closure 的 `construction_revision` 都必须保持为最终 stacked landing 与 Release Commit 的可达祖先，construction-bound source 的冻结 bytes 与 Git mode 必须匹配。main/UAT CI 和 Release 显式执行该历史门禁。merge Commit 或 source-first 后续 data-only Commit 可保留 ancestry；squash、rebase、未合并旁支对象和丢失 ancestry 的 stacked landing 会阻断晋级与发布。
 
 版本轴分别记录 target wrapper、contract bundle、Harness Skill、migration protocol/profile 和 artifact release。自动迁移按 closure 状态与 release provenance 匹配，不能仅比较一个 frontmatter 版本字符串。
 

@@ -25,6 +25,7 @@ PROTOCOL_REL = "contracts/v1/migrations/protocols/official-upgrade-protocol-v1.j
 HISTORY_CURRENT_REL = "contracts/v1/migrations/history/harness-skill/current.json"
 PROFILES_CURRENT_REL = "contracts/v1/migrations/profiles/current.json"
 CONTRACT_MANIFEST_REL = "contracts/v1/manifest.json"
+MIGRATION_CONTRACT_REL = "contracts/v1/migrations/harness-migration-contract-v1.json"
 VERIFIER_REL = "scripts/evozeus_official_upgrade_verify.py"
 WORKFLOW_REL = ".github/workflows/evozeus-official-upgrade-profile.yml"
 BUNDLE_PREFIX = "contracts/v1/"
@@ -45,6 +46,25 @@ PROTECTED_BASE_PATH_DECLARATIONS = (
     VERIFIER_REL,
     *sorted(PROTECTED_MIGRATION_CONSUMER_PATHS),
 )
+CONSTRUCTION_SOURCE_PREFIXES = ("templates/target/",)
+CONSTRUCTION_SOURCE_PATHS = (
+    "scripts/evozeus_notice.py",
+    "scripts/evozeus_wrapper_preflight.py",
+)
+AUTHORITY_ROTATION_PREFIXES = (
+    ".github/workflows/",
+    "contracts/v1/migrations/protocols/",
+    "contracts/v1/migrations/schemas/",
+)
+AUTHORITY_ROTATION_PATHS = (
+    VERIFIER_REL,
+    *sorted(PROTECTED_MIGRATION_CONSUMER_PATHS),
+)
+DATA_CANDIDATE_PREFIXES = (
+    "contracts/v1/migrations/history/",
+    "contracts/v1/migrations/profiles/",
+)
+DATA_CANDIDATE_PATHS = (MIGRATION_CONTRACT_REL,)
 ALLOWED_OPERATION_TYPES = {
     "create_exact",
     "replace_exact",
@@ -339,6 +359,22 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
         raise VerificationError(
             "candidate protected base path declaration disagrees with the verifier"
         )
+    if candidate.get("construction_source_allowlist") != {
+        "prefixes": list(CONSTRUCTION_SOURCE_PREFIXES),
+        "paths": list(CONSTRUCTION_SOURCE_PATHS),
+    }:
+        raise VerificationError(
+            "candidate construction source allowlist disagrees with the verifier"
+        )
+    if candidate.get("pull_request_classification") != {
+        "authority_rotation_prefixes": list(AUTHORITY_ROTATION_PREFIXES),
+        "authority_rotation_paths": list(AUTHORITY_ROTATION_PATHS),
+        "data_candidate_prefixes": list(DATA_CANDIDATE_PREFIXES),
+        "data_candidate_paths": list(DATA_CANDIDATE_PATHS),
+    }:
+        raise VerificationError(
+            "candidate pull request classification disagrees with the verifier"
+        )
     if any(candidate.get(field) is not True for field in (
         "reject_symlinks",
         "reject_submodules",
@@ -360,6 +396,35 @@ def load_protocol(store: BlobStore) -> dict[str, Any]:
     if target.get("unknown_or_scattered") != "manual_migration_required_zero_write":
         raise VerificationError("unknown/scattered fallback policy is invalid")
     return protocol
+
+
+def _construction_source_allowed(path: str) -> bool:
+    return path in CONSTRUCTION_SOURCE_PATHS or path.startswith(
+        CONSTRUCTION_SOURCE_PREFIXES
+    )
+
+
+def classify_candidate_changes(
+    protocol: dict[str, Any],
+    changes: dict[str, CandidateBlob],
+) -> str:
+    """Classify a full PR diff using policy already trusted on the base branch."""
+    candidate_policy = protocol.get("candidate_policy")
+    if not isinstance(candidate_policy, dict):
+        raise VerificationError("official upgrade candidate policy is missing")
+    # load_protocol has already required exact agreement with these constants.
+    for path in changes:
+        _safe_relative(path, "candidate changed path")
+        if path in AUTHORITY_ROTATION_PATHS or path.startswith(
+            AUTHORITY_ROTATION_PREFIXES
+        ):
+            return "rotation_required"
+    if any(
+        path in DATA_CANDIDATE_PATHS or path.startswith(DATA_CANDIDATE_PREFIXES)
+        for path in changes
+    ):
+        return "data_candidate"
+    return "not_applicable"
 
 
 def load_pointer(store: BlobStore, relative: str, pointer_id: str) -> list[dict[str, str]]:
@@ -968,6 +1033,7 @@ def verify_catalog(store: BlobStore) -> dict[str, Any]:
     )
     if current_closure.get("closure_version") != current["version"]:
         raise VerificationError("Harness closure current pointer version disagrees with closure")
+    _verify_current_release_bindings(store, current_closure)
     profile_entries = load_pointer(
         store,
         PROFILES_CURRENT_REL,
@@ -1076,10 +1142,10 @@ def _protected_candidate_change(
     return False
 
 
-def _contract_manifest_files(
+def _contract_manifest_document(
     store: BlobStore,
     label: str,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, Any]:
     manifest = _json_file(store, CONTRACT_MANIFEST_REL, label)
     if manifest.get("schema_version") != "evozeus.coevolve.contract-manifest.v1":
         raise VerificationError(f"{label} schema identity is invalid")
@@ -1087,6 +1153,16 @@ def _contract_manifest_files(
         raise VerificationError(f"{label} bundle identity is invalid")
     if manifest.get("source_repository") != "MetaInFLow/EvoZeus-CoEvolve":
         raise VerificationError(f"{label} source repository is invalid")
+    _semver(manifest.get("bundle_version"), f"{label} bundle version")
+    _semver(manifest.get("source_revision"), f"{label} source revision")
+    return manifest
+
+
+def _contract_manifest_files(
+    store: BlobStore,
+    label: str,
+) -> dict[str, dict[str, str]]:
+    manifest = _contract_manifest_document(store, label)
     raw_files = manifest.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         raise VerificationError(f"{label} files are missing")
@@ -1105,6 +1181,242 @@ def _contract_manifest_files(
             "role": role,
         }
     return files
+
+
+def _verify_contract_manifest_digests(
+    store: BlobStore,
+    files: dict[str, dict[str, str]],
+    label: str,
+) -> None:
+    for relative, item in files.items():
+        actual = _sha256(store.read_bytes(BUNDLE_PREFIX + relative))
+        if actual != item["sha256"]:
+            raise VerificationError(
+                f"{label} digest mismatch: {relative}: "
+                f"expected={item['sha256']}; actual={actual}"
+            )
+
+
+def _verify_current_release_bindings(
+    store: BlobStore,
+    current_closure: dict[str, Any],
+) -> None:
+    manifest = _contract_manifest_document(store, "contract manifest")
+    manifest_files = _contract_manifest_files(store, "contract manifest")
+    migration_relative = MIGRATION_CONTRACT_REL.removeprefix(BUNDLE_PREFIX)
+    migration_entry = manifest_files.get(migration_relative)
+    if migration_entry is None or migration_entry.get("role") != "harness-migration-contract":
+        raise VerificationError(
+            "contract manifest does not bind the Harness migration contract"
+        )
+    migration_digest = _sha256(store.read_bytes(MIGRATION_CONTRACT_REL))
+    if migration_digest != migration_entry["sha256"]:
+        raise VerificationError(
+            "contract manifest Harness migration contract digest mismatch"
+        )
+    migration_contract = _json_file(
+        store,
+        MIGRATION_CONTRACT_REL,
+        "Harness migration contract",
+    )
+    if (
+        migration_contract.get("schema_version")
+        != "evozeus.coevolve.harness-migration-contract.v1"
+        or migration_contract.get("contract_id") != "evozeus-harness-migration"
+    ):
+        raise VerificationError("Harness migration contract identity is invalid")
+    state = current_closure.get("state")
+    source = current_closure.get("source")
+    if not isinstance(state, dict) or not isinstance(source, dict):
+        raise VerificationError("current closure release state is missing")
+    if state.get("contract_bundle_version") != manifest.get("bundle_version"):
+        raise VerificationError(
+            "current closure contract_bundle_version disagrees with contract manifest"
+        )
+    if source.get("required_release") != manifest.get("source_revision"):
+        raise VerificationError(
+            "current closure required_release disagrees with contract manifest source_revision"
+        )
+    if state.get("target_wrapper_version") != source.get("required_release"):
+        raise VerificationError(
+            "current closure target_wrapper_version disagrees with required_release"
+        )
+    if (
+        migration_contract.get("current_harness_skill_version")
+        != state.get("harness_skill_version")
+    ):
+        raise VerificationError(
+            "Harness migration current_harness_skill_version disagrees with current closure"
+        )
+
+
+def verify_repository_history(
+    store: BlobStore,
+    *,
+    head_sha: str,
+    construction_resolver: ConstructionRevisionResolver,
+) -> dict[str, Any]:
+    """Verify every manifest-bound immutable closure against repository ancestry."""
+    if GIT_OID_PATTERN.fullmatch(head_sha) is None:
+        raise VerificationError("repository history head SHA is invalid")
+    manifest_files = _contract_manifest_files(store, "repository history manifest")
+    _verify_contract_manifest_digests(
+        store,
+        manifest_files,
+        "repository history manifest",
+    )
+    closure_paths = sorted(
+        BUNDLE_PREFIX + relative
+        for relative, item in manifest_files.items()
+        if item.get("role") == "immutable-target-closure"
+    )
+    if not closure_paths:
+        raise VerificationError("repository history contains no immutable closures")
+    verified_revisions: list[str] = []
+    for closure_path in closure_paths:
+        closure, entries = load_closure(store, closure_path)
+        source = closure["source"]
+        expected_sources: dict[str, ConstructionBlob] = {}
+        for target_path, item in entries.items():
+            if item.get("source_binding") != "construction_revision":
+                continue
+            source_path = _safe_relative(
+                item.get("source_path"),
+                f"construction source for {target_path}",
+            )
+            artifact_path = _relative_to_document(
+                closure_path,
+                item.get("artifact_path"),
+                f"construction artifact for {target_path}",
+            )
+            artifact_mode = store.mode(artifact_path)
+            if artifact_mode not in ALLOWED_BLOB_MODES:
+                raise VerificationError(
+                    f"immutable closure construction artifact mode is unsafe: {artifact_path}"
+                )
+            expected = ConstructionBlob(
+                path=source_path,
+                mode=artifact_mode,
+                data=store.read_bytes(artifact_path),
+            )
+            prior = expected_sources.get(source_path)
+            if prior is not None and prior != expected:
+                raise VerificationError(
+                    f"immutable closure binds conflicting construction source: {source_path}"
+                )
+            expected_sources[source_path] = expected
+        revision = source["construction_revision"]
+        evidence = construction_resolver(
+            source["repository"],
+            revision,
+            head_sha,
+            frozenset(expected_sources),
+        )
+        if (
+            evidence.repository != source["repository"]
+            or evidence.revision != revision
+            or evidence.head_sha != head_sha
+            or evidence.is_ancestor is not True
+        ):
+            raise VerificationError(
+                "immutable closure construction_revision is not an ancestor of repository HEAD: "
+                f"{closure_path}@{revision}"
+            )
+        if set(evidence.files) != set(expected_sources):
+            raise VerificationError(
+                f"immutable closure construction evidence is incomplete: {closure_path}"
+            )
+        for source_path, expected in expected_sources.items():
+            historical = evidence.files[source_path]
+            if historical.path != source_path:
+                raise VerificationError(
+                    f"immutable closure construction source path is invalid: {source_path}"
+                )
+            if historical.mode != expected.mode:
+                raise VerificationError(
+                    f"immutable closure construction source mode differs: {source_path}"
+                )
+            if historical.data != expected.data:
+                raise VerificationError(
+                    f"immutable closure construction source bytes differ: {source_path}"
+                )
+        verified_revisions.append(revision)
+    return {
+        "head": head_sha,
+        "immutable_closures": len(closure_paths),
+        "construction_revisions": verified_revisions,
+    }
+
+
+def _local_construction_revision_resolver(
+    repo_root: Path,
+) -> ConstructionRevisionResolver:
+    root = repo_root.expanduser().resolve()
+
+    def resolve(
+        repository: str,
+        revision: str,
+        head_sha: str,
+        source_paths: frozenset[str],
+    ) -> ConstructionRevisionEvidence:
+        if repository != "MetaInFLow/EvoZeus-CoEvolve":
+            raise VerificationError("construction revision repository is not canonical")
+        ancestry = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", revision, head_sha],
+            capture_output=True,
+            check=False,
+        )
+        if ancestry.returncode not in {0, 1}:
+            raise VerificationError(
+                "repository ancestry cannot be verified: "
+                + ancestry.stderr.decode("utf-8", errors="replace").strip()
+            )
+        files: dict[str, ConstructionBlob] = {}
+        for path in sorted(source_paths):
+            listing = subprocess.run(
+                ["git", "-C", str(root), "ls-tree", "-z", revision, "--", path],
+                capture_output=True,
+                check=False,
+            )
+            if listing.returncode != 0 or not listing.stdout.endswith(b"\0"):
+                raise VerificationError(
+                    f"construction revision source is missing or unsafe: {path}"
+                )
+            metadata, separator, listed_path = listing.stdout[:-1].partition(b"\t")
+            fields = metadata.split()
+            if (
+                separator != b"\t"
+                or listed_path.decode("utf-8", errors="strict") != path
+                or len(fields) != 3
+                or fields[0].decode("ascii") not in ALLOWED_BLOB_MODES
+                or fields[1] != b"blob"
+            ):
+                raise VerificationError(
+                    f"construction revision source is missing or unsafe: {path}"
+                )
+            content = subprocess.run(
+                ["git", "-C", str(root), "show", f"{revision}:{path}"],
+                capture_output=True,
+                check=False,
+            )
+            if content.returncode != 0:
+                raise VerificationError(
+                    f"construction revision source cannot be read: {path}"
+                )
+            files[path] = ConstructionBlob(
+                path=path,
+                mode=fields[0].decode("ascii"),
+                data=content.stdout,
+            )
+        return ConstructionRevisionEvidence(
+            repository=repository,
+            revision=revision,
+            head_sha=head_sha,
+            is_ancestor=ancestry.returncode == 0,
+            files=files,
+        )
+
+    return resolve
 
 
 def _verify_candidate_contract_manifest(
@@ -1247,6 +1559,7 @@ def verify_candidate(
         raise VerificationError("candidate head SHA is invalid")
     if repository != "MetaInFLow/EvoZeus-CoEvolve":
         raise VerificationError("official upgrade candidate must use the canonical repository")
+    base_protocol = load_protocol(base)
     base_report = verify_catalog(base)
     immutable_history_prefixes = _immutable_history_prefixes(base)
     for path, change in changes.items():
@@ -1382,7 +1695,7 @@ def verify_candidate(
         base_profile = load_profile(
             base,
             base_profile_path,
-            load_protocol(base),
+            base_protocol,
             expected_sha256=entry["sha256"],
         )
         base_from_paths.add(base_profile["_verified_from_path"])
@@ -1456,6 +1769,24 @@ def verify_candidate(
         if source_path is None or artifact_relative is None:
             continue
         source_path = _safe_relative(source_path, "candidate closure source path")
+        source_binding = item.get("source_binding")
+        if (
+            source_binding == "construction_revision"
+            and not _construction_source_allowed(source_path)
+        ):
+            raise VerificationError(
+                "candidate construction source is outside the trusted protocol allowlist: "
+                f"{source_path}"
+            )
+        if (
+            source_binding == "required_release"
+            and not source_path.startswith(BUNDLE_PREFIX)
+            and not _construction_source_allowed(source_path)
+        ):
+            raise VerificationError(
+                "candidate required-release source is outside the trusted protocol allowlist: "
+                f"{source_path}"
+            )
         artifact_path = _relative_to_document(
             candidate_closure_path,
             artifact_relative,
@@ -1486,7 +1817,7 @@ def verify_candidate(
                     source_path,
                     "target-closure-source",
                 )
-        if item.get("source_binding") == "construction_revision":
+        if source_binding == "construction_revision":
             expected_mode = item["mode"]
             prior_mode = construction_source_modes.get(source_path)
             if prior_mode is not None and prior_mode != expected_mode:
@@ -1566,6 +1897,12 @@ def verify_candidate(
         if path.startswith("templates/target/") and path not in bound_sources:
             raise VerificationError(f"candidate target template is absent from target closure: {path}")
 
+    history_report = verify_repository_history(
+        candidate,
+        head_sha=head_sha,
+        construction_resolver=construction_resolver,
+    )
+
     report.update(
         {
             "status": "verified_candidate",
@@ -1573,8 +1910,44 @@ def verify_candidate(
             "candidate_closure_version": candidate_history["version"],
             "candidate_head": head_sha,
             "candidate_files_executed": False,
+            "immutable_closures_verified": history_report["immutable_closures"],
         }
     )
+    return report
+
+
+def verify_classified_pull_request(
+    base: FilesystemStore,
+    changes: dict[str, CandidateBlob],
+    *,
+    head_sha: str,
+    repository: str,
+    construction_resolver: ConstructionRevisionResolver,
+) -> dict[str, Any]:
+    classification = classify_candidate_changes(load_protocol(base), changes)
+    if classification == "not_applicable":
+        return {
+            "status": "not_applicable",
+            "classification": classification,
+            "candidate_head": head_sha,
+            "candidate_files_executed": False,
+        }
+    if classification == "rotation_required":
+        return {
+            "status": "rotation_required",
+            "classification": classification,
+            "candidate_head": head_sha,
+            "candidate_files_executed": False,
+            "next_step": "land trusted source first, then open a data-only migration PR",
+        }
+    report = verify_candidate(
+        base,
+        changes,
+        head_sha=head_sha,
+        repository=repository,
+        construction_resolver=construction_resolver,
+    )
+    report["classification"] = classification
     return report
 
 
@@ -1646,6 +2019,10 @@ def _github_blob(repository: str, oid: str, token: str) -> bytes:
 def _github_construction_revision_resolver(
     token: str,
 ) -> ConstructionRevisionResolver:
+    ancestry_cache: dict[tuple[str, str, str], bool] = {}
+    tree_cache: dict[tuple[str, str], dict[str, dict[str, str]]] = {}
+    blob_cache: dict[tuple[str, str], bytes] = {}
+
     def resolve(
         repository: str,
         revision: str,
@@ -1654,17 +2031,22 @@ def _github_construction_revision_resolver(
     ) -> ConstructionRevisionEvidence:
         if repository != "MetaInFLow/EvoZeus-CoEvolve":
             raise VerificationError("construction revision repository is not canonical")
-        comparison = _github_json(
-            f"https://api.github.com/repos/{repository}/compare/{revision}...{head_sha}",
-            token,
-        )
-        merge_base = comparison.get("merge_base_commit")
-        is_ancestor = (
-            comparison.get("status") in {"ahead", "identical"}
-            and isinstance(merge_base, dict)
-            and merge_base.get("sha") == revision
-        )
-        tree = _github_tree(repository, revision, token)
+        ancestry_key = (repository, revision, head_sha)
+        if ancestry_key not in ancestry_cache:
+            comparison = _github_json(
+                f"https://api.github.com/repos/{repository}/compare/{revision}...{head_sha}",
+                token,
+            )
+            merge_base = comparison.get("merge_base_commit")
+            ancestry_cache[ancestry_key] = (
+                comparison.get("status") in {"ahead", "identical"}
+                and isinstance(merge_base, dict)
+                and merge_base.get("sha") == revision
+            )
+        tree_key = (repository, revision)
+        if tree_key not in tree_cache:
+            tree_cache[tree_key] = _github_tree(repository, revision, token)
+        tree = tree_cache[tree_key]
         files: dict[str, ConstructionBlob] = {}
         for path in sorted(source_paths):
             item = tree.get(path)
@@ -1677,16 +2059,19 @@ def _github_construction_revision_resolver(
                 raise VerificationError(
                     f"construction revision source is missing or unsafe: {path}"
                 )
+            blob_key = (repository, item["sha"])
+            if blob_key not in blob_cache:
+                blob_cache[blob_key] = _github_blob(repository, item["sha"], token)
             files[path] = ConstructionBlob(
                 path=path,
                 mode=item["mode"],
-                data=_github_blob(repository, item["sha"], token),
+                data=blob_cache[blob_key],
             )
         return ConstructionRevisionEvidence(
             repository=repository,
             revision=revision,
             head_sha=head_sha,
-            is_ancestor=is_ancestor,
+            is_ancestor=ancestry_cache[ancestry_key],
             files=files,
         )
 
@@ -1718,8 +2103,8 @@ def candidate_from_pull_request(
         raise VerificationError("pull request base repository is invalid")
     if not isinstance(head_repo, str) or REPOSITORY_PATTERN.fullmatch(head_repo) is None:
         raise VerificationError("pull request head repository is invalid")
-    if head_repo != base_repo or base_repo != "MetaInFLow/EvoZeus-CoEvolve":
-        raise VerificationError("official upgrade profile PR must use the canonical repository")
+    if base_repo != "MetaInFLow/EvoZeus-CoEvolve":
+        raise VerificationError("pull request base repository is not canonical")
     local_head = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         text=True,
@@ -1769,6 +2154,23 @@ def main(argv: list[str] | None = None) -> int:
         base = FilesystemStore(args.repo_root)
         if args.command == "verify-base":
             report = verify_catalog(base)
+            head = subprocess.run(
+                ["git", "-C", str(args.repo_root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            head_sha = head.stdout.strip()
+            if head.returncode != 0 or GIT_OID_PATTERN.fullmatch(head_sha) is None:
+                raise VerificationError("repository HEAD cannot be resolved")
+            history = verify_repository_history(
+                base,
+                head_sha=head_sha,
+                construction_resolver=_local_construction_revision_resolver(
+                    args.repo_root
+                ),
+            )
+            report["repository_history"] = history
         else:
             token = os.environ.get("GITHUB_TOKEN", "")
             if not token:
@@ -1778,7 +2180,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo_root,
                 token,
             )
-            report = verify_candidate(
+            report = verify_classified_pull_request(
                 base,
                 changes,
                 head_sha=head_sha,

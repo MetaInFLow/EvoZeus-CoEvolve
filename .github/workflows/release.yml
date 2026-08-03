@@ -25,6 +25,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip pytest pydantic pyyaml
           python -m pytest -q
+          python scripts/evozeus_official_upgrade_verify.py verify-base --repo-root .
       - name: Build immutable source archive
         run: |
           git archive --format=tar.gz --prefix="EvoZeus-CoEvolve-${GITHUB_REF_NAME}/" -o "evozeus-coevolve-${GITHUB_REF_NAME}.tar.gz" "${GITHUB_REF_NAME}"
