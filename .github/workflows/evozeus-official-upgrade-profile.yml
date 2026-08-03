@@ -3,6 +3,8 @@ name: EvoZeus Official Upgrade Profile
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
+    paths:
+      - "contracts/v1/migrations/**"
 
 permissions:
   contents: read
