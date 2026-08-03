@@ -7,6 +7,7 @@ import os
 from datetime import date
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -100,6 +101,47 @@ def trusted_development_bundle() -> dict[str, object]:
         "reasons": [],
     }
     return bundle
+
+
+def copy_release_contract_source(source_root: Path) -> None:
+    """Copy the contract plus every repository byte required to verify it."""
+    shutil.copytree(ROOT / "contracts", source_root / "contracts")
+    for relative in (
+        "scripts/evozeus_wrapper_preflight.py",
+        "scripts/evozeus_harness_legacy_prompt_adapter.py",
+    ):
+        source = ROOT / relative
+        destination = source_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        assert destination.read_bytes() == source.read_bytes()
+        assert stat.S_IMODE(destination.stat().st_mode) == stat.S_IMODE(
+            source.stat().st_mode
+        )
+
+
+@pytest.mark.parametrize("tamper", ["missing", "non-executable"])
+def test_release_contract_source_fixture_requires_executable_preflight(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    source_root = tmp_path / "source"
+    copy_release_contract_source(source_root)
+    preflight = source_root / "scripts/evozeus_wrapper_preflight.py"
+    assert preflight.read_bytes() == (
+        ROOT / "scripts/evozeus_wrapper_preflight.py"
+    ).read_bytes()
+    assert stat.S_IMODE(preflight.stat().st_mode) == 0o755
+    if tamper == "missing":
+        preflight.unlink()
+    else:
+        preflight.chmod(0o644)
+
+    with pytest.raises(
+        ValueError,
+        match="release-bound source mode differs from artifact mode",
+    ):
+        migration_kernel.load_migration_contract(source_root)
 
 
 def copy_test_templates(
@@ -258,7 +300,7 @@ def test_fresh_attach_rejects_tampered_current_release_lineage_before_any_write(
     tamper: str,
 ) -> None:
     source_root = tmp_path / "source"
-    shutil.copytree(ROOT / "contracts", source_root / "contracts")
+    copy_release_contract_source(source_root)
     bundle = migration_kernel.load_migration_contract(source_root)
     bundle["source_trust"] = {
         **bundle["source_trust"],
@@ -295,12 +337,10 @@ def test_fresh_attach_rejects_tampered_current_release_lineage_before_any_write(
     owner_file = target / "OWNER.md"
     owner_file.write_text("owner bytes\n", encoding="utf-8")
 
-    expected_error = (
-        "fresh release lineage artifact mode mismatch"
-        if tamper == "artifact_mode"
-        else "current Harness closure failed verification"
-    )
-    with pytest.raises(ValueError, match=expected_error):
+    with pytest.raises(
+        ValueError,
+        match="current Harness closure failed verification",
+    ):
         copy_templates(
             target,
             replacements(),

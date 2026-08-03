@@ -3794,6 +3794,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
         shutil.copytree(Path("contracts"), wrapper_root / "contracts")
         for relative in (
             "scripts/evozeus_wrapper_preflight.py",
+            "scripts/evozeus_harness_legacy_prompt_adapter.py",
             "templates/global/evozeus_wrapper_dispatcher.py",
             "templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
             "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
@@ -3803,7 +3804,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             source = Path(relative)
             destination = wrapper_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(source.read_bytes())
+            shutil.copy2(source, destination)
         return wrapper_root
 
     def create_upgrade_target(

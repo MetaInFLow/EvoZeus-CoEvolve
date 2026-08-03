@@ -1038,6 +1038,71 @@ def _release_source_trust(
                         reasons.append(
                             f"migration write source is not release-bound: {source_path}"
                         )
+                for repository_file in bundle_manifest.get(
+                    "trusted_repository_files", []
+                ):
+                    if not isinstance(repository_file, dict):
+                        reasons.append("trusted repository file entry is invalid")
+                        continue
+                    source_path = repository_file.get("path")
+                    expected_sha256 = repository_file.get("sha256")
+                    if not isinstance(source_path, str) or not _is_plain_sha256(
+                        expected_sha256
+                    ):
+                        reasons.append("trusted repository file identity is incomplete")
+                        continue
+                    try:
+                        relative = _safe_relative_path(
+                            source_path,
+                            "trusted repository file path",
+                        )
+                        working_path = _safe_file_below(
+                            wrapper_root,
+                            relative,
+                            "trusted repository file",
+                        )
+                    except ValueError as exc:
+                        reasons.append(str(exc))
+                        continue
+                    working_bytes = working_path.read_bytes()
+                    tagged_source = _git_bytes(
+                        wrapper_root,
+                        "show",
+                        f"{revision}:{relative.as_posix()}",
+                    )
+                    tagged_sha256 = (
+                        sha256_bytes(tagged_source.stdout)
+                        if tagged_source.returncode == 0
+                        else None
+                    )
+                    working_sha256 = sha256_bytes(working_bytes)
+                    source_attestations.append(
+                        {
+                            "source_path": relative.as_posix(),
+                            "declared_sha256": expected_sha256,
+                            "working_sha256": working_sha256,
+                            "tagged_sha256": tagged_sha256,
+                            "role": repository_file.get("role"),
+                        }
+                    )
+                    if working_sha256 != expected_sha256:
+                        reasons.append(
+                            "working trusted repository file digest mismatch: "
+                            + source_path
+                        )
+                    if tagged_source.returncode != 0:
+                        reasons.append(
+                            "trusted repository file is absent from release tag: "
+                            + source_path
+                        )
+                    elif (
+                        tagged_sha256 != expected_sha256
+                        or tagged_source.stdout != working_bytes
+                    ):
+                        reasons.append(
+                            "trusted repository file is not release-bound: "
+                            + source_path
+                        )
                 for profile in contract.get("profiles", []):
                     if not isinstance(profile, dict) or profile.get("automatic") is not True:
                         continue
@@ -1358,10 +1423,59 @@ def _load_official_upgrade_profiles(
         )
     if current_closure is None:
         raise ValueError("official current closure is unavailable")
+    reviewed_profiles = official_verifier.load_reviewed_legacy_profiles(
+        store,
+        contract,
+        protocol,
+    )
+    reviewed_bindings = {
+        item["profile_id"]: item
+        for item in contract.get("reviewed_legacy_migrations", [])
+        if isinstance(item, dict) and isinstance(item.get("profile_id"), str)
+    }
+    supervised_profiles: list[dict[str, Any]] = []
+    for reviewed in reviewed_profiles:
+        binding = reviewed_bindings.get(reviewed.get("profile_id"))
+        if not isinstance(binding, dict):
+            raise ValueError("verified supervised legacy profile binding is missing")
+        profile_relative = _safe_relative_path(
+            binding.get("profile_path"),
+            "verified supervised legacy profile path",
+        )
+        repository_profile_path = (
+            Path(MIGRATION_CONTRACT_BUNDLE_ROOT) / profile_relative
+        ).as_posix()
+        profile_path = _safe_file_below(
+            wrapper_root,
+            Path(repository_profile_path),
+            "verified supervised legacy profile",
+        )
+        profile_bytes = profile_path.read_bytes()
+        try:
+            verified_profile_payload = _strict_json_loads(
+                profile_bytes.decode("utf-8", errors="strict"),
+                "verified supervised legacy profile",
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "verified supervised legacy profile payload is invalid"
+            ) from exc
+        if not isinstance(verified_profile_payload, dict):
+            raise ValueError("verified supervised legacy profile must be an object")
+        reviewed["_verified_profile_path"] = repository_profile_path
+        reviewed["_verified_profile_sha256"] = sha256_bytes(profile_bytes)
+        reviewed["_verified_profile_payload"] = verified_profile_payload
+        if reviewed.get("_verified_target_path") != current_closure_path:
+            raise ValueError(
+                "verified supervised legacy profile does not target the current closure"
+            )
+        reviewed["_verified_target_closure"] = copy.deepcopy(current_closure)
+        supervised_profiles.append(reviewed)
     return profiles, {
         "report": catalog_report,
         "protocol": protocol,
         "profiles": raw_profiles,
+        "supervised_legacy_profiles": supervised_profiles,
         "current_closure": {
             "path": current_closure_path,
             "closure": current_closure,
@@ -1704,6 +1818,31 @@ def profile_identity(profile: dict[str, Any]) -> dict[str, Any]:
         )
         identity["to_closure"] = copy.deepcopy(official_profile.get("to_closure"))
     return identity
+
+
+def supervised_legacy_profile_identity(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return the complete verifier-approved identity used by a supervised plan."""
+    if profile.get("schema_version") != "evozeus.coevolve.supervised-legacy-profile.v1":
+        raise ValueError("supervised legacy profile schema is invalid")
+    required = {
+        "profile_id": profile.get("profile_id"),
+        "profile_version": profile.get("profile_version"),
+        "profile_path": profile.get("_verified_profile_path"),
+        "profile_sha256": profile.get("_verified_profile_sha256"),
+    }
+    if any(not isinstance(value, str) or not value for value in required.values()):
+        raise ValueError("supervised legacy profile identity is incomplete")
+    return {
+        **required,
+        "source_envelope": copy.deepcopy(profile.get("source_envelope")),
+        "adapter": copy.deepcopy(profile.get("adapter")),
+        "target_closure_pointer": copy.deepcopy(
+            profile.get("target_closure_pointer")
+        ),
+        "release_axis": copy.deepcopy(profile.get("release_axis")),
+        "execution": copy.deepcopy(profile.get("execution")),
+        "automatic": profile.get("automatic"),
+    }
 
 
 def _safe_relative_path(raw: object, label: str = "migration path") -> Path:
@@ -3296,6 +3435,123 @@ def canonical_plan_bytes(plan: dict[str, Any]) -> bytes:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def collect_supervised_legacy_evidence(
+    target: Path,
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    expected_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the release-bound pure adapter over securely collected target facts."""
+    approved_profiles = migration_bundle.get("official_upgrade", {}).get(
+        "supervised_legacy_profiles", []
+    )
+    planned_identity = supervised_legacy_profile_identity(profile)
+    if not any(
+        isinstance(item, dict)
+        and supervised_legacy_profile_identity(item) == planned_identity
+        for item in approved_profiles
+    ):
+        raise ValueError("supervised legacy profile is not verifier-approved")
+    try:
+        from . import evozeus_harness_legacy_prompt_adapter as legacy_adapter
+    except ImportError:
+        import evozeus_harness_legacy_prompt_adapter as legacy_adapter
+
+    wrapper_root = migration_bundle.get("wrapper_root")
+    if not isinstance(wrapper_root, Path):
+        raise ValueError("supervised legacy adapter repository root is missing")
+    frozen = legacy_adapter.load_frozen_bundle(wrapper_root)
+    implementation = frozen.adapter.get("implementation")
+    implementation_module = getattr(legacy_adapter, "__file__", None)
+    entrypoint = getattr(
+        legacy_adapter,
+        "plan_supervised_legacy_prompt_transform",
+        None,
+    )
+    if (
+        not isinstance(implementation, dict)
+        or not isinstance(implementation_module, str)
+        or sha256_bytes(Path(implementation_module).read_bytes())
+        != implementation.get("sha256")
+        or not callable(entrypoint)
+        or implementation.get("entrypoint") != entrypoint.__name__
+    ):
+        raise ValueError("executing supervised legacy adapter is not release-bound")
+    envelope = frozen.envelope
+    projection = envelope.get("manifest_projection")
+    instruction = envelope.get("instruction_surface")
+    if not isinstance(projection, dict) or not isinstance(instruction, dict):
+        raise ValueError("supervised legacy source envelope is incomplete")
+    manifest_path = projection.get("path")
+    surface_path = instruction.get("path")
+    declared_paths = [
+        item.get("path")
+        for item in envelope.get("files", [])
+        if isinstance(item, dict)
+    ]
+    if not isinstance(manifest_path, str) or not isinstance(surface_path, str):
+        raise ValueError("supervised legacy source paths are invalid")
+    paths = list(
+        dict.fromkeys(
+            [
+                *[path for path in declared_paths if isinstance(path, str)],
+                manifest_path,
+                surface_path,
+            ]
+        )
+    )
+    raw_states: dict[str, dict[str, Any]] = {}
+    adapter_states: dict[str, dict[str, Any]] = {}
+    target = Path(os.path.abspath(os.fspath(target.expanduser())))
+    with SecureTargetFS(target, expected_binding=expected_binding) as secure_target:
+        for path in paths:
+            try:
+                state = secure_target.file_state(path)
+            except ValueError as exc:
+                raw_states[path] = {"kind": "unsafe", "error": str(exc)}
+                adapter_states[path] = {"kind": "unsafe"}
+                continue
+            raw_states[path] = copy.deepcopy(state)
+            if state.get("kind") == "absent":
+                adapter_states[path] = {"kind": "absent"}
+            else:
+                mode = state.get("mode")
+                adapter_states[path] = {
+                    "kind": "file",
+                    "sha256": str(state.get("sha256", "")).removeprefix(
+                        "sha256:"
+                    ),
+                    "mode": f"100{mode:o}" if isinstance(mode, int) else None,
+                }
+
+        def supplied_bytes(path: str) -> bytes:
+            state = raw_states[path]
+            digest = state.get("sha256")
+            if state.get("kind") != "file" or not isinstance(digest, str):
+                return b""
+            return secure_target.read_exact(path, digest)
+
+        manifest_bytes = supplied_bytes(manifest_path)
+        surface_bytes = supplied_bytes(surface_path)
+
+    result = legacy_adapter.plan_supervised_legacy_prompt_transform(
+        instruction_surface_bytes=surface_bytes,
+        manifest_bytes=manifest_bytes,
+        file_states=adapter_states,
+        bundle=frozen,
+    )
+    return {
+        "decision": result.decision,
+        "proof": copy.deepcopy(result.proof),
+        "postimage": result.postimage,
+        "target_file_states": raw_states,
+        "profile_identity": planned_identity,
+        "_manifest_bytes": manifest_bytes,
+        "_surface_bytes": surface_bytes,
+    }
 
 
 def planned_target_paths(plan: dict[str, Any]) -> list[str]:

@@ -3445,6 +3445,49 @@ def _official_upgrade_profile(
     return profile
 
 
+def _supervised_legacy_profiles(
+    migration_bundle: dict[str, Any],
+) -> list[dict[str, Any]]:
+    profiles = (migration_bundle.get("official_upgrade") or {}).get(
+        "supervised_legacy_profiles"
+    )
+    if not isinstance(profiles, list) or any(
+        not isinstance(item, dict) for item in profiles
+    ):
+        raise ValueError("verified supervised legacy profiles are unavailable")
+    return profiles
+
+
+def _supervised_legacy_profile_candidates(
+    migration_bundle: dict[str, Any],
+    manifest: dict[str, Any],
+    requested_wrapper_to: str | None,
+) -> list[dict[str, Any]]:
+    current = migration_bundle.get("current_closure") or {}
+    current_path = current.get("path")
+    candidates: list[dict[str, Any]] = []
+    for profile in _supervised_legacy_profiles(migration_bundle):
+        release_axis = profile.get("release_axis")
+        execution = profile.get("execution")
+        if (
+            profile.get("automatic") is not False
+            or profile.get("_active_for_current") is not True
+            or profile.get("_verified_target_path") != current_path
+            or not isinstance(release_axis, dict)
+            or release_axis.get("target_wrapper_from")
+            != manifest.get("wrapper_version")
+            or release_axis.get("target_wrapper_to") != requested_wrapper_to
+            or not isinstance(execution, dict)
+            or execution.get("mode") != "supervised_exact_plan"
+            or execution.get("discovery_authority") is not False
+            or execution.get("adapter_write_authority") is not False
+            or execution.get("approval") != "one_time_exact_plan_digest"
+        ):
+            continue
+        candidates.append(profile)
+    return sorted(candidates, key=lambda item: str(item.get("profile_id")))
+
+
 def _verified_profile_migration_records(
     profile: dict[str, Any],
 ) -> tuple[list[str], str]:
@@ -3793,6 +3836,683 @@ def _official_upgrade_write_plan(
     return write_set, staged
 
 
+def _supervised_manifest_postimage(
+    manifest_bytes: bytes,
+    operation: dict[str, Any],
+    profile: dict[str, Any],
+    current_closure: dict[str, Any],
+) -> bytes:
+    if (
+        operation.get("type") != "manifest_patch"
+        or operation.get("encoding") != "utf-8-json-indent-2-lf"
+        or operation.get("preserve_unlisted_fields") is not True
+    ):
+        raise ValueError("supervised legacy manifest operation is invalid")
+    source_projection = operation.get("source_projection")
+    if not isinstance(source_projection, dict) or source_projection.get(
+        "envelope_path"
+    ) != profile.get("source_envelope", {}).get("path"):
+        raise ValueError("supervised legacy manifest source is not envelope-bound")
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy manifest preimage is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("supervised legacy manifest preimage must be an object")
+    result = copy.deepcopy(manifest)
+    patch = operation.get("patch")
+    if not isinstance(patch, list) or not patch:
+        raise ValueError("supervised legacy manifest patch is missing")
+    touched: set[str] = set()
+    for action in patch:
+        if not isinstance(action, dict):
+            raise ValueError("supervised legacy manifest patch action is invalid")
+        field = action.get("field")
+        kind = action.get("action")
+        if not isinstance(field, str) or field in touched:
+            raise ValueError("supervised legacy manifest patch fields are duplicated")
+        touched.add(field)
+        if kind == "replace":
+            if field not in result:
+                raise ValueError(
+                    f"supervised legacy manifest replace field is absent: {field}"
+                )
+            result[field] = copy.deepcopy(action.get("value"))
+        elif kind == "add":
+            if field in result:
+                raise ValueError(
+                    f"supervised legacy manifest add field already exists: {field}"
+                )
+            result[field] = copy.deepcopy(action.get("value"))
+        elif kind == "add_managed_block":
+            path_from = action.get("path_from")
+            value = action.get("value")
+            if (
+                field in result
+                or not isinstance(path_from, str)
+                or not isinstance(result.get(path_from), str)
+                or not isinstance(value, dict)
+            ):
+                raise ValueError("supervised legacy managed block patch is invalid")
+            result[field] = [
+                {
+                    "block_id": value.get("block_id"),
+                    "path": result[path_from],
+                    "marker_version": value.get("marker_version"),
+                    "begin_marker": value.get("begin_marker"),
+                    "end_marker": value.get("end_marker"),
+                    "sha256_lf": value.get("sha256_lf"),
+                }
+            ]
+        elif kind == "append_unique":
+            values = action.get("values")
+            existing = result.get(field)
+            if (
+                not isinstance(existing, list)
+                or not isinstance(values, list)
+                or any(
+                    not isinstance(value, str)
+                    for value in [*existing, *values]
+                )
+            ):
+                raise ValueError("supervised legacy managed file patch is invalid")
+            result[field] = list(dict.fromkeys([*existing, *values]))
+        else:
+            raise ValueError(
+                f"supervised legacy manifest patch action is unknown: {kind}"
+            )
+
+    closure_files = current_closure.get("files")
+    manifest_entry = next(
+        (
+            item
+            for item in closure_files or []
+            if isinstance(item, dict)
+            and item.get("target_path") == TARGET_WRAPPER_MANIFEST
+        ),
+        None,
+    )
+    owned_state = (
+        manifest_entry.get("owned_state")
+        if isinstance(manifest_entry, dict)
+        else None
+    )
+    if not isinstance(owned_state, dict):
+        raise ValueError("supervised legacy target manifest state is missing")
+    for field in (
+        "wrapper_repo",
+        "wrapper_version",
+        "layout_version",
+        "target_wrapper_dir",
+        "target_infra_dir",
+        "harness_skill_path",
+        "harness_skill_version",
+        "harness_skill_managed",
+        "migration_contract",
+    ):
+        if result.get(field) != owned_state.get(field):
+            raise ValueError(
+                f"supervised legacy manifest differs from target closure: {field}"
+            )
+    if not set(owned_state.get("managed_files_require", [])).issubset(
+        set(result.get("managed_files", []))
+    ):
+        raise ValueError(
+            "supervised legacy manifest managed files differ from target closure"
+        )
+    expected_blocks: list[dict[str, Any]] = []
+    for item in owned_state.get("managed_blocks", []):
+        if not isinstance(item, dict):
+            raise ValueError("supervised legacy target managed block is invalid")
+        block = copy.deepcopy(item)
+        selector = block.pop("path_selector", None)
+        if selector != "manifest.instruction_surface":
+            raise ValueError("supervised legacy managed block selector is invalid")
+        block["path"] = result.get("instruction_surface")
+        expected_blocks.append(block)
+    if result.get("managed_blocks") != expected_blocks:
+        raise ValueError(
+            "supervised legacy manifest managed blocks differ from target closure"
+        )
+    try:
+        return (
+            json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("supervised legacy manifest postimage is invalid") from exc
+
+
+def _planned_preimage_identity(state: dict[str, Any]) -> dict[str, int] | None:
+    device = state.get("st_dev")
+    inode = state.get("st_ino")
+    if not isinstance(device, int) or not isinstance(inode, int):
+        return None
+    return {"st_dev": device, "st_ino": inode}
+
+
+def _supervised_legacy_write_plan(
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, bytes], list[dict[str, Any]]]:
+    proof = evidence.get("proof")
+    proof_without_digest = copy.deepcopy(proof) if isinstance(proof, dict) else None
+    proof_sha256 = (
+        proof_without_digest.pop("proof_sha256", None)
+        if isinstance(proof_without_digest, dict)
+        else None
+    )
+    if (
+        evidence.get("decision") != "supervised_migration_available"
+        or not isinstance(evidence.get("postimage"), bytes)
+        or evidence.get("profile_identity")
+        != migration_kernel.supervised_legacy_profile_identity(profile)
+        or not isinstance(proof, dict)
+        or proof.get("decision") != "supervised_migration_available"
+        or proof.get("writes") is not False
+        or proof.get("destructive_authority") is not False
+        or proof_sha256
+        != "sha256:" + migration_kernel.canonical_json_sha256(proof_without_digest)
+    ):
+        raise ValueError("supervised legacy adapter proof is not plan-authoritative")
+    current = migration_bundle.get("current_closure") or {}
+    current_closure = current.get("closure")
+    current_closure_path = current.get("path")
+    if (
+        not isinstance(current_closure, dict)
+        or profile.get("_verified_target_path") != current_closure_path
+        or profile.get("_verified_target_closure") != current_closure
+    ):
+        raise ValueError("supervised legacy target closure binding changed")
+    closure_entries = {
+        item["target_path"]: item
+        for item in current_closure.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
+    }
+    states = evidence.get("target_file_states")
+    if not isinstance(states, dict):
+        raise ValueError("supervised legacy target file facts are missing")
+    wrapper_root = migration_bundle.get("wrapper_root")
+    if not isinstance(wrapper_root, Path):
+        raise ValueError("supervised legacy repository source root is missing")
+    profile_identity = migration_kernel.supervised_legacy_profile_identity(profile)
+    profile_relative = migration_kernel._safe_relative_path(
+        profile_identity["profile_path"],
+        "supervised legacy profile source path",
+    )
+    profile_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        profile_relative,
+        "supervised legacy profile source",
+    )
+    profile_bytes = profile_source.read_bytes()
+    try:
+        profile_payload = migration_kernel._strict_json_loads(
+            profile_bytes.decode("utf-8", errors="strict"),
+            "supervised legacy profile source",
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy profile source is invalid") from exc
+    verifier_annotations = {
+        "_active_for_current",
+        "_verified_profile_path",
+        "_verified_profile_payload",
+        "_verified_profile_sha256",
+        "_verified_target_closure",
+        "_verified_target_path",
+        "static_write_set",
+    }
+    runtime_payload = {
+        key: copy.deepcopy(value)
+        for key, value in profile.items()
+        if key not in verifier_annotations
+    }
+    if (
+        not isinstance(profile_payload, dict)
+        or profile_payload != profile.get("_verified_profile_payload")
+        or profile_payload != runtime_payload
+        or hashlib.sha256(profile_bytes).hexdigest()
+        != profile_identity["profile_sha256"]
+    ):
+        raise ValueError("supervised legacy verified profile payload changed")
+    pointer_binding = profile_payload.get("target_closure_pointer")
+    selected_closure = (
+        pointer_binding.get("selected")
+        if isinstance(pointer_binding, dict)
+        else None
+    )
+    if not isinstance(selected_closure, dict):
+        raise ValueError("supervised legacy target closure pointer is invalid")
+    expected_closure_path = (
+        Path("contracts/v1") / str(selected_closure.get("path"))
+    ).as_posix()
+    if (
+        current_closure_path != expected_closure_path
+        or profile.get("_verified_target_path") != expected_closure_path
+    ):
+        raise ValueError("supervised legacy target closure path changed")
+    pointer_path = (
+        Path("contracts/v1") / str(pointer_binding.get("path"))
+    ).as_posix()
+    pointer_relative = migration_kernel._safe_relative_path(
+        pointer_path,
+        "supervised legacy target closure pointer path",
+    )
+    pointer_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        pointer_relative,
+        "supervised legacy target closure pointer",
+    )
+    closure_relative = migration_kernel._safe_relative_path(
+        expected_closure_path,
+        "supervised legacy target closure path",
+    )
+    closure_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        closure_relative,
+        "supervised legacy target closure",
+    )
+    try:
+        pointer_payload = migration_kernel._strict_json_loads(
+            pointer_source.read_text(encoding="utf-8", errors="strict"),
+            "supervised legacy target closure pointer",
+        )
+        closure_bytes = closure_source.read_bytes()
+        closure_payload = migration_kernel._strict_json_loads(
+            closure_bytes.decode("utf-8", errors="strict"),
+            "supervised legacy target closure",
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy target closure source is invalid") from exc
+    pointer_entries = (
+        pointer_payload.get("entries")
+        if isinstance(pointer_payload, dict)
+        and pointer_payload.get("pointer_id") == pointer_binding.get("pointer_id")
+        else None
+    )
+    closure_entry_binding = next(
+        (
+            item
+            for item in pointer_entries or []
+            if isinstance(item, dict)
+            and all(
+                item.get(field) == selected_closure.get(field)
+                for field in ("id", "version", "path")
+            )
+        ),
+        None,
+    )
+    if (
+        not isinstance(closure_entry_binding, dict)
+        or not migration_kernel._is_plain_sha256(
+            closure_entry_binding.get("sha256")
+        )
+        or hashlib.sha256(closure_bytes).hexdigest()
+        != closure_entry_binding.get("sha256")
+        or closure_payload != current_closure
+        or closure_payload != profile.get("_verified_target_closure")
+    ):
+        raise ValueError("supervised legacy target closure binding changed")
+    operations = profile.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("supervised legacy profile operations are missing")
+    write_set: list[dict[str, Any]] = []
+    staged: dict[str, bytes] = {}
+    operation_projection: list[dict[str, str]] = []
+    dynamic_operations = 0
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("supervised legacy profile operation is invalid")
+        operation_type = operation.get("type")
+        relative = operation.get("target_path")
+        if not isinstance(operation_type, str) or not isinstance(relative, str):
+            raise ValueError("supervised legacy operation identity is invalid")
+        operation_projection.append(
+            {"target_path": relative, "type": operation_type}
+        )
+        state = states.get(relative)
+        if not isinstance(state, dict):
+            raise ValueError(
+                f"supervised legacy target file fact is missing: {relative}"
+            )
+        operation_sha256 = (
+            "sha256:" + migration_kernel.canonical_json_sha256(operation)
+        )
+        if operation_type in {"create_exact", "replace_exact"}:
+            closure_entry = closure_entries.get(relative)
+            postimage = operation.get("postimage")
+            if (
+                not isinstance(closure_entry, dict)
+                or closure_entry.get("kind") != "exact"
+                or closure_entry.get("ownership") != "wrapper_managed"
+                or not isinstance(postimage, dict)
+                or postimage.get("sha256") != closure_entry.get("sha256")
+                or postimage.get("mode") != closure_entry.get("mode")
+            ):
+                raise ValueError(
+                    f"supervised legacy exact operation differs from closure: {relative}"
+                )
+            source_path = (
+                Path("contracts/v1") / str(postimage.get("artifact_path"))
+            ).as_posix()
+            closure_source_path = (
+                Path(str(current_closure_path)).parent
+                / str(closure_entry.get("artifact_path"))
+            ).as_posix()
+            source_relative = migration_kernel._safe_relative_path(
+                source_path,
+                "supervised legacy exact postimage path",
+            )
+            closure_source_relative = migration_kernel._safe_relative_path(
+                closure_source_path,
+                "supervised legacy target closure artifact path",
+            )
+            if source_relative != closure_source_relative:
+                raise ValueError(
+                    f"supervised legacy exact source differs from closure: {relative}"
+                )
+            source_file = migration_kernel._safe_file_below(
+                wrapper_root,
+                source_relative,
+                "supervised legacy exact postimage",
+            )
+            source_metadata = source_file.lstat()
+            if not stat.S_ISREG(source_metadata.st_mode):
+                raise ValueError(
+                    f"supervised legacy exact artifact is unsafe: {relative}"
+                )
+            data = source_file.read_bytes()
+            expected_postimage = "sha256:" + str(postimage.get("sha256"))
+            if f"sha256:{hashlib.sha256(data).hexdigest()}" != expected_postimage:
+                raise ValueError(
+                    f"supervised legacy exact artifact digest mismatch: {relative}"
+                )
+            postimage_mode = _official_exact_file_mode(postimage.get("mode"))
+            if stat.S_IMODE(source_metadata.st_mode) != postimage_mode:
+                raise ValueError(
+                    f"supervised legacy exact artifact mode mismatch: {relative}"
+                )
+            preimage = operation.get("preimage")
+            if operation_type == "create_exact":
+                if preimage != {"state": "absent"} or state.get("kind") != "absent":
+                    raise ValueError(
+                        f"supervised legacy create preimage changed: {relative}"
+                    )
+                preimage_sha256 = None
+                preimage_mode = None
+                preimage_identity = None
+            else:
+                if (
+                    not isinstance(preimage, dict)
+                    or state.get("kind") != "file"
+                    or state.get("sha256")
+                    != "sha256:" + str(preimage.get("sha256"))
+                    or state.get("mode")
+                    != _official_exact_file_mode(preimage.get("mode"))
+                ):
+                    raise ValueError(
+                        f"supervised legacy replace preimage changed: {relative}"
+                    )
+                preimage_sha256 = state["sha256"]
+                preimage_mode = state["mode"]
+                preimage_identity = _planned_preimage_identity(state)
+                if preimage_identity is None:
+                    raise ValueError(
+                        f"supervised legacy replace identity is missing: {relative}"
+                    )
+                preimage_artifact = preimage.get("artifact")
+                if not isinstance(preimage_artifact, dict):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage is missing: {relative}"
+                    )
+                frozen_source_path = (
+                    Path("contracts/v1")
+                    / str(preimage_artifact.get("path"))
+                )
+                frozen_source_path = migration_kernel._safe_relative_path(
+                    frozen_source_path.as_posix(),
+                    "supervised legacy frozen preimage path",
+                )
+                frozen_source = migration_kernel._safe_file_below(
+                    wrapper_root,
+                    frozen_source_path,
+                    "supervised legacy frozen preimage",
+                )
+                frozen_metadata = frozen_source.lstat()
+                if not stat.S_ISREG(frozen_metadata.st_mode):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage is unsafe: {relative}"
+                    )
+                frozen_mode = _official_exact_file_mode(
+                    preimage_artifact.get("mode")
+                )
+                frozen_bytes = frozen_source.read_bytes()
+                if (
+                    stat.S_IMODE(frozen_metadata.st_mode) != frozen_mode
+                    or hashlib.sha256(frozen_bytes).hexdigest()
+                    != preimage_artifact.get("sha256")
+                    or state.get("sha256")
+                    != "sha256:" + str(preimage_artifact.get("sha256"))
+                    or state.get("mode") != frozen_mode
+                ):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage changed: {relative}"
+                    )
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": preimage_sha256,
+                    "preimage_mode": preimage_mode,
+                    "preimage_identity": preimage_identity,
+                    "preimage_artifact": (
+                        copy.deepcopy(preimage.get("artifact"))
+                        if operation_type == "replace_exact"
+                        and isinstance(preimage, dict)
+                        else None
+                    ),
+                    "postimage_sha256": expected_postimage,
+                    "postimage_mode": postimage_mode,
+                    "source_root": "repository_root",
+                    "source_path": source_path,
+                    "source_sha256": expected_postimage,
+                    "ownership": closure_entry["ownership"],
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "target_closure_path": current_closure_path,
+                }
+            )
+        elif operation_type == "manifest_patch":
+            closure_entry = closure_entries.get(relative)
+            manifest_bytes = evidence.get("_manifest_bytes")
+            if (
+                relative != TARGET_WRAPPER_MANIFEST
+                or not isinstance(closure_entry, dict)
+                or closure_entry.get("kind") != "manifest_state"
+                or closure_entry.get("ownership") != "wrapper_managed"
+                or not isinstance(manifest_bytes, bytes)
+                or state.get("kind") != "file"
+            ):
+                raise ValueError("supervised legacy manifest target is invalid")
+            data = _supervised_manifest_postimage(
+                manifest_bytes,
+                operation,
+                profile,
+                current_closure,
+            )
+            preimage_identity = _planned_preimage_identity(state)
+            if preimage_identity is None:
+                raise ValueError("supervised legacy manifest identity is missing")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": state.get("sha256"),
+                    "preimage_mode": state.get("mode"),
+                    "preimage_identity": preimage_identity,
+                    "postimage_sha256": (
+                        f"sha256:{hashlib.sha256(data).hexdigest()}"
+                    ),
+                    "postimage_mode": state.get("mode"),
+                    "source_root": "repository_root",
+                    "source_path": profile_identity["profile_path"],
+                    "source_sha256": (
+                        "sha256:" + profile_identity["profile_sha256"]
+                    ),
+                    "ownership": closure_entry["ownership"],
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "manifest_source_projection": copy.deepcopy(
+                        operation.get("source_projection")
+                    ),
+                    "manifest_patch": copy.deepcopy(operation.get("patch")),
+                    "manifest_target_projection": copy.deepcopy(
+                        operation.get("target_projection")
+                    ),
+                    "target_closure_path": current_closure_path,
+                }
+            )
+        elif operation_type == "supervised_transform":
+            dynamic_operations += 1
+            transform = (
+                proof.get("instruction_surface_transform")
+                if isinstance(proof, dict) else None
+            )
+            proof_operation = (
+                proof.get("write_operation") if isinstance(proof, dict) else None
+            )
+            protected_rule = next(
+                (
+                    item.get("rule")
+                    for item in profile.get("protected_business_surfaces", [])
+                    if isinstance(item, dict)
+                    and item.get("selector") == "manifest.instruction_surface"
+                ),
+                None,
+            )
+            if (
+                relative != "SKILL.md"
+                or operation.get("source_envelope") != profile.get("source_envelope")
+                or operation.get("adapter") != profile.get("adapter")
+                or not isinstance(transform, dict)
+                or not isinstance(proof_operation, dict)
+                or proof_operation.get("path") != relative
+                or proof_operation.get("operation") != "replace_exact"
+                or state.get("kind") != "file"
+                or state.get("sha256") != transform.get("preimage_sha256")
+                or state.get("mode")
+                != _official_exact_file_mode(transform.get("preimage_mode"))
+                or any(
+                    proof_operation.get(field) != transform.get(field)
+                    for field in (
+                        "preimage_sha256",
+                        "preimage_mode",
+                        "postimage_sha256",
+                        "postimage_mode",
+                    )
+                )
+                or protected_rule != "adapter_proven_complement_bytes_exact"
+            ):
+                raise ValueError("supervised legacy transform proof is invalid")
+            preimage_identity = _planned_preimage_identity(state)
+            if preimage_identity is None:
+                raise ValueError("supervised legacy transform identity is missing")
+            data = evidence["postimage"]
+            postimage_sha256 = f"sha256:{hashlib.sha256(data).hexdigest()}"
+            if postimage_sha256 != transform.get("postimage_sha256"):
+                raise ValueError("supervised legacy transform postimage changed")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": transform.get("preimage_sha256"),
+                    "preimage_mode": _official_exact_file_mode(
+                        transform.get("preimage_mode")
+                    ),
+                    "preimage_identity": preimage_identity,
+                    "postimage_sha256": postimage_sha256,
+                    "postimage_mode": _official_exact_file_mode(
+                        transform.get("postimage_mode")
+                    ),
+                    "source_root": "target_repository_root",
+                    "source_path": relative,
+                    "source_sha256": transform.get("preimage_sha256"),
+                    "ownership": protected_rule,
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "adapter_proof_sha256": proof.get("proof_sha256"),
+                    "retained_target_bytes": copy.deepcopy(
+                        transform.get("retained_target_bytes")
+                    ),
+                    "deleted_spans": copy.deepcopy(transform.get("deleted_spans")),
+                    "zero_context_diff": copy.deepcopy(
+                        transform.get("zero_context_diff")
+                    ),
+                }
+            )
+        else:
+            raise ValueError(
+                f"supervised legacy operation is unsupported: {operation_type}"
+            )
+    if operation_projection != profile.get("static_write_set"):
+        raise ValueError(
+            "supervised legacy runtime operation set differs from verified profile"
+        )
+    if dynamic_operations != 1:
+        raise ValueError(
+            "supervised legacy profile must contain one dynamic full-file transform"
+        )
+    if len(write_set) != len(staged) or len(staged) != len(set(staged)):
+        raise ValueError("supervised legacy operation paths are not one-to-one")
+
+    transform = proof["instruction_surface_transform"]
+    protected: list[dict[str, Any]] = [
+        {
+            "path": "SKILL.md",
+            "rule": "adapter_proven_complement_bytes_exact",
+            "planned_write": True,
+            "preimage_sha256": transform["preimage_sha256"],
+            "preimage_mode": _official_exact_file_mode(transform["preimage_mode"]),
+            "preimage_identity": next(
+                item["preimage_identity"]
+                for item in write_set
+                if item["path"] == "SKILL.md"
+            ),
+            "postimage_sha256": transform["postimage_sha256"],
+            "postimage_mode": _official_exact_file_mode(transform["postimage_mode"]),
+            "retained_target_bytes": copy.deepcopy(
+                transform["retained_target_bytes"]
+            ),
+            "deleted_spans": copy.deepcopy(transform["deleted_spans"]),
+            "zero_context_diff": copy.deepcopy(transform["zero_context_diff"]),
+        }
+    ]
+    for item in proof.get("protected_no_write_surfaces", []):
+        if not isinstance(item, dict):
+            raise ValueError("supervised legacy preserve proof is invalid")
+        state = states.get(item.get("path"))
+        if not isinstance(state, dict):
+            raise ValueError("supervised legacy preserve file fact is missing")
+        preimage_identity = _planned_preimage_identity(state)
+        if preimage_identity is None:
+            raise ValueError("supervised legacy preserve identity is missing")
+        protected.append(
+            {
+                "path": item["path"],
+                "rule": "byte_exact",
+                "planned_write": False,
+                "preimage_sha256": item["preimage_sha256"],
+                "preimage_mode": _official_exact_file_mode(item["preimage_mode"]),
+                "preimage_identity": preimage_identity,
+            }
+        )
+    return write_set, staged, protected
+
+
 def _invalid_manifest_migration_plan(
     target: Path,
     latest_version: str | None,
@@ -4047,6 +4767,57 @@ def plan_target_layout_migration(
         or instruction_surface_migration_required
     )
     requested_wrapper_to = latest_version or current_version
+    supervised_state_candidates = _supervised_legacy_profile_candidates(
+        migration_bundle,
+        current_manifest or {},
+        requested_wrapper_to,
+    )
+    supervised_candidate_evidence: list[
+        tuple[dict[str, Any], dict[str, Any]]
+    ] = []
+    for supervised_candidate in supervised_state_candidates:
+        try:
+            supervised_evidence = (
+                migration_kernel.collect_supervised_legacy_evidence(
+                    target,
+                    migration_bundle,
+                    supervised_candidate,
+                    expected_binding=(
+                        target_git_state.get("target_binding")
+                        if isinstance(target_git_state, dict)
+                        else None
+                    ),
+                )
+            )
+        except (OSError, ValueError) as exc:
+            supervised_evidence = {
+                "decision": "manual_migration_required",
+                "proof": {
+                    "writes": False,
+                    "destructive_authority": False,
+                    "reasons": [str(exc)],
+                },
+                "postimage": None,
+                "target_file_states": {},
+                "profile_identity": (
+                    migration_kernel.supervised_legacy_profile_identity(
+                        supervised_candidate
+                    )
+                ),
+            }
+        supervised_candidate_evidence.append(
+            (supervised_candidate, supervised_evidence)
+        )
+    supervised_matches = [
+        (profile, evidence)
+        for profile, evidence in supervised_candidate_evidence
+        if evidence.get("decision") == "supervised_migration_available"
+    ]
+    if len(supervised_matches) == 1:
+        supervised_profile, supervised_evidence = supervised_matches[0]
+    else:
+        supervised_profile = None
+        supervised_evidence = None
     state_candidates = _automatic_profile_candidates(
         migration_bundle,
         current_manifest or {},
@@ -4278,12 +5049,45 @@ def plan_target_layout_migration(
             authority_rules.get("post_verify_failure") == "restore_snapshot",
         )
     )
+    supervised_execution = (
+        supervised_profile.get("execution")
+        if isinstance(supervised_profile, dict)
+        else {}
+    )
+    supervised_profile_authorized = supervised_profile is not None and all(
+        (
+            supervised_profile.get("automatic") is False,
+            supervised_profile.get("_active_for_current") is True,
+            isinstance(supervised_execution, dict),
+            supervised_execution.get("mode") == "supervised_exact_plan",
+            supervised_execution.get("discovery_authority") is False,
+            supervised_execution.get("adapter_write_authority") is False,
+            supervised_execution.get("approval")
+            == "one_time_exact_plan_digest",
+            supervised_execution.get("approval_scope")
+            == "one_target_one_preimage_one_postimage",
+            supervised_execution.get("compare_and_swap")
+            == "full_file_preimage",
+            supervised_execution.get("snapshot") == "required_before_any_write",
+            supervised_execution.get("post_verify")
+            == "adapter_proof_and_current_closure",
+            supervised_execution.get("rollback")
+            == "restore_snapshot_on_any_failure",
+            authority_rules.get("discovery_candidates_are_authority") is False,
+            authority_rules.get("exact_preimage_hash_required") is True,
+            authority_rules.get("snapshot_required_before_write") is True,
+            authority_rules.get("post_verify_failure") == "restore_snapshot",
+        )
+    )
     if not requires_migration:
         selected_profile = None
         decision = "no_migration_required"
     elif layout_migration_required:
         selected_profile = legacy_profile
         decision = "manual_migration_required"
+    elif supervised_profile_authorized:
+        selected_profile = supervised_profile
+        decision = "supervised_migration_available"
     elif prerelease_ambiguous:
         selected_profile = prerelease_profile
         decision = "manual_migration_required"
@@ -4327,6 +5131,27 @@ def plan_target_layout_migration(
                 )
             except ValueError as exc:
                 conflicts.append(str(exc))
+        elif decision == "supervised_migration_available" and isinstance(
+            selected_profile, dict
+        ):
+            migration_records = [
+                item["target_path"]
+                for item in selected_profile.get("operations", [])
+                if isinstance(item, dict)
+                and item.get("type") == "create_exact"
+                and isinstance(item.get("target_path"), str)
+                and item["target_path"].startswith(
+                    f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
+                )
+            ]
+            if len(migration_records) != len(set(migration_records)):
+                conflicts.append(
+                    "supervised legacy migration records are duplicated"
+                )
+                migration_records = []
+            migration_record = (
+                migration_records[-1] if migration_records else None
+            )
         elif layout_migration_required:
             migration_record = (
                 f"{TARGET_EVOINFRA_DIR}/docs/migrations/{day}-layout-v1-to-v2.md"
@@ -4389,6 +5214,29 @@ def plan_target_layout_migration(
             if item.get("operation") in {"create_exact", "replace_exact"}
             and item["path"] not in set(migration_records)
         )
+    elif (
+        decision == "supervised_migration_available"
+        and isinstance(selected_profile, dict)
+        and isinstance(supervised_evidence, dict)
+    ):
+        try:
+            write_set, _staged, protected_business_surfaces = (
+                _supervised_legacy_write_plan(
+                    migration_bundle,
+                    selected_profile,
+                    supervised_evidence,
+                )
+            )
+        except (OSError, ValueError) as exc:
+            conflicts.append(str(exc))
+            decision = "manual_migration_required"
+            write_set = []
+        managed_file_refreshes.extend(
+            item["path"]
+            for item in write_set
+            if item.get("operation") in {"create_exact", "replace_exact"}
+            and item["path"] not in set(migration_records)
+        )
 
     explicit_paths = {
         item.get("path") for item in [*write_set, *delete_set] if isinstance(item, dict)
@@ -4427,24 +5275,50 @@ def plan_target_layout_migration(
                 break
 
     apply_blockers = list(conflicts)
-    if decision != "automatic_migration_available":
+    writable_decisions = {
+        "automatic_migration_available",
+        "supervised_migration_available",
+    }
+    if decision not in writable_decisions:
         apply_blockers.append(
-            "no automatic migration profile has destructive authority"
+            "no verified migration profile authorizes an exact write plan"
+        )
+    if (
+        decision == "supervised_migration_available"
+        and supervised_execution.get("runtime_apply") != "trusted_kernel_exact_apply"
+    ):
+        apply_blockers.append(
+            "supervised legacy runtime apply is not enabled by the verified profile"
         )
     source_trust = migration_bundle["source_trust"]
-    if decision == "automatic_migration_available" and source_trust["status"] != "trusted_release":
+    if decision in writable_decisions and source_trust["status"] != "trusted_release":
         apply_blockers.append(
             "migration source is not an immutable trusted release: "
             + source_trust["status"]
         )
-    if decision == "automatic_migration_available" and not worktree_status_available:
+    if decision in writable_decisions and not worktree_status_available:
         apply_blockers.append("target Git worktree status is unavailable")
-    elif decision == "automatic_migration_available" and not worktree_clean:
+    elif decision in writable_decisions and not worktree_clean:
         apply_blockers.append("target Git worktree is not clean")
     can_apply = requires_migration and not apply_blockers
     profile = (
-        migration_kernel.profile_identity(selected_profile)
-        if selected_profile is not None
+        (
+            migration_kernel.supervised_legacy_profile_identity(selected_profile)
+            if selected_profile.get("schema_version")
+            == "evozeus.coevolve.supervised-legacy-profile.v1"
+            else migration_kernel.profile_identity(selected_profile)
+        )
+        if isinstance(selected_profile, dict)
+        else None
+    )
+    selected_is_supervised = bool(
+        isinstance(selected_profile, dict)
+        and selected_profile.get("schema_version")
+        == "evozeus.coevolve.supervised-legacy-profile.v1"
+    )
+    supervised_proof = (
+        copy.deepcopy(supervised_evidence.get("proof"))
+        if selected_is_supervised and isinstance(supervised_evidence, dict)
         else None
     )
     plan = {
@@ -4457,26 +5331,60 @@ def plan_target_layout_migration(
         "source_trust": source_trust,
         "profile": profile,
         "compatibility_state": (
-            "prerelease_ambiguous" if prerelease_ambiguous else "versioned"
+            "reviewed_legacy"
+            if selected_is_supervised
+            else "prerelease_ambiguous" if prerelease_ambiguous else "versioned"
         ),
         "target_wrapper_from": current_version,
         "target_wrapper_to": latest_version or current_version,
         "harness_skill_from": (
-            (selected_profile or {}).get("from", {}).get("harness_skill_version")
+            None
+            if selected_is_supervised
+            else (selected_profile or {}).get("from", {}).get("harness_skill_version")
             if selected_profile is not None
             else current_manifest.get("harness_skill_version") if current_manifest else None
         ),
         "harness_skill_to": (
-            (selected_profile or {}).get("to", {}).get("harness_skill_version")
+            verified_current_harness_version
+            if selected_is_supervised
+            else (selected_profile or {}).get("to", {}).get("harness_skill_version")
             if isinstance((selected_profile or {}).get("to"), dict)
             else None
         ),
-        "ownership_evidence": canonical_evidence,
+        "ownership_evidence": (
+            supervised_proof if selected_is_supervised else canonical_evidence
+        ),
         "automatic_profile_authorized": canonical_profile_authorized,
+        "supervised_profile_authorized": supervised_profile_authorized,
+        "supervised_runtime_apply": (
+            supervised_execution.get("runtime_apply")
+            if selected_is_supervised
+            else None
+        ),
+        "supervised_adapter_proof": supervised_proof,
         "upgrade_axis_evidence": upgrade_axis_evidence,
         "automatic_profile_candidates": [
             migration_kernel.profile_identity(item)
             for item in automatic_candidates
+        ],
+        "supervised_profile_candidates": [
+            migration_kernel.supervised_legacy_profile_identity(item)
+            for item, _evidence in supervised_candidate_evidence
+        ],
+        "supervised_profile_matches": [
+            migration_kernel.supervised_legacy_profile_identity(item)
+            for item, evidence in supervised_candidate_evidence
+            if evidence.get("decision") == "supervised_migration_available"
+        ],
+        "supervised_candidate_evidence": [
+            {
+                "profile": (
+                    migration_kernel.supervised_legacy_profile_identity(item)
+                ),
+                "decision": evidence.get("decision"),
+                "proof": copy.deepcopy(evidence.get("proof")),
+            }
+            for item, evidence in supervised_candidate_evidence
         ],
         "discovery_candidates": discovery_candidates,
         "discovery_candidates_have_destructive_authority": False,
