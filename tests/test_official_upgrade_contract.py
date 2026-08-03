@@ -3013,10 +3013,15 @@ def _assert_release_security_invariants(workflow: dict[str, object]) -> None:
     assert governance_gate["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
         "EvoZeus Official Upgrade Profile / classify-and-verify"
     )
+    assert governance_gate["env"]["EXPECTED_GITHUB_ACTIONS_APP_ID"] == "15368"
     assert governance_gate["run"].count(
         "((.bypass_actors // []) | length == 0)"
     ) == 2
     assert "index($ci) != null and index($official) != null" in governance_gate["run"]
+    assert "strict_required_status_checks_policy == true" in governance_gate["run"]
+    assert ".integration_id == $actions_app_id" in governance_gate["run"]
+    assert ".required_status_checks.strict == true" in governance_gate["run"]
+    assert ".app_id == $actions_app_id" in governance_gate["run"]
     artifact_step = next(
         step
         for step in publish["steps"]
@@ -3097,6 +3102,7 @@ def test_release_governance_job_proves_external_admin_controls_read_only() -> No
         "${{ vars.EVOZEUS_RELEASE_GOVERNANCE_ATTESTATION }}"
     )
     assert step["env"]["GH_TOKEN"] == "${{ secrets.EVOZEUS_GOVERNANCE_TOKEN }}"
+    assert step["env"]["EXPECTED_GITHUB_ACTIONS_APP_ID"] == "15368"
     assert step["env"]["REQUIRED_CI_CONTEXT"] == "CI / test"
     assert step["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
         "EvoZeus Official Upgrade Profile / classify-and-verify"
@@ -3109,10 +3115,14 @@ def test_release_governance_job_proves_external_admin_controls_read_only() -> No
         "repos/${GH_REPO}/rulesets/${RULESET_ID}",
         'index("pull_request")',
         'index("required_status_checks")',
+        "strict_required_status_checks_policy == true",
+        ".integration_id == $actions_app_id",
         'index("update")',
         "((.bypass_actors // []) | length == 0)",
         "index($ci) != null and index($official) != null",
         "repos/${GH_REPO}/branches/main/protection",
+        ".required_status_checks.strict == true",
+        ".app_id == $actions_app_id",
         ".required_pull_request_reviews.required_approving_review_count >= 1",
         ".enforce_admins.enabled == true",
         "repos/${GH_REPO}/environments/${RELEASE_ENVIRONMENT}",
@@ -3138,8 +3148,11 @@ def test_release_governance_job_proves_external_admin_controls_read_only() -> No
 
 def _valid_release_governance_responses() -> dict[str, object]:
     required_contexts = [
-        {"context": "CI / test"},
-        {"context": "EvoZeus Official Upgrade Profile / classify-and-verify"},
+        {"context": "CI / test", "integration_id": 15368},
+        {
+            "context": "EvoZeus Official Upgrade Profile / classify-and-verify",
+            "integration_id": 15368,
+        },
     ]
     return {
         "ruleset_list": [
@@ -3159,7 +3172,10 @@ def _valid_release_governance_responses() -> dict[str, object]:
                 {"type": "pull_request"},
                 {
                     "type": "required_status_checks",
-                    "parameters": {"required_status_checks": required_contexts},
+                    "parameters": {
+                        "required_status_checks": required_contexts,
+                        "strict_required_status_checks_policy": True,
+                    },
                 },
             ],
         },
@@ -3174,13 +3190,19 @@ def _valid_release_governance_responses() -> dict[str, object]:
         },
         "branch_protection": {
             "required_status_checks": {
-                "contexts": ["CI / test"],
+                "strict": True,
+                "contexts": [
+                    "CI / test",
+                    "EvoZeus Official Upgrade Profile / classify-and-verify",
+                ],
                 "checks": [
+                    {"context": "CI / test", "app_id": 15368},
                     {
                         "context": (
                             "EvoZeus Official Upgrade Profile / "
                             "classify-and-verify"
-                        )
+                        ),
+                        "app_id": 15368,
                     }
                 ],
             },
@@ -3246,6 +3268,7 @@ gh() {
         "EXPECTED_ATTESTATION": "evozeus-release-governance-v1",
         "GH_REPO": "MetaInFLow/EvoZeus-CoEvolve",
         "GH_TOKEN": "admin-read-token",
+        "EXPECTED_GITHUB_ACTIONS_APP_ID": "15368",
         "RELEASE_ENVIRONMENT": "release",
         "REQUIRED_CI_CONTEXT": "CI / test",
         "REQUIRED_OFFICIAL_CONTEXT": (
@@ -3287,6 +3310,14 @@ def test_release_governance_gate_accepts_only_the_complete_external_contract(
         "tag_bypass_actor",
         "missing_ci_context",
         "missing_official_context",
+        "missing_integration_id",
+        "null_integration_id",
+        "wrong_integration_id",
+        "missing_app_id",
+        "wrong_app_id",
+        "ruleset_strict_false",
+        "branch_protection_strict_false",
+        "contexts_only",
         "unprotected_environment",
         "mutable_future_releases",
         "invalid_attestation",
@@ -3308,6 +3339,40 @@ def test_release_governance_gate_rejects_external_control_downgrades(
         ]
         checks[:] = [item for item in checks if item["context"] != "CI / test"]
     elif downgrade == "missing_official_context":
+        checks = responses["branch_protection"]["required_status_checks"]["checks"]
+        checks[:] = [
+            item
+            for item in checks
+            if item["context"]
+            != "EvoZeus Official Upgrade Profile / classify-and-verify"
+        ]
+    elif downgrade == "missing_integration_id":
+        del responses["branch_ruleset"]["rules"][3]["parameters"][
+            "required_status_checks"
+        ][0]["integration_id"]
+    elif downgrade == "null_integration_id":
+        responses["branch_ruleset"]["rules"][3]["parameters"][
+            "required_status_checks"
+        ][0]["integration_id"] = None
+    elif downgrade == "wrong_integration_id":
+        responses["branch_ruleset"]["rules"][3]["parameters"][
+            "required_status_checks"
+        ][0]["integration_id"] = 1
+    elif downgrade == "missing_app_id":
+        del responses["branch_protection"]["required_status_checks"]["checks"][0][
+            "app_id"
+        ]
+    elif downgrade == "wrong_app_id":
+        responses["branch_protection"]["required_status_checks"]["checks"][0][
+            "app_id"
+        ] = 1
+    elif downgrade == "ruleset_strict_false":
+        responses["branch_ruleset"]["rules"][3]["parameters"][
+            "strict_required_status_checks_policy"
+        ] = False
+    elif downgrade == "branch_protection_strict_false":
+        responses["branch_protection"]["required_status_checks"]["strict"] = False
+    elif downgrade == "contexts_only":
         responses["branch_protection"]["required_status_checks"]["checks"] = []
     elif downgrade == "unprotected_environment":
         responses["environment"]["protection_rules"] = []

@@ -42,6 +42,9 @@ jobs:
           EXPECTED_ATTESTATION: evozeus-release-governance-v1
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.EVOZEUS_GOVERNANCE_TOKEN }}
+          # Verified by both this repository's main check-runs API response and
+          # GET /apps/github-actions; bind required checks to their real producer.
+          EXPECTED_GITHUB_ACTIONS_APP_ID: "15368"
           RELEASE_ENVIRONMENT: release
           REQUIRED_CI_CONTEXT: CI / test
           REQUIRED_OFFICIAL_CONTEXT: EvoZeus Official Upgrade Profile / classify-and-verify
@@ -63,6 +66,7 @@ jobs:
               -H "X-GitHub-Api-Version: ${API_VERSION}" \
               "repos/${GH_REPO}/rulesets/${RULESET_ID}")"
             if jq -e \
+              --argjson actions_app_id "${EXPECTED_GITHUB_ACTIONS_APP_ID}" \
               --arg ci "${REQUIRED_CI_CONTEXT}" \
               --arg official "${REQUIRED_OFFICIAL_CONTEXT}" '
               .target == "branch" and
@@ -78,8 +82,11 @@ jobs:
                 index("pull_request") != null and
                 index("required_status_checks") != null) and
               ([.rules[] |
-                select(.type == "required_status_checks") |
-                .parameters.required_status_checks[]?.context] |
+                select(.type == "required_status_checks" and
+                       .parameters.strict_required_status_checks_policy == true) |
+                .parameters.required_status_checks[]? |
+                select(.integration_id == $actions_app_id) |
+                .context] |
                 index($ci) != null and index($official) != null)
             ' <<< "${RULESET}" >/dev/null; then
               BRANCH_RULESET_OK=true
@@ -113,10 +120,13 @@ jobs:
             -H "X-GitHub-Api-Version: ${API_VERSION}" \
             "repos/${GH_REPO}/branches/main/protection")"
           jq -e \
+            --argjson actions_app_id "${EXPECTED_GITHUB_ACTIONS_APP_ID}" \
             --arg ci "${REQUIRED_CI_CONTEXT}" \
             --arg official "${REQUIRED_OFFICIAL_CONTEXT}" '
-            ([((.required_status_checks.contexts // [])[]),
-              ((.required_status_checks.checks // [])[] | .context)] |
+            (.required_status_checks.strict == true) and
+            ([.required_status_checks.checks[]? |
+              select(.app_id == $actions_app_id) |
+              .context] |
               index($ci) != null and index($official) != null) and
             (.required_pull_request_reviews.required_approving_review_count >= 1) and
             (.enforce_admins.enabled == true) and
