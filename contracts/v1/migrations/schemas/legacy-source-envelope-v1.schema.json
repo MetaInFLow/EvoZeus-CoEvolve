@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json",
+  "title": "EvoZeus reviewed legacy source envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "envelope_version",
+    "source_evidence",
+    "state",
+    "manifest_projection",
+    "instruction_surface",
+    "files",
+    "host_entrypoints_must_match"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.legacy-source-envelope.v1"
+    },
+    "envelope_id": { "type": "string", "minLength": 1 },
+    "envelope_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "source_evidence": { "type": "object" },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layout",
+        "target_wrapper_version",
+        "instruction_surface",
+        "harness_skill_state"
+      ],
+      "properties": {
+        "layout": { "const": "consolidated-v2" },
+        "target_wrapper_version": { "const": "v0.14.0" },
+        "instruction_surface": { "const": "SKILL.md" },
+        "harness_skill_state": { "const": "absent" }
+      }
+    },
+    "manifest_projection": { "type": "object" },
+    "instruction_surface": { "type": "object" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind"],
+        "properties": {
+          "path": { "$ref": "#/$defs/relativePath" },
+          "kind": { "enum": ["exact", "absent", "rendered_preserve"] },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "mode": { "enum": ["100644", "100755"] },
+          "source": { "type": "string" }
+        }
+      }
+    },
+    "host_entrypoints_must_match": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relativePath" }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "schema_version": "evozeus.coevolve.legacy-source-envelope.v1",
+  "envelope_id": "legacy-wrapper-v0.14-three-section",
+  "envelope_version": "v1.0.0",
+  "source_evidence": {
+    "repository": "MetaInFLow/diagnose-enterprise-ai-scenarios",
+    "repository_url": "https://github.com/MetaInFLow/diagnose-enterprise-ai-scenarios",
+    "commit": "ee2bd6e8232d14ad9070b4ee7875595e9e8e4a4f",
+    "tree": "801f60fa4df1a6c3a60fe44e8f0b81fe490cc5eb",
+    "instruction_surface_path": "SKILL.md",
+    "instruction_surface_sha256": "22b519a18fa4ec9b5ed1a892cd1895c1b68b84366c1286af8f8a403f35d79a04",
+    "instruction_surface_line_count_lf": 232,
+    "manifest_sha256": "c05dbb63db5deb391a13e7093948324e6018f7c6bcb318c537b936dd1e173b52",
+    "legacy_preflight_sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+    "captured_at": "2026-07-31",
+    "purpose": "Issue #38 reviewed v0.14 three-section Prompt source envelope"
+  },
+  "state": {
+    "layout": "consolidated-v2",
+    "target_wrapper_version": "v0.14.0",
+    "instruction_surface": "SKILL.md",
+    "harness_skill_state": "absent"
+  },
+  "manifest_projection": {
+    "path": ".evozeus-wrapper/wrapper.json",
+    "mode": "100644",
+    "template_path": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/artifacts/wrapper.json.tpl",
+    "template_sha256": "c52a5ec7c895fc09f00c2f71d595059c011aa85d6804d8310de377b5821edae4",
+    "template_placeholders": ["APPLIED_AT", "REPO_NAME", "SKILL_NAME"],
+    "required_absent_fields": [
+      "instruction_surface",
+      "harness_skill_path",
+      "harness_skill_version",
+      "harness_skill_managed",
+      "migration_contract",
+      "managed_blocks"
+    ],
+    "top_level_keys_exact": true,
+    "managed_files_exact": true
+  },
+  "instruction_surface": {
+    "path": "SKILL.md",
+    "mode": "100644",
+    "encoding": "strict-utf-8",
+    "newline_styles": ["lf", "crlf"],
+    "mixed_newline_decision": "manual_migration_required_zero_write",
+    "required_owned_sections": ["status", "evolution", "wrapper"],
+    "required_owned_section_count": 3,
+    "canonical_marker_precondition": "absent",
+    "preservation": "complement_bytes_exact"
+  },
+  "files": [
+    {
+      "path": ".codex/hooks.json",
+      "kind": "exact",
+      "sha256": "21083027f8f5b3b14ac8d11fc048e646621927066ea879fc4a7d0e02edd2f4b8",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/design-doc-template.md",
+      "kind": "exact",
+      "sha256": "368bf1bffb8c1a2e69f492f075ac472223ca4754acbee2faae855dc21db1972e",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/designs/README.md",
+      "kind": "exact",
+      "sha256": "30479b1e83eaf456ee2433a75d9bc1e9526263c54294a8580f9427407ad413c9",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/migrations/README.md",
+      "kind": "exact",
+      "sha256": "0e66b384ce6870d61955fc9af7924d85b99e8840a1d205aa96d8d4c8469f1699",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/onboarding.md",
+      "kind": "exact",
+      "sha256": "64797d20ca82b7236a3e584b53ba747a74d3d624a5a38fcb64bd9561fa423ec8",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/hooks/evozeus_wrapper_start_check.py",
+      "kind": "exact",
+      "sha256": "dcda8952560feead27dfa52e536f5873d5aa5608590650fb5d314795dd708df5",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/policies/audit-rule.md",
+      "kind": "exact",
+      "sha256": "f59ce7c5adf5de039f1d1f12f696821c1cb9955f88fbbf3a51225f1afc30f539",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/policies/feedback-policy.json",
+      "kind": "exact",
+      "sha256": "d5d323077fa083ad9f6a492f87387dcd6425f196a1b7b50d7e0a0d4c010dfdec",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/policies/notice-policy.json",
+      "kind": "exact",
+      "sha256": "b03bf3a14cdb3ded3ad5d4b1ca8d0dc2e5f8e57858a6bb0ef52ec58352c56a73",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/scripts/evozeus_notice.py",
+      "kind": "exact",
+      "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+      "mode": "100755",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+      "kind": "exact",
+      "sha256": "0ef6e008461dc8e61845ad6deae5fe239122c2415d81550a1e9d6e9838570aa1",
+      "mode": "100755",
+      "source": "MetaInFLow/diagnose-enterprise-ai-scenarios@ee2bd6e8"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "kind": "exact",
+      "sha256": "28c3766659dd11256cb561b7b2892ae11620042699b1c1a244d1c7ddeca85d36",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "kind": "exact",
+      "sha256": "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".github/workflows/evozeus-wrapper-preflight.yml",
+      "kind": "exact",
+      "sha256": "454655de1cd97332e109d45a7ec0d03f4697ea51118536920fe5e0a9982e26bd",
+      "mode": "100644",
+      "source": "shared with harness-skill v1.0.0 closure"
+    },
+    {
+      "path": ".evozeus-wrapper/CHANGELOG.md",
+      "kind": "rendered_preserve",
+      "mode": "100644",
+      "source": "target-specific rendered surface without receipt"
+    },
+    {
+      "path": ".evozeus-wrapper/WRAPPER.md",
+      "kind": "rendered_preserve",
+      "mode": "100644",
+      "source": "target-specific rendered surface without receipt"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/_config.yml",
+      "kind": "rendered_preserve",
+      "mode": "100644",
+      "source": "target-specific rendered surface without receipt"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/index.md",
+      "kind": "rendered_preserve",
+      "mode": "100644",
+      "source": "target-specific rendered surface without receipt"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/config.yml",
+      "kind": "rendered_preserve",
+      "mode": "100644",
+      "source": "target-specific host entrypoint without receipt"
+    },
+    {
+      "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+      "kind": "absent",
+      "source": "legacy v0.14 precondition"
+    },
+    {
+      "path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+      "kind": "absent",
+      "source": "legacy v0.14 precondition"
+    },
+    {
+      "path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+      "kind": "absent",
+      "source": "legacy v0.14 precondition"
+    },
+    {
+      "path": ".evozeus_evoinfra",
+      "kind": "absent",
+      "source": "consolidated-v2 boundary"
+    },
+    {
+      "path": ".evozeus",
+      "kind": "absent",
+      "source": "consolidated-v2 boundary"
+    }
+  ],
+  "host_entrypoints_must_match": [
+    ".codex/hooks.json",
+    ".evozeus-wrapper/hooks/evozeus_wrapper_start_check.py",
+    ".github/ISSUE_TEMPLATE/skill-feedback.yml",
+    ".github/pull_request_template.md",
+    ".github/workflows/evozeus-wrapper-preflight.yml"
+  ]
+}

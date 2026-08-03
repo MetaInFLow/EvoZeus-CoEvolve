@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/legacy-prompt-adapter-v1.schema.json",
+  "title": "EvoZeus frozen legacy Prompt adapter v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "adapter_id",
+    "adapter_version",
+    "implementation",
+    "source_envelope",
+    "expected_headings",
+    "forbidden_legacy_headings",
+    "templates",
+    "canonical_activation_block_lf",
+    "canonical_activation_sha256_lf",
+    "transform_contract"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.legacy-prompt-adapter.v1"
+    },
+    "adapter_id": { "type": "string", "minLength": 1 },
+    "adapter_version": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "implementation": { "$ref": "#/$defs/binding" },
+    "source_envelope": { "$ref": "#/$defs/binding" },
+    "expected_headings": { "type": "object" },
+    "forbidden_legacy_headings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "templates": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path", "sha256", "placeholders"],
+        "properties": {
+          "kind": { "enum": ["status", "evolution", "wrapper"] },
+          "path": { "$ref": "#/$defs/relativePath" },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "placeholders": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "canonical_activation_block_lf": { "type": "string", "minLength": 1 },
+    "canonical_activation_sha256_lf": { "$ref": "#/$defs/sha256" },
+    "transform_contract": { "type": "object" }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "binding": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "entrypoint": { "type": "string" }
+      }
+    }
+  }
+}
