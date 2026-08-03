@@ -76,43 +76,73 @@ def _bootstrap_preflight_sources() -> tuple[dict, dict]:
 
     atexit_module.register(remove_empty_cache)
 
+    trusted_notice_source = globals().pop(
+        "_EVOZEUS_TRUSTED_NOTICE_SOURCE",
+        None,
+    )
+    trusted_notice_sha256 = globals().pop(
+        "_EVOZEUS_TRUSTED_NOTICE_SHA256",
+        None,
+    )
+    if (trusted_notice_source is None) != (trusted_notice_sha256 is None):
+        raise RuntimeError("trusted notice source identity is incomplete")
     notice_path = scripts_dir + "/evozeus_notice.py"
-    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
-    nofollow = getattr(posix, "O_NOFOLLOW", 0)
-    if nofollow == 0:
-        raise RuntimeError("trusted notice loading requires O_NOFOLLOW")
-    descriptor = posix.open(notice_path, flags | nofollow)
-    try:
-        metadata = posix.fstat(descriptor)
-        if metadata.st_mode & 0o170000 != 0o100000:
-            raise RuntimeError("trusted notice source is not a regular file")
-        source = b""
-        while len(source) < metadata.st_size:
-            chunk = posix.read(descriptor, metadata.st_size - len(source))
-            if not chunk:
-                raise RuntimeError("trusted notice source changed while reading")
-            source += chunk
-        if posix.read(descriptor, 1):
-            raise RuntimeError("trusted notice source grew while reading")
-        final_metadata = posix.fstat(descriptor)
+    if trusted_notice_source is not None:
         if (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
-            metadata.st_ctime_ns,
-        ) != (
-            final_metadata.st_dev,
-            final_metadata.st_ino,
-            final_metadata.st_mode,
-            final_metadata.st_size,
-            final_metadata.st_mtime_ns,
-            final_metadata.st_ctime_ns,
+            not isinstance(trusted_notice_source, bytes)
+            or not isinstance(trusted_notice_sha256, str)
+            or len(trusted_notice_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in trusted_notice_sha256
+            )
         ):
-            raise RuntimeError("trusted notice source changed while reading")
-    finally:
-        posix.close(descriptor)
+            raise RuntimeError("trusted notice source identity is invalid")
+        hashlib_module = __import__("hashlib")
+        if (
+            hashlib_module.sha256(trusted_notice_source).hexdigest()
+            != trusted_notice_sha256
+        ):
+            raise RuntimeError("trusted notice source digest changed")
+        source = trusted_notice_source
+        notice_path = "<evozeus-trusted-notice>"
+    else:
+        flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
+        nofollow = getattr(posix, "O_NOFOLLOW", 0)
+        if nofollow == 0:
+            raise RuntimeError("trusted notice loading requires O_NOFOLLOW")
+        descriptor = posix.open(notice_path, flags | nofollow)
+        try:
+            metadata = posix.fstat(descriptor)
+            if metadata.st_mode & 0o170000 != 0o100000:
+                raise RuntimeError("trusted notice source is not a regular file")
+            source = b""
+            while len(source) < metadata.st_size:
+                chunk = posix.read(descriptor, metadata.st_size - len(source))
+                if not chunk:
+                    raise RuntimeError("trusted notice source changed while reading")
+                source += chunk
+            if posix.read(descriptor, 1):
+                raise RuntimeError("trusted notice source grew while reading")
+            final_metadata = posix.fstat(descriptor)
+            if (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            ) != (
+                final_metadata.st_dev,
+                final_metadata.st_ino,
+                final_metadata.st_mode,
+                final_metadata.st_size,
+                final_metadata.st_mtime_ns,
+                final_metadata.st_ctime_ns,
+            ):
+                raise RuntimeError("trusted notice source changed while reading")
+        finally:
+            posix.close(descriptor)
     namespace = {"__file__": notice_path, "__name__": "_evozeus_notice"}
     exec(compile(source, notice_path, "exec", dont_inherit=True), namespace)
     return namespace, {"pycache_prefix": cache, "scripts_dir": scripts_dir}

@@ -148,6 +148,42 @@ def test_repo_symlink_alias_cannot_supply_tempfile_pyc(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        "evozeus_wrapper.py",
+        "evozeus_wrapper_bootstrap.py",
+        "evozeus_official_upgrade_verify.py",
+        "evozeus_test.py",
+    ],
+)
+@pytest.mark.parametrize("alias_kind", ["parent", "leaf"])
+def test_direct_entrypoint_alias_cannot_select_an_adjacent_source_guard(
+    tmp_path: Path,
+    entrypoint: str,
+    alias_kind: str,
+) -> None:
+    runtime = _copy_runtime(tmp_path)
+    if alias_kind == "parent":
+        alias_scripts = tmp_path / "parent-alias"
+        alias_scripts.symlink_to(runtime / "scripts", target_is_directory=True)
+    else:
+        alias_scripts = tmp_path / "leaf-alias"
+        shutil.copytree(runtime / "scripts", alias_scripts)
+        alias_entrypoint = alias_scripts / entrypoint
+        alias_entrypoint.unlink()
+        alias_entrypoint.symlink_to(runtime / "scripts" / entrypoint)
+
+    result = _run(
+        str(alias_scripts / entrypoint),
+        "--help",
+        cwd=ROOT,
+    )
+
+    assert result.returncode != 0
+    assert "trusted source" in result.stderr or "Too many levels" in result.stderr
+
+
 def test_source_reader_detects_same_path_race_by_final_metadata_cas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

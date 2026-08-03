@@ -41,6 +41,64 @@ def _bootstrap_trusted_sources() -> dict:
 
     script = lexical_absolute(__file__)
     scripts_dir = script.rsplit("/", 1)[0]
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    directory_flag = getattr(posix, "O_DIRECTORY", 0)
+    close_on_exec = getattr(posix, "O_CLOEXEC", 0)
+    if nofollow == 0 or directory_flag == 0:
+        raise RuntimeError("trusted source bootstrap requires no-follow directory traversal")
+
+    entrypoint_parent = posix.open(
+        "/",
+        posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+    )
+    try:
+        for component in script.split("/")[1:-1]:
+            next_parent = posix.open(
+                component,
+                posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+                dir_fd=entrypoint_parent,
+            )
+            posix.close(entrypoint_parent)
+            entrypoint_parent = next_parent
+        entrypoint_descriptor = posix.open(
+            script.rsplit("/", 1)[1],
+            posix.O_RDONLY | nofollow | close_on_exec,
+            dir_fd=entrypoint_parent,
+        )
+        try:
+            entrypoint_metadata = posix.fstat(entrypoint_descriptor)
+            named_entrypoint = posix.stat(
+                script.rsplit("/", 1)[1],
+                dir_fd=entrypoint_parent,
+                follow_symlinks=False,
+            )
+            if (
+                entrypoint_metadata.st_mode & 0o170000 != 0o100000
+                or entrypoint_metadata.st_nlink != 1
+                or (
+                    entrypoint_metadata.st_dev,
+                    entrypoint_metadata.st_ino,
+                    entrypoint_metadata.st_mode,
+                )
+                != (
+                    named_entrypoint.st_dev,
+                    named_entrypoint.st_ino,
+                    named_entrypoint.st_mode,
+                )
+            ):
+                raise RuntimeError(
+                    "trusted source entrypoint must be one canonical regular file"
+                )
+        finally:
+            posix.close(entrypoint_descriptor)
+    except OSError as exc:
+        posix.close(entrypoint_parent)
+        raise RuntimeError(
+            "trusted source entrypoint path contains a symlink or alias"
+        ) from exc
+    except BaseException:
+        posix.close(entrypoint_parent)
+        raise
     system_roots = {
         lexical_absolute(sys.base_prefix),
         lexical_absolute(sys.prefix),
@@ -55,11 +113,12 @@ def _bootstrap_trusted_sources() -> dict:
         )
     ]
     guard_path = scripts_dir + "/evozeus_source_guard.py"
-    flags = posix.O_RDONLY | getattr(posix, "O_CLOEXEC", 0)
-    nofollow = getattr(posix, "O_NOFOLLOW", 0)
-    if nofollow == 0:
-        raise RuntimeError("trusted source bootstrap requires O_NOFOLLOW")
-    descriptor = posix.open(guard_path, flags | nofollow)
+    flags = posix.O_RDONLY | close_on_exec
+    descriptor = posix.open(
+        "evozeus_source_guard.py",
+        flags | nofollow,
+        dir_fd=entrypoint_parent,
+    )
     try:
         metadata = posix.fstat(descriptor)
         if metadata.st_mode & 0o170000 != 0o100000:
@@ -91,6 +150,7 @@ def _bootstrap_trusted_sources() -> dict:
             raise RuntimeError("trusted source bootstrap changed while reading")
     finally:
         posix.close(descriptor)
+        posix.close(entrypoint_parent)
     namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
     exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
     return namespace["bootstrap"](__file__, original_sys_path)

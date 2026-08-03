@@ -317,10 +317,71 @@ def run_command(
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
 
+_TRUSTED_STRUCTURE_RUNNER = r"""
+import hashlib
+import sys
+
+payload = sys.stdin.buffer.read()
+if len(payload) < 16:
+    raise SystemExit("trusted structure payload header is incomplete")
+preflight_size = int.from_bytes(payload[:8], "big")
+notice_size = int.from_bytes(payload[8:16], "big")
+expected_size = 16 + preflight_size + notice_size
+if len(payload) != expected_size:
+    raise SystemExit("trusted structure payload length is invalid")
+preflight_source = payload[16 : 16 + preflight_size]
+notice_source = payload[16 + preflight_size :]
+if hashlib.sha256(preflight_source).hexdigest() != sys.argv[1]:
+    raise SystemExit("trusted preflight source digest changed")
+if hashlib.sha256(notice_source).hexdigest() != sys.argv[2]:
+    raise SystemExit("trusted notice source digest changed")
+notice_sha256 = sys.argv[2]
+label = "/__evozeus_trusted__/evozeus_wrapper_preflight.py"
+sys.argv = [label, *sys.argv[3:]]
+namespace = {
+    "__file__": label,
+    "__name__": "__main__",
+    "_EVOZEUS_TRUSTED_NOTICE_SOURCE": notice_source,
+    "_EVOZEUS_TRUSTED_NOTICE_SHA256": notice_sha256,
+}
+exec(compile(preflight_source, label, "exec", dont_inherit=True), namespace)
+"""
+
+
+class _TrustedStructureSnapshot:
+    def __init__(
+        self,
+        *,
+        preflight_source: bytes,
+        notice_source: bytes,
+        preflight_sha256: str,
+        notice_sha256: str,
+    ) -> None:
+        self.preflight_source = preflight_source
+        self.notice_source = notice_source
+        self.preflight_sha256 = preflight_sha256
+        self.notice_sha256 = notice_sha256
+
+    def verify(self) -> None:
+        if (
+            not isinstance(self.preflight_source, bytes)
+            or hashlib.sha256(self.preflight_source).hexdigest()
+            != self.preflight_sha256
+            or not isinstance(self.notice_source, bytes)
+            or hashlib.sha256(self.notice_source).hexdigest()
+            != self.notice_sha256
+        ):
+            raise ValueError("trusted structure source bytes changed")
+
+    def cleanup(self) -> None:
+        return None
+
+
 def _trusted_structure_preflight(
     migration_bundle: dict[str, Any],
     profile: dict[str, Any],
-) -> Path:
+    _target: Path,
+) -> _TrustedStructureSnapshot:
     if (migration_bundle.get("source_trust") or {}).get("status") != (
         "trusted_release"
     ):
@@ -350,7 +411,7 @@ def _trusted_structure_preflight(
         target_path: str,
         expected_target_mode: str,
         expected_artifact_mode: str,
-    ) -> Path:
+    ) -> bytes:
         entry = closure_entries.get(target_path)
         if (
             not isinstance(entry, dict)
@@ -421,7 +482,7 @@ def _trusted_structure_preflight(
             raise ValueError(
                 f"trusted structure source bytes/mode changed: {target_path}"
             )
-        return source
+        return data
 
     preflight = verified_closure_source(
         TARGET_PREFLIGHT_SCRIPT,
@@ -433,32 +494,63 @@ def _trusted_structure_preflight(
         "100755",
         "100644",
     )
-    if notice.parent != preflight.parent:
-        raise ValueError("trusted structure dependencies are not adjacent")
-    return preflight
+    return _TrustedStructureSnapshot(
+        preflight_source=preflight,
+        notice_source=notice,
+        preflight_sha256=hashlib.sha256(preflight).hexdigest(),
+        notice_sha256=hashlib.sha256(notice).hexdigest(),
+    )
 
 
 def _run_harness_structure_check(
     target: Path,
     *,
-    trusted_preflight: Path,
+    trusted_preflight: _TrustedStructureSnapshot,
 ) -> dict[str, Any]:
+    trusted_preflight.verify()
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONNOUSERSITE"] = "1"
     environment["PYTHONSAFEPATH"] = "1"
     environment.pop("PYTHONPATH", None)
-    return run_command(
-        [
-            sys.executable,
-            str(trusted_preflight),
-            "structure",
-            "--target",
-            str(target),
-        ],
-        cwd=trusted_preflight.parent,
-        env=environment,
+    environment.pop("EVOZEUS_TRUSTED_NOTICE_FD", None)
+    environment.pop("EVOZEUS_TRUSTED_NOTICE_SHA256", None)
+    preflight_size = len(trusted_preflight.preflight_source).to_bytes(8, "big")
+    notice_size = len(trusted_preflight.notice_source).to_bytes(8, "big")
+    payload = b"".join(
+        (
+            preflight_size,
+            notice_size,
+            trusted_preflight.preflight_source,
+            trusted_preflight.notice_source,
+        )
     )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _TRUSTED_STRUCTURE_RUNNER,
+                trusted_preflight.preflight_sha256,
+                trusted_preflight.notice_sha256,
+                "structure",
+                "--target",
+                str(target),
+            ],
+            cwd=Path("/"),
+            env=environment,
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return {"returncode": 127, "stdout": "", "stderr": "command not found"}
+    return {
+        "returncode": result.returncode,
+        "stdout": result.stdout.decode("utf-8", errors="replace"),
+        "stderr": result.stderr.decode("utf-8", errors="replace"),
+    }
 
 
 def latest_changelog_tag_from_text(changelog: str) -> str | None:
@@ -6381,15 +6473,20 @@ def _apply_supervised_legacy_upgrade(
     )
     approved_target_binding = plan["target_git_state"]["target_binding"]
     migration_kernel.verify_target_binding(target, approved_target_binding)
-    trusted_preflight = _trusted_structure_preflight(
+    trusted_structure = _trusted_structure_preflight(
         migration_bundle,
         profile,
-    )
-    snapshot = migration_kernel.create_migration_snapshot(
         target,
-        plan,
-        snapshot_root=snapshot_root,
     )
+    try:
+        snapshot = migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=snapshot_root,
+        )
+    except BaseException:
+        trusted_structure.cleanup()
+        raise
     changed_files: list[str] = []
     migration_kernel.mark_migration_transaction(
         snapshot,
@@ -6460,7 +6557,7 @@ def _apply_supervised_legacy_upgrade(
         migration_kernel.verify_post_apply_target_state(target, plan)
         structure = _run_harness_structure_check(
             target,
-            trusted_preflight=trusted_preflight,
+            trusted_preflight=trusted_structure,
         )
         if structure["returncode"] != 0:
             detail = (structure["stderr"] or structure["stdout"]).strip()
@@ -6501,6 +6598,8 @@ def _apply_supervised_legacy_upgrade(
             f"supervised migration failed and snapshot rollback passed: {exc}; "
             f"snapshot={rollback['snapshot']}"
         ) from exc
+    finally:
+        trusted_structure.cleanup()
 
     return {
         **plan,
@@ -6579,15 +6678,20 @@ def _apply_canonical_v1_upgrade(
                 f"migration staged postimage differs from approved plan: {item['path']}"
             )
 
-    trusted_preflight = _trusted_structure_preflight(
+    trusted_structure = _trusted_structure_preflight(
         migration_bundle,
         official_profile,
-    )
-    snapshot = migration_kernel.create_migration_snapshot(
         target,
-        plan,
-        snapshot_root=snapshot_root,
     )
+    try:
+        snapshot = migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=snapshot_root,
+        )
+    except BaseException:
+        trusted_structure.cleanup()
+        raise
     protected_before: dict[str, bytes] = {}
     with migration_kernel.SecureTargetFS(
         target,
@@ -6647,7 +6751,7 @@ def _apply_canonical_v1_upgrade(
                     )
         structure = _run_harness_structure_check(
             target,
-            trusted_preflight=trusted_preflight,
+            trusted_preflight=trusted_structure,
         )
         if structure["returncode"] != 0:
             detail = (structure["stderr"] or structure["stdout"]).strip()
@@ -6686,6 +6790,8 @@ def _apply_canonical_v1_upgrade(
             f"migration failed and snapshot rollback passed: {exc}; "
             f"snapshot={rollback['snapshot']}"
         ) from exc
+    finally:
+        trusted_structure.cleanup()
 
     return {
         **plan,

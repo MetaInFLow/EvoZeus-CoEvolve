@@ -480,6 +480,66 @@ def test_target_owned_pyc_cannot_execute_during_final_structure_validation(
     assert before["SKILL.md"]["bytes"] != skill_bytes
 
 
+def test_final_structure_validation_uses_immutable_bytes_after_source_inode_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_release_source(tmp_path)
+    target = _prepare_reviewed_legacy_target(tmp_path)
+    plan = _release_plan(target, source)
+    original_run = lifecycle._run_harness_structure_check
+    artifact = source / (
+        "contracts/v1/migrations/history/harness-skill/v1.1.0/"
+        "artifacts/scripts/evozeus_wrapper_preflight.py"
+    )
+    writer = os.open(artifact, os.O_WRONLY)
+    forged_staging = (
+        tmp_path
+        / "evozeus-structure-preflight-forged/scripts/evozeus_wrapper_preflight.py"
+    )
+    source_mutated = False
+
+    def mutate_source_and_forge_old_staging_path(
+        checked_target: Path,
+        *,
+        trusted_preflight: Any,
+    ) -> dict[str, Any]:
+        nonlocal source_mutated
+        payload = b"raise SystemExit(91)\n"
+        os.lseek(writer, 0, os.SEEK_SET)
+        os.write(writer, payload)
+        os.ftruncate(writer, len(payload))
+        source_mutated = True
+        forged_staging.parent.mkdir(parents=True)
+        forged_staging.write_bytes(payload)
+        return original_run(
+            checked_target,
+            trusted_preflight=trusted_preflight,
+        )
+
+    monkeypatch.setattr(
+        lifecycle,
+        "_run_harness_structure_check",
+        mutate_source_and_forge_old_staging_path,
+    )
+
+    try:
+        applied = _apply(
+            target,
+            source,
+            approved=plan["operation_sha256"],
+            snapshot_root=tmp_path / "trusted-structure-snapshots",
+        )
+    finally:
+        os.close(writer)
+        shutil.rmtree(forged_staging.parents[1], ignore_errors=True)
+
+    assert applied["status"] == "applied"
+    assert source_mutated is True
+    assert artifact.read_bytes() == b"raise SystemExit(91)\n"
+    assert not forged_staging.exists()
+
+
 def test_supervised_rollback_preserves_unknown_concurrent_object_and_reports_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
