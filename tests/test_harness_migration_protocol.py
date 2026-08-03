@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -980,9 +981,8 @@ def test_snapshot_parent_swap_never_writes_through_the_replacement(
         nonlocal swapped
         if secure_target.target == trusted_base.resolve() and not swapped:
             swapped = True
-            transaction = trusted_base / relative.parts[0]
-            transaction.rename(detached)
-            transaction.symlink_to(outside, target_is_directory=True)
+            trusted_base.rename(detached)
+            trusted_base.symlink_to(outside, target_is_directory=True)
         original_verify(secure_target, relative, parent_fd)
 
     monkeypatch.setattr(
@@ -999,7 +999,6 @@ def test_snapshot_parent_swap_never_writes_through_the_replacement(
 
     assert swapped is True
     assert list(outside.rglob("*")) == []
-    assert [path for path in detached.rglob("*") if path.is_file()] == []
 
 
 def test_secure_nested_directory_creation_fsyncs_each_parent(
@@ -1270,55 +1269,62 @@ def test_secure_publish_rejects_a_wrong_staging_inode_after_the_atomic_operation
         f"secure-published-identity-{operation}",
     )
 
-    with monkeypatch.context() as publication_patch:
-        if operation == "create":
-            original_noreplace = migration_kernel._atomic_rename_noreplace_same_directory
-
-            def publish_wrong_create(
-                parent_fd: int,
-                _source: str,
-                destination_name: str,
-            ) -> None:
-                original_noreplace(
-                    parent_fd,
-                    "attacker.txt",
-                    destination_name,
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with monkeypatch.context() as publication_patch:
+            if operation == "create":
+                original_noreplace = (
+                    migration_kernel._atomic_rename_noreplace_between_directories
                 )
 
-            publication_patch.setattr(
-                migration_kernel,
-                "_atomic_rename_noreplace_same_directory",
-                publish_wrong_create,
-            )
-        else:
-            original_exchange = migration_kernel._atomic_exchange_same_directory
+                def publish_wrong_create(
+                    _source_parent_fd: int,
+                    _source: str,
+                    destination_parent_fd: int,
+                    destination_name: str,
+                ) -> None:
+                    original_noreplace(
+                        destination_parent_fd,
+                        "attacker.txt",
+                        destination_parent_fd,
+                        destination_name,
+                    )
 
-            def publish_wrong_exchange(
-                parent_fd: int,
-                _source: str,
-                destination_name: str,
-            ) -> None:
-                original_exchange(
-                    parent_fd,
-                    "attacker.txt",
-                    destination_name,
+                publication_patch.setattr(
+                    migration_kernel,
+                    "_atomic_rename_noreplace_between_directories",
+                    publish_wrong_create,
+                )
+            else:
+                original_exchange = (
+                    migration_kernel._atomic_exchange_between_directories
                 )
 
-            publication_patch.setattr(
-                migration_kernel,
-                "_atomic_exchange_same_directory",
-                publish_wrong_exchange,
-            )
+                def publish_wrong_exchange(
+                    _source_parent_fd: int,
+                    _source: str,
+                    destination_parent_fd: int,
+                    destination_name: str,
+                ) -> None:
+                    original_exchange(
+                        destination_parent_fd,
+                        "attacker.txt",
+                        destination_parent_fd,
+                        destination_name,
+                    )
 
-        with migration_kernel.SecureTargetFS(
-            target,
-            retirement_root=retirement,
-        ) as secure_target:
+                publication_patch.setattr(
+                    migration_kernel,
+                    "_atomic_exchange_between_directories",
+                    publish_wrong_exchange,
+                )
+
             with pytest.raises(
                 ValueError,
                 match=(
-                    "published identity changed|CAS changed during atomic exchange|"
-                    "cleanup_required"
+                    "published identity changed|replace CAS changed|cleanup_required"
                 ),
             ):
                 secure_target.write_exact(
@@ -1338,7 +1344,7 @@ def test_secure_publish_rejects_a_wrong_staging_inode_after_the_atomic_operation
     assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
 
 
-def test_secure_replace_restores_a_destination_changed_at_atomic_exchange(
+def test_secure_replace_quarantines_a_destination_changed_at_atomic_exchange(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1348,40 +1354,46 @@ def test_secure_replace_restores_a_destination_changed_at_atomic_exchange(
     destination.write_bytes(b"PREIMAGE\n")
     expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
     retirement = _retirement_root(tmp_path, "secure-replace-final-cas")
-    original_exchange = migration_kernel._atomic_exchange_same_directory
+    original_exchange = migration_kernel._atomic_exchange_between_directories
     raced = False
 
     def race_before_exchange(
-        parent_fd: int,
+        source_parent_fd: int,
         source: str,
+        destination_parent_fd: int,
         destination_name: str,
     ) -> None:
         nonlocal raced
         if not raced:
             raced = True
-            os.unlink(destination_name, dir_fd=parent_fd)
+            os.unlink(destination_name, dir_fd=destination_parent_fd)
             descriptor = os.open(
                 destination_name,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o644,
-                dir_fd=parent_fd,
+                dir_fd=destination_parent_fd,
             )
             try:
                 os.write(descriptor, b"CONCURRENT-OWNER-CHANGE\n")
             finally:
                 os.close(descriptor)
-        original_exchange(parent_fd, source, destination_name)
+        original_exchange(
+            source_parent_fd,
+            source,
+            destination_parent_fd,
+            destination_name,
+        )
 
     monkeypatch.setattr(
         migration_kernel,
-        "_atomic_exchange_same_directory",
+        "_atomic_exchange_between_directories",
         race_before_exchange,
     )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
-        with pytest.raises(ValueError, match="CAS changed during atomic exchange"):
+        with pytest.raises(ValueError, match="replace identity CAS changed"):
             secure_target.write_exact(
                 "managed.txt",
                 b"POSTIMAGE\n",
@@ -1391,7 +1403,11 @@ def test_secure_replace_restores_a_destination_changed_at_atomic_exchange(
             )
 
     assert raced is True
-    assert destination.read_bytes() == b"CONCURRENT-OWNER-CHANGE\n"
+    assert destination.read_bytes() == b"POSTIMAGE\n"
+    assert any(
+        path.is_file() and path.read_bytes() == b"CONCURRENT-OWNER-CHANGE\n"
+        for path in retirement.iterdir()
+    )
     assert not any(
         path.name.startswith((".evozeus-tmp-", ".evozeus-quarantine-"))
         for path in target.iterdir()
@@ -1411,22 +1427,28 @@ def test_secure_replace_preserves_in_place_postpublication_race_and_blocks_rollb
         snapshot_root=trusted_base,
     )
     item = next(entry for entry in plan["write_set"] if entry["path"] == "owned.txt")
-    original_exchange = migration_kernel._atomic_exchange_same_directory
+    original_exchange = migration_kernel._atomic_exchange_between_directories
     raced = False
 
     def modify_published_inode(
-        parent_fd: int,
+        source_parent_fd: int,
         source: str,
+        destination_parent_fd: int,
         destination_name: str,
     ) -> None:
         nonlocal raced
-        original_exchange(parent_fd, source, destination_name)
+        original_exchange(
+            source_parent_fd,
+            source,
+            destination_parent_fd,
+            destination_name,
+        )
         if not raced:
             raced = True
             descriptor = os.open(
                 destination_name,
                 os.O_WRONLY | os.O_TRUNC,
-                dir_fd=parent_fd,
+                dir_fd=destination_parent_fd,
             )
             try:
                 os.write(descriptor, b"CONCURRENT-PUBLISHED-INODE\n")
@@ -1435,14 +1457,14 @@ def test_secure_replace_preserves_in_place_postpublication_race_and_blocks_rollb
 
     monkeypatch.setattr(
         migration_kernel,
-        "_atomic_exchange_same_directory",
+        "_atomic_exchange_between_directories",
         modify_published_inode,
     )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=snapshot / "quarantine",
     ) as secure_target:
-        with pytest.raises(ValueError, match="CAS changed during atomic exchange"):
+        with pytest.raises(ValueError, match="published bytes changed"):
             secure_target.write_exact(
                 "owned.txt",
                 b"OWNED-POSTIMAGE\n",
@@ -1452,23 +1474,23 @@ def test_secure_replace_preserves_in_place_postpublication_race_and_blocks_rollb
             )
 
     assert raced is True
-    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+    assert target.joinpath("owned.txt").read_bytes() == b"CONCURRENT-PUBLISHED-INODE\n"
     quarantined = [
         path
         for path in snapshot.joinpath("quarantine").iterdir()
-        if path.is_file() and path.read_bytes() == b"CONCURRENT-PUBLISHED-INODE\n"
+        if path.is_file() and path.read_bytes() == b"OWNED-PREIMAGE\n"
     ]
     assert len(quarantined) == 1
-    result = migration_kernel.rollback_migration_snapshot(
-        target,
-        snapshot,
-        trusted_snapshot_root=trusted_base,
-    )
-    assert result["status"] == "rolled_back"
-    assert quarantined[0].read_bytes() == b"CONCURRENT-PUBLISHED-INODE\n"
+    with pytest.raises(ValueError, match="rollback target changed outside"):
+        migration_kernel.rollback_migration_snapshot(
+            target,
+            snapshot,
+            trusted_snapshot_root=trusted_base,
+        )
+    assert quarantined[0].read_bytes() == b"OWNED-PREIMAGE\n"
 
 
-def test_migration_rolls_back_while_retaining_concurrent_bytes_outside_target(
+def test_migration_fails_closed_when_published_bytes_change_concurrently(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1477,22 +1499,28 @@ def test_migration_rolls_back_while_retaining_concurrent_bytes_outside_target(
     plan = _plan(target, source)
     harness_path = target / lifecycle.TARGET_HARNESS_SKILL
     harness_before = harness_path.read_bytes()
-    original_exchange = migration_kernel._atomic_exchange_same_directory
+    original_exchange = migration_kernel._atomic_exchange_between_directories
     raced = False
 
     def modify_published_harness(
-        parent_fd: int,
+        source_parent_fd: int,
         source_name: str,
+        destination_parent_fd: int,
         destination_name: str,
     ) -> None:
         nonlocal raced
-        original_exchange(parent_fd, source_name, destination_name)
+        original_exchange(
+            source_parent_fd,
+            source_name,
+            destination_parent_fd,
+            destination_name,
+        )
         if not raced and destination_name == "SKILL.md":
             raced = True
             descriptor = os.open(
                 destination_name,
                 os.O_WRONLY | os.O_TRUNC,
-                dir_fd=parent_fd,
+                dir_fd=destination_parent_fd,
             )
             try:
                 os.write(descriptor, b"CONCURRENT-HARNESS-CONTENT\n")
@@ -1501,24 +1529,25 @@ def test_migration_rolls_back_while_retaining_concurrent_bytes_outside_target(
 
     monkeypatch.setattr(
         migration_kernel,
-        "_atomic_exchange_same_directory",
+        "_atomic_exchange_between_directories",
         modify_published_harness,
     )
     snapshot_base = tmp_path / "concurrent-quarantine-snapshots"
-    with pytest.raises(ValueError, match="snapshot rollback passed"):
-        lifecycle.migrate_target_layout(
-            target,
-            "v0.15.0",
-            date(2026, 8, 2),
-            wrapper_root=source,
-            require_clean_git=True,
-            snapshot_root=snapshot_base,
-            approved_plan_sha256=plan["plan_sha256"],
-            remote_tag_resolver=_source_tag_resolver(source),
-        )
+    result = lifecycle.migrate_target_layout(
+        target,
+        "v0.15.0",
+        date(2026, 8, 2),
+        wrapper_root=source,
+        require_clean_git=True,
+        snapshot_root=snapshot_base,
+        approved_plan_sha256=plan["plan_sha256"],
+        remote_tag_resolver=_source_tag_resolver(source),
+    )
 
     assert raced is True
-    assert harness_path.read_bytes() == harness_before
+    assert result["status"] == "rollback_failed"
+    assert result["rollback_verified"] is False
+    assert harness_path.read_bytes() == b"CONCURRENT-HARNESS-CONTENT\n"
     transactions = [
         path
         for path in snapshot_base.iterdir()
@@ -1528,17 +1557,17 @@ def test_migration_rolls_back_while_retaining_concurrent_bytes_outside_target(
     quarantined = [
         path
         for path in transactions[0].joinpath("quarantine").rglob("*")
-        if path.is_file() and path.read_bytes() == b"CONCURRENT-HARNESS-CONTENT\n"
+        if path.is_file() and path.read_bytes() == harness_before
     ]
     assert len(quarantined) == 1
     transaction = json.loads(
         transactions[0].joinpath("transaction.json").read_text(encoding="utf-8")
     )
-    assert transaction["state"] == "rolled_back"
+    assert transaction["state"] == "rollback_failed"
     assert transaction["retained_quarantine"]
 
 
-def test_rollback_remove_race_restores_unknown_destination_without_deleting_it(
+def test_rollback_remove_race_retains_unknown_destination_in_quarantine(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1607,7 +1636,11 @@ def test_rollback_remove_race_restores_unknown_destination_without_deleting_it(
 
     destination = target / created_item["path"]
     assert raced is True
-    assert destination.read_bytes() == b"CONCURRENT-ROLLBACK-CONTENT\n"
+    assert not destination.exists()
+    assert any(
+        path.is_file() and path.read_bytes() == b"CONCURRENT-ROLLBACK-CONTENT\n"
+        for path in snapshot.joinpath("quarantine").rglob("*")
+    )
     assert not any(
         path.name.startswith((".evozeus-tmp-", ".evozeus-quarantine-"))
         for path in destination.parent.iterdir()
@@ -1630,14 +1663,14 @@ def test_secure_replace_and_remove_reject_missing_atomic_name_primitives(
 
     monkeypatch.setattr(
         migration_kernel,
-        "_atomic_exchange_same_directory",
+        "_atomic_exchange_between_directories",
         unsupported,
     )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
-        with pytest.raises(ValueError, match="atomic rename unavailable"):
+        with pytest.raises(ValueError, match="atomic exchange"):
             secure_target.write_exact(
                 "managed.txt",
                 b"POSTIMAGE\n",
@@ -1680,16 +1713,16 @@ def test_secure_create_rejects_missing_atomic_publish_without_copy_fallback(
     def unsupported(*_args: object, **_kwargs: object) -> None:
         raise ValueError("atomic rename unavailable")
 
-    monkeypatch.setattr(
-        migration_kernel,
-        "_atomic_rename_noreplace_same_directory",
-        unsupported,
-    )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
-        with pytest.raises(ValueError, match="atomic rename unavailable"):
+        monkeypatch.setattr(
+            migration_kernel,
+            "_atomic_rename_noreplace_between_directories",
+            unsupported,
+        )
+        with pytest.raises(ValueError, match="atomic create"):
             secure_target.write_exact(
                 "managed.txt",
                 b"POSTIMAGE\n",
@@ -3137,33 +3170,37 @@ def test_cleanup_identity_race_preserves_later_content_and_requires_cleanup(
     retirement = _retirement_root(tmp_path, f"cleanup-identity-race-{operation}")
 
     original_rename = migration_kernel._atomic_rename_noreplace_between_directories
+    original_exchange = migration_kernel._atomic_exchange_between_directories
     raced = False
 
-    def replace_cleanup_candidate(
+    def replace_named(parent_fd: int, name: str) -> None:
+        os.unlink(name, dir_fd=parent_fd)
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            os.write(descriptor, b"LATER-CONCURRENT-CONTENT\n")
+        finally:
+            os.close(descriptor)
+
+    def replace_before_noreplace(
         source_parent_fd: int,
         source: str,
         destination_parent_fd: int,
         retired_name: str,
     ) -> None:
         nonlocal raced
-        is_cleanup = (
-            source == "managed.txt"
-            if operation in {"create", "remove"}
-            else source.startswith(".evozeus-tmp-")
+        should_race = (
+            operation == "create" and source.startswith("candidate-file-")
+        ) or (
+            operation == "remove" and source == "managed.txt"
         )
-        if is_cleanup and not raced:
+        if should_race and not raced:
             raced = True
-            os.unlink(source, dir_fd=source_parent_fd)
-            descriptor = os.open(
-                source,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=source_parent_fd,
-            )
-            try:
-                os.write(descriptor, b"LATER-CONCURRENT-CONTENT\n")
-            finally:
-                os.close(descriptor)
+            replace_named(source_parent_fd, source)
         original_rename(
             source_parent_fd,
             source,
@@ -3171,32 +3208,41 @@ def test_cleanup_identity_race_preserves_later_content_and_requires_cleanup(
             retired_name,
         )
 
+    def replace_before_exchange(
+        source_parent_fd: int,
+        source: str,
+        destination_parent_fd: int,
+        destination_name: str,
+    ) -> None:
+        nonlocal raced
+        if operation == "replace" and not raced:
+            raced = True
+            replace_named(destination_parent_fd, destination_name)
+        original_exchange(
+            source_parent_fd,
+            source,
+            destination_parent_fd,
+            destination_name,
+        )
+
     monkeypatch.setattr(
         migration_kernel,
         "_atomic_rename_noreplace_between_directories",
-        replace_cleanup_candidate,
+        replace_before_noreplace,
     )
-    if operation == "create":
-        original_verify = migration_kernel.SecureTargetFS._verify_published_postimage
-
-        def fail_after_create_publication(
-            secure_target: migration_kernel.SecureTargetFS,
-            *args: object,
-            **kwargs: object,
-        ) -> None:
-            original_verify(secure_target, *args, **kwargs)
-            raise ValueError("simulated post-publication failure")
-
-        monkeypatch.setattr(
-            migration_kernel.SecureTargetFS,
-            "_verify_published_postimage",
-            fail_after_create_publication,
-        )
+    monkeypatch.setattr(
+        migration_kernel,
+        "_atomic_exchange_between_directories",
+        replace_before_exchange,
+    )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
-        with pytest.raises(ValueError, match="cleanup_required"):
+        with pytest.raises(
+            ValueError,
+            match="identity|CAS changed|cleanup_required",
+        ):
             if operation == "create":
                 secure_target.write_exact(
                     "managed.txt",
@@ -3221,12 +3267,14 @@ def test_cleanup_identity_race_preserves_later_content_and_requires_cleanup(
 
     preserved = [
         path
-        for path in retirement.iterdir()
+        for path in [destination, *retirement.iterdir()]
         if path.is_file() and path.read_bytes() == b"LATER-CONCURRENT-CONTENT\n"
     ]
     assert raced is True
     assert len(preserved) == 1
-    if operation == "replace":
+    if operation == "create":
+        assert destination.read_bytes() == b"LATER-CONCURRENT-CONTENT\n"
+    elif operation == "replace":
         assert destination.read_bytes() == b"POSTIMAGE\n"
     else:
         assert not destination.exists()
@@ -3367,7 +3415,7 @@ def test_post_retirement_stat_replacement_is_never_unlinked(
             retirement_root=retirement,
         ) as secure_target:
             if operation == "create":
-                with pytest.raises(ValueError, match="cleanup_required"):
+                with pytest.raises(ValueError, match="published identity changed"):
                     secure_target.write_exact(
                         "managed.txt",
                         b"POSTIMAGE\n",
@@ -3375,13 +3423,14 @@ def test_post_retirement_stat_replacement_is_never_unlinked(
                         mode=0o644,
                     )
             elif operation == "replace":
-                secure_target.write_exact(
-                    "managed.txt",
-                    b"POSTIMAGE\n",
-                    expected_preimage=expected,
-                    expected_mode=0o644,
-                    mode=0o644,
-                )
+                with pytest.raises(ValueError, match="published identity changed"):
+                    secure_target.write_exact(
+                        "managed.txt",
+                        b"POSTIMAGE\n",
+                        expected_preimage=expected,
+                        expected_mode=0o644,
+                        mode=0o644,
+                    )
             else:
                 with pytest.raises(ValueError, match="atomic retirement"):
                     secure_target.remove_exact(
@@ -3392,7 +3441,7 @@ def test_post_retirement_stat_replacement_is_never_unlinked(
 
     preserved = [
         path
-        for path in retirement.rglob("*")
+        for path in [destination, *retirement.rglob("*")]
         if path.is_file()
         and path.read_bytes() == b"POST-STAT-CONCURRENT-CONTENT\n"
     ]
@@ -3778,29 +3827,35 @@ def test_directory_publication_never_adopts_a_concurrent_named_directory(
     target = tmp_path / "directory-publication-race"
     target.mkdir()
     retirement = _retirement_root(tmp_path, "directory-publication-race")
-    original_publish = migration_kernel._atomic_rename_noreplace_same_directory
+    original_publish = migration_kernel._atomic_rename_noreplace_between_directories
     injected = False
 
     def publish_with_competitor(
-        parent_fd: int,
+        source_parent_fd: int,
         source: str,
+        destination_parent_fd: int,
         destination: str,
     ) -> None:
         nonlocal injected
         if destination == "raced" and not injected:
             injected = True
-            os.mkdir(destination, mode=0o755, dir_fd=parent_fd)
-        original_publish(parent_fd, source, destination)
+            os.mkdir(destination, mode=0o755, dir_fd=destination_parent_fd)
+        original_publish(
+            source_parent_fd,
+            source,
+            destination_parent_fd,
+            destination,
+        )
 
-    monkeypatch.setattr(
-        migration_kernel,
-        "_atomic_rename_noreplace_same_directory",
-        publish_with_competitor,
-    )
     with migration_kernel.SecureTargetFS(
         target,
         retirement_root=retirement,
     ) as secure_target:
+        monkeypatch.setattr(
+            migration_kernel,
+            "_atomic_rename_noreplace_between_directories",
+            publish_with_competitor,
+        )
         with pytest.raises(ValueError, match="directory create CAS changed"):
             secure_target.prepare_mutation_batch(["raced/artifact.txt"])
 
@@ -3843,6 +3898,234 @@ def test_atomic_capability_failure_is_detected_before_target_staging(
         if path.is_file()
     } == target_before
     assert not any(path.name.startswith(".evozeus-") for path in target.rglob("*"))
+
+
+def test_same_device_distinct_mount_identity_is_rejected_before_target_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "same-device-bind-mount"
+    target.mkdir()
+    mounted_parent = target / "mounted"
+    mounted_parent.mkdir()
+    retirement = _retirement_root(tmp_path, "same-device-bind-mount")
+    original_fstat = os.fstat
+    mounted_identity = mounted_parent.stat()
+    retirement_identity = retirement.stat()
+    target_before = list(target.rglob("*"))
+
+    def simulated_mount_identity(descriptor: int) -> int | None:
+        metadata = original_fstat(descriptor)
+        if (
+            metadata.st_dev == mounted_identity.st_dev
+            and metadata.st_ino == mounted_identity.st_ino
+        ):
+            return 200
+        if (
+            metadata.st_dev == retirement_identity.st_dev
+            and metadata.st_ino == retirement_identity.st_ino
+        ):
+            return 100
+        return 100
+
+    monkeypatch.setattr(
+        migration_kernel,
+        "_mount_identity_for_fd",
+        simulated_mount_identity,
+        raising=False,
+    )
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        with pytest.raises(ValueError, match="mount"):
+            secure_target.prepare_mutation_batch(["mounted/artifact.txt"])
+
+    assert list(target.rglob("*")) == target_before
+
+
+def test_cross_mount_replace_failure_is_zero_change_without_target_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "cross-mount-replace"
+    target.mkdir()
+    destination = target / "managed.txt"
+    destination.write_bytes(b"PREIMAGE\n")
+    expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+    retirement = _retirement_root(tmp_path, "cross-mount-replace")
+    original_atomic = migration_kernel._atomic_rename_between_directories
+
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        calls: list[tuple[tuple[int, int], tuple[int, int], bool]] = []
+
+        def reject_cross_mount(
+            source_parent_fd: int,
+            source: str,
+            destination_parent_fd: int,
+            destination_name: str,
+            *,
+            exchange: bool,
+        ) -> None:
+            source_parent = original_fstat(source_parent_fd)
+            destination_parent = original_fstat(destination_parent_fd)
+            source_identity = (source_parent.st_dev, source_parent.st_ino)
+            destination_identity = (
+                destination_parent.st_dev,
+                destination_parent.st_ino,
+            )
+            calls.append((source_identity, destination_identity, exchange))
+            if source_identity != destination_identity:
+                raise OSError(errno.EXDEV, "simulated cross-mount rename")
+            original_atomic(
+                source_parent_fd,
+                source,
+                destination_parent_fd,
+                destination_name,
+                exchange=exchange,
+            )
+
+        original_fstat = os.fstat
+        monkeypatch.setattr(
+            migration_kernel,
+            "_atomic_rename_between_directories",
+            reject_cross_mount,
+        )
+        with pytest.raises(
+            (OSError, ValueError),
+            match="mount|atomic exchange|cleanup_required",
+        ):
+            secure_target.write_exact(
+                "managed.txt",
+                b"POSTIMAGE\n",
+                expected_preimage=expected,
+                expected_mode=0o644,
+                mode=0o644,
+            )
+
+    assert calls
+    assert calls[0][0] != calls[0][1]
+    assert calls[0][2] is True
+    assert destination.read_bytes() == b"PREIMAGE\n"
+    assert not any(path.name.startswith(".evozeus-") for path in target.iterdir())
+
+
+@pytest.mark.parametrize("candidate_kind", ["file", "directory"])
+def test_failed_publish_never_creates_a_candidate_inside_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    candidate_kind: str,
+) -> None:
+    target = tmp_path / f"external-candidate-{candidate_kind}"
+    target.mkdir()
+    retirement = _retirement_root(tmp_path, f"external-candidate-{candidate_kind}")
+    target_identity = target.stat()
+    retirement_identity = retirement.stat()
+    observed: list[dict[str, object]] = []
+
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=retirement,
+    ) as secure_target:
+        def fail_final_publish(
+            source_parent_fd: int,
+            _source: str,
+            destination_parent_fd: int,
+            _destination: str,
+            *,
+            exchange: bool,
+        ) -> None:
+            source_parent = os.fstat(source_parent_fd)
+            destination_parent = os.fstat(destination_parent_fd)
+            observed.append(
+                {
+                    "source": (source_parent.st_dev, source_parent.st_ino),
+                    "destination": (
+                        destination_parent.st_dev,
+                        destination_parent.st_ino,
+                    ),
+                    "exchange": exchange,
+                    "target_entries": sorted(path.name for path in target.iterdir()),
+                }
+            )
+            raise OSError(errno.EIO, "simulated final atomic publish failure")
+
+        monkeypatch.setattr(
+            migration_kernel,
+            "_atomic_rename_between_directories",
+            fail_final_publish,
+        )
+        with pytest.raises(
+            (OSError, ValueError),
+            match="atomic (publish|create)|cleanup_required",
+        ):
+            if candidate_kind == "file":
+                secure_target.write_exact(
+                    "artifact.txt",
+                    b"POSTIMAGE\n",
+                    expected_preimage=None,
+                    mode=0o644,
+                )
+            else:
+                secure_target.prepare_mutation_batch(["nested/artifact.txt"])
+
+    assert observed
+    assert observed[0]["source"] == (
+        retirement_identity.st_dev,
+        retirement_identity.st_ino,
+    )
+    assert observed[0]["destination"] == (
+        target_identity.st_dev,
+        target_identity.st_ino,
+    )
+    assert observed[0]["target_entries"] == []
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    not Path("/var").is_symlink(),
+    reason="requires the macOS /var -> /private/var system alias",
+)
+def test_external_retirement_root_accepts_the_macos_var_system_alias(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "system-alias-target"
+    target.mkdir()
+    retirement = _retirement_root(tmp_path, "system-alias-retirement")
+    canonical = retirement.resolve(strict=True)
+    private_var = Path("/private/var")
+    if not canonical.is_relative_to(private_var):
+        pytest.skip("temporary directory is not under /private/var")
+    aliased = Path("/var") / canonical.relative_to(private_var)
+
+    with migration_kernel.SecureTargetFS(
+        target,
+        retirement_root=aliased,
+    ) as secure_target:
+        secure_target.write_exact(
+            "artifact.txt",
+            b"POSTIMAGE\n",
+            expected_preimage=None,
+            mode=0o644,
+        )
+
+    assert target.joinpath("artifact.txt").read_bytes() == b"POSTIMAGE\n"
+
+
+def test_external_retirement_root_rejects_a_controlled_leaf_symlink(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "controlled-symlink-target"
+    target.mkdir()
+    retirement = _retirement_root(tmp_path, "controlled-symlink-retirement")
+    alias = tmp_path / "controlled-retirement-link"
+    alias.symlink_to(retirement, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        migration_kernel.SecureTargetFS(target, retirement_root=alias)
 
 
 def test_force_never_replaces_a_mismatched_project_pointer(
