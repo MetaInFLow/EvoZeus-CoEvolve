@@ -118,8 +118,17 @@ def _strict_json(value: bytes, label: str) -> dict[str, Any]:
             result[key] = item
         return result
 
+    def reject_non_finite(constant: str) -> None:
+        raise VerificationError(
+            f"{label} contains a non-finite JSON constant: {constant}"
+        )
+
     try:
-        parsed = json.loads(value.decode("utf-8"), object_pairs_hook=reject_duplicates)
+        parsed = json.loads(
+            value.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=reject_non_finite,
+        )
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise VerificationError(f"{label} is invalid UTF-8 JSON: {exc}") from exc
     if not isinstance(parsed, dict):
@@ -912,7 +921,7 @@ def _verify_candidate_contract_manifest(
     base: FilesystemStore,
     candidate: CandidateStore,
     changes: dict[str, CandidateBlob],
-) -> dict[str, dict[str, str]]:
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     base_files = _contract_manifest_files(base, "trusted base contract manifest")
     candidate_files = _contract_manifest_files(candidate, "candidate contract manifest")
     expected_paths = set(base_files)
@@ -921,9 +930,13 @@ def _verify_candidate_contract_manifest(
             continue
         relative = path.removeprefix(BUNDLE_PREFIX)
         if change.status == "deleted":
-            expected_paths.discard(relative)
-        else:
-            expected_paths.add(relative)
+            if relative in base_files:
+                raise VerificationError(
+                    "candidate cannot delete trusted base contract manifest path: "
+                    f"{relative}"
+                )
+            continue
+        expected_paths.add(relative)
     if set(candidate_files) != expected_paths:
         raise VerificationError(
             "candidate contract manifest does not exactly enumerate the candidate bundle"
@@ -941,7 +954,7 @@ def _verify_candidate_contract_manifest(
                 f"candidate contract manifest digest mismatch: {relative}: "
                 f"expected={item['sha256']}; actual={actual}"
             )
-    return candidate_files
+    return base_files, candidate_files
 
 
 def _require_candidate_manifest_role(
@@ -961,6 +974,75 @@ def _require_candidate_manifest_role(
             f"candidate contract manifest role mismatch: {relative}: "
             f"expected={expected_role}; actual={actual_role}"
         )
+
+
+def _bind_expected_new_manifest_role(
+    expected_roles: dict[str, str],
+    base_files: dict[str, dict[str, str]],
+    repository_path: str,
+    role: str,
+) -> None:
+    if not repository_path.startswith(BUNDLE_PREFIX):
+        raise VerificationError(
+            f"candidate contract path is outside its manifest: {repository_path}"
+        )
+    relative = repository_path.removeprefix(BUNDLE_PREFIX)
+    if relative in base_files:
+        return
+    prior = expected_roles.get(relative)
+    if prior is not None and prior != role:
+        raise VerificationError(
+            f"candidate contract path has conflicting manifest roles: {relative}: "
+            f"expected={prior}; conflicting={role}"
+        )
+    expected_roles[relative] = role
+
+
+def _verify_expected_new_manifest_roles(
+    base_files: dict[str, dict[str, str]],
+    candidate_files: dict[str, dict[str, str]],
+    expected_roles: dict[str, str],
+) -> None:
+    actual_new_paths = set(candidate_files) - set(base_files)
+    expected_new_paths = set(expected_roles)
+    unexpected = sorted(actual_new_paths - expected_new_paths)
+    if unexpected:
+        if any(
+            path.startswith(("migrations/history/", "migrations/profiles/"))
+            for path in unexpected
+        ):
+            raise VerificationError(
+                "candidate migration file is not bound by current closure/profile pointers: "
+                + ", ".join(unexpected)
+            )
+        raise VerificationError(
+            "candidate new bundle path is not authorized by the candidate current closure: "
+            + ", ".join(unexpected)
+        )
+    missing = sorted(expected_new_paths - actual_new_paths)
+    if missing:
+        raise VerificationError(
+            "candidate contract manifest omits an authorized new bundle path: "
+            + ", ".join(missing)
+        )
+    for relative, role in expected_roles.items():
+        actual_role = candidate_files[relative]["role"]
+        if actual_role != role:
+            raise VerificationError(
+                f"candidate contract manifest role mismatch: {relative}: "
+                f"expected={role}; actual={actual_role}"
+            )
+
+
+def _canonical_active_profile_path(profile_id: object, profile_version: object) -> str:
+    if (
+        not isinstance(profile_id, str)
+        or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?", profile_id)
+        is None
+    ):
+        raise VerificationError("candidate active profile id is not filename-safe")
+    major, _, _ = _semver(profile_version, "candidate active profile version")
+    return f"{BUNDLE_PREFIX}migrations/profiles/{profile_id}-v{major}.json"
 
 
 def verify_candidate(
@@ -988,7 +1070,12 @@ def verify_candidate(
                 f"candidate adds a symlink, submodule or unsupported object: {path}"
             )
     candidate = CandidateStore(base, changes)
-    candidate_manifest_files = _verify_candidate_contract_manifest(base, candidate, changes)
+    base_manifest_files, candidate_manifest_files = _verify_candidate_contract_manifest(
+        base,
+        candidate,
+        changes,
+    )
+    expected_new_manifest_roles: dict[str, str] = {}
     report = verify_catalog(candidate)
 
     base_history = load_pointer(
@@ -1035,7 +1122,12 @@ def verify_candidate(
         candidate_closure_path,
         "immutable-target-closure",
     )
-    bound_history_paths = {HISTORY_CURRENT_REL, candidate_closure_path}
+    _bind_expected_new_manifest_role(
+        expected_new_manifest_roles,
+        base_manifest_files,
+        candidate_closure_path,
+        "immutable-target-closure",
+    )
     for item in candidate_entries.values():
         artifact_relative = item.get("artifact_path")
         if artifact_relative is not None:
@@ -1049,7 +1141,12 @@ def verify_candidate(
                 artifact_path,
                 "immutable-target-closure-artifact",
             )
-            bound_history_paths.add(artifact_path)
+            _bind_expected_new_manifest_role(
+                expected_new_manifest_roles,
+                base_manifest_files,
+                artifact_path,
+                "immutable-target-closure-artifact",
+            )
     base_profiles = load_pointer(
         base,
         PROFILES_CURRENT_REL,
@@ -1078,19 +1175,8 @@ def verify_candidate(
         base_from_paths.add(base_profile["_verified_from_path"])
     required_from_paths = {base_closure_path, *base_from_paths}
     candidate_from_paths: set[str] = set()
-    bound_profile_paths = {PROFILES_CURRENT_REL}
     for entry in candidate_profiles:
         profile_path = _bundle_relative(entry["path"], "candidate profile path")
-        if not profile_path.startswith("contracts/v1/migrations/profiles/"):
-            raise VerificationError(
-                f"candidate active profile path is not canonical: {profile_path}"
-            )
-        bound_profile_paths.add(profile_path)
-        _require_candidate_manifest_role(
-            candidate_manifest_files,
-            profile_path,
-            "official-upgrade-profile",
-        )
         if base.exists(profile_path):
             raise VerificationError(
                 f"candidate active profile must use a new immutable path: {profile_path}"
@@ -1101,6 +1187,33 @@ def verify_candidate(
             load_protocol(base),
             expected_sha256=entry["sha256"],
         )
+        if (
+            profile.get("profile_id") != entry["id"]
+            or profile.get("profile_version") != entry["version"]
+        ):
+            raise VerificationError(
+                "candidate profile pointer disagrees with profile identity"
+            )
+        expected_profile_path = _canonical_active_profile_path(
+            profile["profile_id"],
+            profile["profile_version"],
+        )
+        if profile_path != expected_profile_path:
+            raise VerificationError(
+                "candidate active profile path is not canonical for its identity: "
+                f"expected={expected_profile_path}; actual={profile_path}"
+            )
+        _require_candidate_manifest_role(
+            candidate_manifest_files,
+            profile_path,
+            "official-upgrade-profile",
+        )
+        _bind_expected_new_manifest_role(
+            expected_new_manifest_roles,
+            base_manifest_files,
+            profile_path,
+            "official-upgrade-profile",
+        )
         if profile["_verified_to_path"] != candidate_closure_path:
             raise VerificationError("candidate profile does not end at the candidate current closure")
         from_path = profile["_verified_from_path"]
@@ -1109,19 +1222,6 @@ def verify_candidate(
                 "candidate direct-to-current profile must start at immutable base history"
             )
         candidate_from_paths.add(from_path)
-    for path, change in changes.items():
-        if change.status == "deleted":
-            continue
-        if (
-            path.startswith("contracts/v1/migrations/history/")
-            and path not in bound_history_paths
-        ) or (
-            path.startswith("contracts/v1/migrations/profiles/")
-            and path not in bound_profile_paths
-        ):
-            raise VerificationError(
-                f"candidate migration file is not bound by current closure/profile pointers: {path}"
-            )
     missing_history = sorted(required_from_paths - candidate_from_paths)
     if missing_history:
         raise VerificationError(
@@ -1151,6 +1251,20 @@ def verify_candidate(
                 f"candidate closure artifact mode differs from target mode: {target_path}"
             )
         bound_sources.add(source_path)
+        if source_path.startswith(BUNDLE_PREFIX):
+            relative_source = source_path.removeprefix(BUNDLE_PREFIX)
+            if relative_source not in base_manifest_files:
+                _bind_expected_new_manifest_role(
+                    expected_new_manifest_roles,
+                    base_manifest_files,
+                    source_path,
+                    "target-closure-source",
+                )
+                _require_candidate_manifest_role(
+                    candidate_manifest_files,
+                    source_path,
+                    "target-closure-source",
+                )
         if item.get("source_binding") == "construction_revision":
             expected_mode = item["mode"]
             prior_mode = construction_source_modes.get(source_path)
@@ -1159,6 +1273,11 @@ def verify_candidate(
                     f"candidate construction source has conflicting closure modes: {source_path}"
                 )
             construction_source_modes[source_path] = expected_mode
+    _verify_expected_new_manifest_roles(
+        base_manifest_files,
+        candidate_manifest_files,
+        expected_new_manifest_roles,
+    )
     revision = candidate_closure["source"]["construction_revision"]
     if construction_resolver is None:
         raise VerificationError("candidate construction revision evidence is unavailable")

@@ -353,6 +353,81 @@ def _candidate_star(
     return changes, resolver, head_sha
 
 
+def _bind_candidate_bundle_source(
+    root: Path,
+    changes: dict[str, verifier.CandidateBlob],
+    *,
+    role: str = "target-closure-source",
+) -> str:
+    closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.2.0/closure.json"
+    )
+    closure_blob = changes[closure_path]
+    assert closure_blob.loader is not None
+    closure = json.loads(closure_blob.loader().decode("utf-8"))
+    target_path = ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+    closure_entry = next(
+        item for item in closure["files"] if item["target_path"] == target_path
+    )
+    artifact_path = (
+        Path(closure_path).parent / closure_entry["artifact_path"]
+    ).as_posix()
+    artifact_blob = changes[artifact_path]
+    assert artifact_blob.loader is not None
+    source_path = "contracts/v1/core-snapshots/evozeus_wrapper_preflight.py"
+    closure_entry["source_path"] = source_path
+    changes[source_path] = _candidate_blob(
+        source_path,
+        artifact_blob.loader(),
+        status="added",
+        mode=closure_entry["mode"],
+    )
+
+    closure_data = _json_bytes(closure)
+    closure_sha256 = _sha256(closure_data)
+    changes[closure_path] = _candidate_blob(
+        closure_path,
+        closure_data,
+        status="added",
+    )
+    history_pointer_blob = changes[verifier.HISTORY_CURRENT_REL]
+    assert history_pointer_blob.loader is not None
+    history_pointer = json.loads(history_pointer_blob.loader().decode("utf-8"))
+    history_pointer["entries"][0]["sha256"] = closure_sha256
+    changes[verifier.HISTORY_CURRENT_REL] = _candidate_blob(
+        verifier.HISTORY_CURRENT_REL,
+        _json_bytes(history_pointer),
+    )
+
+    profile_pointer_blob = changes[verifier.PROFILES_CURRENT_REL]
+    assert profile_pointer_blob.loader is not None
+    profile_pointer = json.loads(profile_pointer_blob.loader().decode("utf-8"))
+    for pointer_entry in profile_pointer["entries"]:
+        profile_path = "contracts/v1/" + pointer_entry["path"]
+        profile_blob = changes[profile_path]
+        assert profile_blob.loader is not None
+        profile = json.loads(profile_blob.loader().decode("utf-8"))
+        profile["to_closure"]["sha256"] = closure_sha256
+        profile_data = _json_bytes(profile)
+        changes[profile_path] = _candidate_blob(
+            profile_path,
+            profile_data,
+            status=profile_blob.status,
+            mode=profile_blob.mode,
+        )
+        pointer_entry["sha256"] = _sha256(profile_data)
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(profile_pointer),
+    )
+    _bind_candidate_manifest(
+        root,
+        changes,
+        new_roles={source_path.removeprefix("contracts/v1/"): role},
+    )
+    return source_path
+
+
 def _relocate_candidate_closure(
     root: Path,
     changes: dict[str, verifier.CandidateBlob],
@@ -1059,6 +1134,120 @@ def test_candidate_contract_manifest_is_complete_and_hash_bound(
         )
 
 
+@pytest.mark.parametrize("constant", [b"NaN", b"Infinity", b"-Infinity"])
+def test_candidate_contract_json_rejects_non_finite_constants(
+    tmp_path: Path,
+    constant: bytes,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    manifest_blob = changes[CONTRACT_MANIFEST_REL]
+    assert manifest_blob.loader is not None
+    manifest_data = manifest_blob.loader()
+    identity = b'"bundle_id": "evozeus-coevolve"'
+    assert identity in manifest_data
+    changes[CONTRACT_MANIFEST_REL] = _candidate_blob(
+        CONTRACT_MANIFEST_REL,
+        manifest_data.replace(identity, b'"bundle_id": ' + constant, 1),
+    )
+
+    with pytest.raises(verifier.VerificationError, match="non-finite JSON constant"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_contract_manifest_cannot_delete_a_trusted_base_path(
+    tmp_path: Path,
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    deleted_path = "contracts/v1/user-prompt-lesson-runtime-lifecycle.json"
+    changes[deleted_path] = _candidate_blob(
+        deleted_path,
+        None,
+        status="deleted",
+        mode=None,
+        object_type=None,
+    )
+    _bind_candidate_manifest(root, changes)
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="cannot delete trusted base contract manifest path",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_rejects_an_unbound_new_contract_bundle_path(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    path = "contracts/v1/misc/unbound.bin"
+    changes[path] = _candidate_blob(path, b"unbound\n", status="added")
+    _bind_candidate_manifest(
+        root,
+        changes,
+        new_roles={"misc/unbound.bin": "target-closure-source"},
+    )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="new bundle path is not authorized by the candidate current closure",
+    ):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_bundle_local_source_role_is_fixed(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    _bind_candidate_bundle_source(root, changes, role="candidate-defined-role")
+
+    with pytest.raises(verifier.VerificationError, match="manifest role mismatch"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_accepts_a_manifest_bound_bundle_local_source(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    source_path = _bind_candidate_bundle_source(root, changes)
+
+    report = verifier.verify_candidate(
+        verifier.FilesystemStore(root),
+        changes,
+        head_sha=head_sha,
+        construction_resolver=resolver,
+    )
+
+    manifest_blob = changes[CONTRACT_MANIFEST_REL]
+    assert manifest_blob.loader is not None
+    manifest = json.loads(manifest_blob.loader().decode("utf-8"))
+    source_entry = next(
+        entry
+        for entry in manifest["files"]
+        if entry["path"] == source_path.removeprefix("contracts/v1/")
+    )
+    assert report["status"] == "verified_candidate"
+    assert source_entry["role"] == "target-closure-source"
+
+
 @pytest.mark.parametrize(
     "relative",
     [
@@ -1149,6 +1338,81 @@ def test_candidate_active_profile_must_remain_in_profiles_directory(
             destination.removeprefix("contracts/v1/"): "official-upgrade-profile"
         },
     )
+
+    with pytest.raises(verifier.VerificationError, match="profile path is not canonical"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_active_profile_rejects_a_noncanonical_suffix(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    pointer_blob = changes[verifier.PROFILES_CURRENT_REL]
+    assert pointer_blob.loader is not None
+    pointer = json.loads(pointer_blob.loader().decode("utf-8"))
+    entry = pointer["entries"][0]
+    source = "contracts/v1/" + entry["path"]
+    destination = source.removesuffix(".json") + ".data"
+    profile_blob = changes.pop(source)
+    assert profile_blob.loader is not None
+    changes[destination] = _candidate_blob(
+        destination,
+        profile_blob.loader(),
+        status=profile_blob.status,
+        mode=profile_blob.mode,
+    )
+    entry["path"] = destination.removeprefix("contracts/v1/")
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(pointer),
+    )
+    _bind_candidate_manifest(
+        root,
+        changes,
+        new_roles={
+            destination.removeprefix("contracts/v1/"): "official-upgrade-profile"
+        },
+    )
+
+    with pytest.raises(verifier.VerificationError, match="profile path is not canonical"):
+        verifier.verify_candidate(
+            verifier.FilesystemStore(root),
+            changes,
+            head_sha=head_sha,
+            construction_resolver=resolver,
+        )
+
+
+def test_candidate_active_profile_filename_matches_its_identity(tmp_path: Path) -> None:
+    root = _protocol_v1_base(tmp_path)
+    changes, resolver, head_sha = _candidate_star(root)
+    pointer_blob = changes[verifier.PROFILES_CURRENT_REL]
+    assert pointer_blob.loader is not None
+    pointer = json.loads(pointer_blob.loader().decode("utf-8"))
+    entry = pointer["entries"][0]
+    profile_path = "contracts/v1/" + entry["path"]
+    profile_blob = changes[profile_path]
+    assert profile_blob.loader is not None
+    profile = json.loads(profile_blob.loader().decode("utf-8"))
+    profile["profile_id"] += "-renamed"
+    profile_data = _json_bytes(profile)
+    changes[profile_path] = _candidate_blob(
+        profile_path,
+        profile_data,
+        status=profile_blob.status,
+        mode=profile_blob.mode,
+    )
+    entry["id"] = profile["profile_id"]
+    entry["sha256"] = _sha256(profile_data)
+    changes[verifier.PROFILES_CURRENT_REL] = _candidate_blob(
+        verifier.PROFILES_CURRENT_REL,
+        _json_bytes(pointer),
+    )
+    _bind_candidate_manifest(root, changes)
 
     with pytest.raises(verifier.VerificationError, match="profile path is not canonical"):
         verifier.verify_candidate(
