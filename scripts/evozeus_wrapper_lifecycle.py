@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1470,6 +1471,21 @@ def _read_manifest_json(path: Path) -> dict[str, Any]:
         raise ValueError(f"invalid wrapper manifest JSON: {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"wrapper manifest must be a JSON object: {path}")
+
+    def reject_decoded_non_finite(value: object, location: str) -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(
+                f"invalid wrapper manifest JSON: {path}: "
+                f"non-finite numeric value at {location}"
+            )
+        if isinstance(value, dict):
+            for key, item in value.items():
+                reject_decoded_non_finite(item, f"{location}.{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                reject_decoded_non_finite(item, f"{location}[{index}]")
+
+    reject_decoded_non_finite(data, "$")
     return data
 
 
@@ -1856,8 +1872,19 @@ def write_wrapper_manifest(target: Path, manifest: dict[str, Any], force: bool =
     path = wrapper_manifest_path(target)
     if path.exists() and not force:
         return f"skip existing {path}"
+    try:
+        serialized = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+            allow_nan=False,
+        ) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"wrapper manifest cannot be serialized as strict JSON: {exc}"
+        ) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(serialized, encoding="utf-8")
     return f"write {path}"
 
 
@@ -3409,6 +3436,70 @@ def _official_upgrade_profile(
     return profile
 
 
+def _verified_profile_migration_records(
+    profile: dict[str, Any],
+) -> tuple[list[str], str]:
+    """Return verifier-derived cumulative ledgers and their current-hop record."""
+    payload = profile.get("adapter_payload")
+    if not isinstance(payload, dict):
+        raise ValueError("verified automatic profile adapter payload is missing")
+    operations = payload.get("operations")
+    if not isinstance(operations, list):
+        raise ValueError("verified automatic profile operations are missing")
+
+    declared_records = payload.get("migration_records")
+    if (
+        not isinstance(declared_records, list)
+        or not declared_records
+        or any(not isinstance(item, str) for item in declared_records)
+        or len(declared_records) != len(set(declared_records))
+    ):
+        raise ValueError(
+            "verified automatic profile migration_records are missing or invalid"
+        )
+    for target_path in declared_records:
+        relative = Path(target_path)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or "\\" in target_path
+            or relative.as_posix() != target_path
+            or not target_path.startswith(
+                f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
+            )
+        ):
+            raise ValueError(
+                f"verified migration record path is unsafe: {target_path}"
+            )
+
+    declared_record_set = set(declared_records)
+    operation_records = [
+        operation.get("target_path")
+        for operation in operations
+        if isinstance(operation, dict)
+        and operation.get("type") == "create_exact"
+        and operation.get("target_path") in declared_record_set
+    ]
+    if len(operation_records) != len(set(operation_records)):
+        raise ValueError("verified automatic profile migration records are duplicated")
+    if set(operation_records) != declared_record_set:
+        raise ValueError(
+            "verified automatic profile migration_records disagree with operations"
+        )
+
+    migration_records = list(declared_records)
+    current_record = payload.get("current_migration_record")
+    if (
+        not isinstance(current_record, str)
+        or current_record not in migration_records
+        or current_record != declared_records[-1]
+    ):
+        raise ValueError(
+            "verified automatic profile current_migration_record is missing or invalid"
+        )
+    return migration_records, current_record
+
+
 def _automatic_profile_candidates(
     migration_bundle: dict[str, Any],
     manifest: dict[str, Any],
@@ -3650,9 +3741,20 @@ def _official_upgrade_write_plan(
                 raise ValueError("official manifest patch targets an unknown manifest")
             preconditions = operation.get("preconditions")
             patched = _apply_official_manifest_patch(manifest, operation)
-            data = (json.dumps(patched, ensure_ascii=False, indent=2) + "\n").encode(
-                "utf-8"
-            )
+            try:
+                data = (
+                    json.dumps(
+                        patched,
+                        ensure_ascii=False,
+                        indent=2,
+                        allow_nan=False,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"official manifest postimage is not strict JSON: {exc}"
+                ) from exc
             if not destination.is_file() or destination.is_symlink():
                 raise ValueError("official manifest patch target is unsafe")
             manifest_mode = destination.stat().st_mode & 0o7777
@@ -3769,6 +3871,7 @@ def _invalid_manifest_migration_plan(
         "version_refresh_required": False,
         "instruction_surface_migration_required": False,
         "manifest_validation_failed": True,
+        "migration_records": [],
         "migration_record": None,
         "moves": [],
         "legacy_layout_candidates": [],
@@ -4204,41 +4307,34 @@ def plan_target_layout_migration(
             if harness_managed is not True:
                 conflicts.append("manifest canonical Harness Skill must remain wrapper managed")
 
+    migration_records: list[str] = []
     migration_record = None
     if requires_migration:
         day = (today or date.today()).isoformat()
         if selected_profile and selected_profile.get("automatic") is True:
-            official_profile = _official_upgrade_profile(
-                migration_bundle,
-                selected_profile["profile_id"],
-            )
-            ledger_paths = [
-                item.get("target_path")
-                for item in official_profile.get("operations", [])
-                if isinstance(item, dict)
-                and item.get("type") == "create_exact"
-                and isinstance(item.get("target_path"), str)
-                and "/docs/migrations/" in item["target_path"]
-            ]
-            if len(ledger_paths) != 1:
-                conflicts.append(
-                    "official upgrade profile must declare one deterministic migration ledger"
+            try:
+                migration_records, migration_record = (
+                    _verified_profile_migration_records(selected_profile)
                 )
-            else:
-                migration_record = ledger_paths[0]
+            except ValueError as exc:
+                conflicts.append(str(exc))
         elif layout_migration_required:
             migration_record = (
                 f"{TARGET_EVOINFRA_DIR}/docs/migrations/{day}-layout-v1-to-v2.md"
             )
+            migration_records = [migration_record]
         else:
             migration_record = (
                 f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
                 f"{day}-{current_version or 'unknown'}-to-{latest_version or current_version or 'unknown'}.md"
             )
+            migration_records = [migration_record]
     if requires_migration and not manifest_status["active_manifest_path"]:
         conflicts.append("legacy wrapper manifest is missing; repair or adopt the harness before migration")
-    if migration_record and (target / migration_record).exists():
-        conflicts.append(f"migration record already exists: {migration_record}")
+    for record in migration_records:
+        record_path = target / record
+        if record_path.exists() or record_path.is_symlink():
+            conflicts.append(f"migration record already exists: {record}")
 
     text_rewrite_candidates = [
         str(path.relative_to(target)) for path in target_infra_text_files(target)
@@ -4282,7 +4378,7 @@ def plan_target_layout_migration(
             item["path"]
             for item in write_set
             if item.get("operation") in {"create_exact", "replace_exact"}
-            and item["path"] != migration_record
+            and item["path"] not in set(migration_records)
         )
 
     explicit_paths = {
@@ -4386,6 +4482,7 @@ def plan_target_layout_migration(
         "layout_migration_required": layout_migration_required,
         "version_refresh_required": version_refresh_required,
         "instruction_surface_migration_required": instruction_surface_migration_required,
+        "migration_records": migration_records if requires_migration else [],
         "migration_record": migration_record if requires_migration else None,
         "moves": [],
         "legacy_layout_candidates": [

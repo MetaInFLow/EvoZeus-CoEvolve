@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -1500,6 +1501,246 @@ class LifecycleBasicsTest(unittest.TestCase):
                 target,
                 "non-finite numeric value: NaN",
             )
+
+    def test_layout_plan_and_apply_reject_overflowed_manifest_number_with_zero_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "overflowed-manifest"
+            manifest_path = create_exact_v1_migration_target(target)
+            original = manifest_path.read_text(encoding="utf-8")
+            head, tail = original.rsplit("\n}", 1)
+            manifest_path.write_text(
+                head + ',\n  "diagnostic": {"score": 1e400}\n}' + tail,
+                encoding="utf-8",
+            )
+            commit_target_state(target, "overflowed manifest number")
+            invalid_bytes = manifest_path.read_bytes()
+            bundle = trusted_attachment_bundle()
+
+            plan = self.assert_invalid_manifest_is_manual_zero_write(
+                target,
+                "non-finite numeric value at $.diagnostic.score",
+            )
+            with patch.object(
+                migration_kernel,
+                "load_migration_contract",
+                return_value=bundle,
+            ):
+                report = migrate_target_layout(target, "v0.15.0")
+
+            self.assertEqual(plan["migration_records"], [])
+            self.assertEqual(report["status"], "manual_migration_required")
+            self.assertFalse(report["writes"])
+            self.assertEqual(report["changed_files"], [])
+            self.assertEqual(manifest_path.read_bytes(), invalid_bytes)
+
+    def test_write_wrapper_manifest_rejects_non_finite_output_before_filesystem_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "strict-manifest-output"
+            manifest = {"diagnostic": {"score": float("inf")}}
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "wrapper manifest cannot be serialized as strict JSON",
+            ):
+                write_wrapper_manifest(target, manifest)
+
+            self.assertFalse((target / TARGET_WRAPPER_MANIFEST).exists())
+            self.assertFalse((target / ".evozeus-wrapper").exists())
+
+    def test_versioned_profile_plan_supports_cumulative_v12_migration_records(self):
+        old_record = (
+            ".evozeus-wrapper/docs/migrations/"
+            "harness-skill-v1.0.0-to-v1.1.0.md"
+        )
+        current_record = (
+            ".evozeus-wrapper/docs/migrations/"
+            "harness-skill-v1.1.0-to-v1.2.0.md"
+        )
+        cases = (
+            ("v1.0.0", [old_record, current_record]),
+            ("v1.1.0", [current_record]),
+        )
+        for from_version, records in cases:
+            with self.subTest(from_version=from_version), tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / f"star-{from_version}"
+                create_exact_v1_migration_target(target)
+                bundle = trusted_attachment_bundle()
+                base_profile = next(
+                    item
+                    for item in bundle["contract"]["profiles"]
+                    if item.get("automatic") is True
+                )
+                profile = copy.deepcopy(base_profile)
+                profile["profile_id"] = f"canonical-{from_version}-to-v1.2"
+                profile["from"] = {
+                    "layout": "consolidated-v2",
+                    "harness_skill_version": from_version,
+                }
+                profile["to"] = {
+                    "layout": "consolidated-v2",
+                    "harness_skill_version": "v1.2.0",
+                }
+                operations = [
+                    {
+                        "change_id": f"create:{record}",
+                        "type": "create_exact",
+                        "target_path": record,
+                    }
+                    for record in records
+                ]
+                profile["adapter_payload"]["operations"] = operations
+                profile["adapter_payload"]["migration_records"] = list(records)
+                profile["adapter_payload"][
+                    "current_migration_record"
+                ] = current_record
+                profile["adapter_sha256"] = migration_kernel.canonical_json_sha256(
+                    profile["adapter_payload"]
+                )
+                refresh_path = ".evozeus-wrapper/scripts/future-runtime.py"
+                write_set = [
+                    {
+                        "path": path,
+                        "operation": "create_exact",
+                        "preimage_sha256": None,
+                        "preimage_mode": None,
+                        "postimage_sha256": "sha256:" + "a" * 64,
+                        "postimage_mode": 0o644,
+                    }
+                    for path in [*records, refresh_path]
+                ]
+                evidence = {
+                    "matched": True,
+                    "manifest_identity": {},
+                    "from_closure_files": [],
+                    "manifest_patch_preconditions": [],
+                    "trusted_preimages": [],
+                    "stable_block": {"matched": True},
+                    "blockers": [],
+                    "authority": "verified test profile",
+                }
+
+                with patch.object(
+                    lifecycle,
+                    "_automatic_profile_candidates",
+                    return_value=[profile],
+                ), patch.object(
+                    lifecycle,
+                    "_canonical_v1_upgrade_evidence",
+                    return_value=evidence,
+                ), patch.object(
+                    lifecycle,
+                    "_official_upgrade_write_plan",
+                    return_value=(write_set, {}),
+                ):
+                    plan = plan_target_layout_migration(
+                        target,
+                        latest_version="v0.15.0",
+                        _migration_bundle=bundle,
+                    )
+
+                self.assertEqual(plan["decision"], "automatic_migration_available")
+                self.assertTrue(plan["can_apply"], plan["apply_blockers"])
+                self.assertEqual(plan["migration_records"], records)
+                self.assertEqual(plan["migration_record"], current_record)
+                self.assertEqual(plan["managed_file_refreshes"], [refresh_path])
+                if len(records) > 1:
+                    historical = target / old_record
+                    historical.write_text("already present\n", encoding="utf-8")
+                    commit_target_state(target, "pre-existing historical ledger")
+                    with patch.object(
+                        lifecycle,
+                        "_automatic_profile_candidates",
+                        return_value=[profile],
+                    ), patch.object(
+                        lifecycle,
+                        "_canonical_v1_upgrade_evidence",
+                        return_value=copy.deepcopy(evidence),
+                    ), patch.object(
+                        lifecycle,
+                        "_official_upgrade_write_plan",
+                        return_value=(write_set, {}),
+                    ):
+                        conflicting = plan_target_layout_migration(
+                            target,
+                            latest_version="v0.15.0",
+                            _migration_bundle=bundle,
+                        )
+                    self.assertIn(
+                        f"migration record already exists: {old_record}",
+                        conflicting["conflicts"],
+                    )
+                    self.assertFalse(conflicting["can_apply"])
+
+    def test_verified_profile_migration_records_fail_closed_without_current_hop_proof(self):
+        old_record = (
+            ".evozeus-wrapper/docs/migrations/"
+            "harness-skill-v1.0.0-to-v1.1.0.md"
+        )
+        current_record = (
+            ".evozeus-wrapper/docs/migrations/"
+            "harness-skill-v1.1.0-to-v1.2.0.md"
+        )
+        operations = [
+            {"type": "create_exact", "target_path": old_record},
+            {"type": "create_exact", "target_path": current_record},
+        ]
+        valid_payload = {
+            "operations": operations,
+            "migration_records": [old_record, current_record],
+            "current_migration_record": current_record,
+        }
+        invalid_payloads = (
+            {"operations": operations},
+            {
+                "operations": operations,
+                "migration_records": [old_record, current_record],
+            },
+            {
+                **valid_payload,
+                "migration_records": [current_record, old_record],
+            },
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload), self.assertRaisesRegex(
+                ValueError,
+                "verified automatic profile",
+            ):
+                lifecycle._verified_profile_migration_records(
+                    {"adapter_payload": payload}
+                )
+
+        self.assertEqual(
+            lifecycle._verified_profile_migration_records(
+                {"adapter_payload": valid_payload}
+            ),
+            ([old_record, current_record], current_record),
+        )
+
+        semantic_records = [
+            (
+                ".evozeus-wrapper/docs/migrations/"
+                "harness-skill-v1.9.0-to-v1.10.0.md"
+            ),
+            (
+                ".evozeus-wrapper/docs/migrations/"
+                "harness-skill-v1.10.0-to-v1.11.0.md"
+            ),
+        ]
+        semantic_payload = {
+            "operations": [
+                {"type": "create_exact", "target_path": record}
+                for record in reversed(semantic_records)
+            ],
+            "migration_records": semantic_records,
+            "current_migration_record": semantic_records[-1],
+        }
+        self.assertEqual(
+            lifecycle._verified_profile_migration_records(
+                {"adapter_payload": semantic_payload}
+            ),
+            (semantic_records, semantic_records[-1]),
+        )
 
     def test_layout_plan_rejects_symlinked_manifest_with_manual_zero_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3706,6 +3947,40 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertEqual(report["status"], "blocked")
             self.assertTrue(any("source is missing" in error for error in report["errors"]))
 
+    def test_upgrade_all_rejects_overflowed_registered_manifest_before_planning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root)
+            target = self.create_upgrade_target(
+                home,
+                "overflowed-registered",
+                initialize_git=True,
+            )
+            manifest_path = target / TARGET_WRAPPER_MANIFEST
+            manifest = manifest_path.read_text(encoding="utf-8")
+            manifest_path.write_text(
+                manifest[:-1] + ', "diagnostic": {"score": 1e400}}',
+                encoding="utf-8",
+            )
+
+            with patch(
+                "scripts.evozeus_wrapper_lifecycle.plan_target_layout_migration"
+            ) as planner:
+                report = plan_upgrade_all(
+                    home,
+                    wrapper_root,
+                    "v0.10.0",
+                    latest_resolver=self.latest_v010,
+                )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertTrue(
+                any("invalid wrapper manifest" in error for error in report["errors"]),
+                report["errors"],
+            )
+            planner.assert_not_called()
+
     def test_upgrade_all_rolls_back_every_modified_target_on_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4244,11 +4519,12 @@ class UpgradeAllHarnessTest(unittest.TestCase):
                     "can_apply": True,
                     "conflicts": [],
                     "instruction_surface": "SKILL.md",
-                    "migration_record": ".evozeus-wrapper/docs/migrations/refresh.md",
-                    "moves": [],
-                    "managed_file_refreshes": [
-                        ".github/workflows/evozeus-wrapper-preflight.yml"
+                    "migration_record": None,
+                    "migration_records": [
+                        ".github/migrations/historical-record.md"
                     ],
+                    "moves": [],
+                    "managed_file_refreshes": [],
                 }
 
             with patch(

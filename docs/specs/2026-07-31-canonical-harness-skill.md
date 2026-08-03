@@ -121,6 +121,10 @@ Fresh attach 只在 instruction surface 同时满足“零 canonical markers、�
 
 每次发布新 Harness 版本时，先新增不可变 current closure，再为每个仍受支持的历史 closure 新增一条直达新 current closure 的 profile，最后原子更新两个 current pointers。旧 closure 与旧 profile 文件保留原字节；旧 profile 可退出 active pointer，但不得改写。候选 PR 只能新增下一版本历史、直达当前版本的完整 profile 星型和受绑定 artifacts。可信 base verifier 会拒绝改写历史、遗漏历史覆盖、非唯一 from closure、构建修订来源不一致以及未绑定的 candidate 数据。
 
+计划中的 `migration_records` 按 closure semver hop 顺序确定性列出 selected closure diff 要创建的全部累计历史账本；从更早版本直达 current 时允许多条。可信 verifier 必须为每个 active profile 推导唯一 `current_migration_record`。任一字段缺失、相互矛盾或与 verified operations 不一致时，runtime 固定 fail closed。全部 records 都进入存在性、路径安全、write set、batch preflight 与 rollback 校验。
+
+source 变更与新 closure 位于同一 PR 时，`construction_revision` 必须保持为最终 Release Commit 的可达祖先，该 PR 固定使用 merge Commit 合并；squash/rebase 会使单 PR provenance 失效，并阻断 CI、UAT 晋级和 Release。若仓库策略只允许 squash/rebase，则采用两阶段发布：先单独合并 source 变更并取得 canonical reachable Commit，再在后续 data-only PR 中基于该 Commit 冻结 closure 与 profiles。
+
 版本轴分别记录 target wrapper、contract bundle、Harness Skill、migration protocol/profile 和 artifact release。自动迁移按 closure 状态与 release provenance 匹配，不能仅比较一个 frontmatter 版本字符串。
 
 ## 写集

@@ -59,6 +59,7 @@ def _batch_plan_digest(plan: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -185,6 +186,7 @@ def _product_manifest_digest(manifest: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
@@ -795,8 +797,8 @@ def _registered_upgrade_targets(home: Path) -> tuple[list[dict[str, Any]], list[
                     continue
                 manifest_path = legacy
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
+                manifest = lifecycle._read_manifest_json(manifest_path)
+            except (OSError, ValueError):
                 errors.append(f"invalid wrapper manifest: {owner_dir.name}/{pointer.name}")
                 continue
             expected_repo = f"{owner_dir.name}/{pointer.name}"
@@ -854,6 +856,7 @@ def _target_write_errors(target: Path, migration: dict[str, Any]) -> list[str]:
         TARGET_MANIFEST.as_posix(),
         ".codex/hooks.json",
         migration.get("migration_record"),
+        *(migration.get("migration_records") or []),
         *migration.get("managed_file_refreshes", []),
         *migration.get("text_rewrite_candidates", []),
         *migration.get("generated_cache_candidates", []),

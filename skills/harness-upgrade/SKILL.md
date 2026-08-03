@@ -58,12 +58,15 @@ Batch apply requires both `--approve` and the exact dry-run `batch_plan_sha256` 
 
 The runtime does not select a profile by a hard-coded profile id. Each new Harness release adds one immutable current closure and a direct-to-current profile from every still-supported immutable historical closure. `history/current.json` selects the current closure; `profiles/current.json` selects the complete active upgrade star. Historical closures and profile files are append-only. Replacing the current pointer never rewrites prior history.
 
+An automatic plan exposes the `migration_records` created by the selected closure diff in deterministic closure-semver hop order. Older direct-to-current profiles may create multiple accumulated historical records. The trusted verifier must derive exactly one `current_migration_record` from every active profile; the runtime fails closed when either field is absent, inconsistent, or does not match the verified operations. Every listed record participates in destination, path-safety, write-set, and rollback validation.
+
 Destructive authority comes exclusively from the verified external official profile, its immutable closure diff, adapter identity, and a complete exact match of the selected from closure. Frontmatter and regex findings never grant write authority. A missing field, present must-be-absent path, duplicate marker, unknown layout, extra legacy candidate, changed exact byte or mode, changed protected surface, untrusted source, ambiguous profile match, or unapproved plan digest blocks all writes.
 
 ## Source and snapshot trust
 
 - Release identity comes from the fixed `MetaInFLow/EvoZeus-CoEvolve` GitHub API tag attestation. The local tag ref object, peeled commit, and clean `HEAD` must match that attestation; configured Git remotes and `origin` names supply diagnostics only and grant no trust.
 - The tagged contract manifest must bind the contract digest. Every source file used as a postimage must equal both its declared digest and its bytes in that tag.
+- A single PR that introduces source changes and a new immutable closure must preserve its declared `construction_revision` as an ancestor of the final release Commit, so merge it with a merge Commit. Squash or rebase invalidates that single-PR provenance and blocks CI, UAT promotion, and Release. A repository that permits only squash/rebase uses two PRs: merge the source change first to obtain its canonical reachable Commit, then freeze the closure and profiles against that Commit in a later data-only PR.
 - An unreleased branch may inspect and plan. Its apply status remains `source_unreleased`, `writes=false`.
 - The snapshot base must stay outside the target Repo. Reject symlinks in the base, transaction directory, descriptor, files tree, and backup paths.
 - Rollback accepts only a direct child of the trusted snapshot root with the expected schema, transaction identity, plan digest, descriptor digest receipt, backup-set digest, complete metadata, and valid backup hashes.
