@@ -3175,6 +3175,88 @@ def _official_upgrade_profile(
     return profile
 
 
+def _automatic_profile_candidates(
+    migration_bundle: dict[str, Any],
+    manifest: dict[str, Any],
+    requested_wrapper_to: str | None,
+) -> list[dict[str, Any]]:
+    """Select only verified data profiles whose closure states fit this target."""
+    current = migration_bundle.get("current_closure") or {}
+    current_closure = current.get("closure")
+    current_state = (
+        current_closure.get("state")
+        if isinstance(current_closure, dict)
+        else None
+    )
+    if not isinstance(current_state, dict):
+        return []
+    manifest_layout = (
+        "consolidated-v2" if manifest.get("layout_version") == 2 else None
+    )
+    candidates: list[dict[str, Any]] = []
+    for profile in migration_bundle.get("contract", {}).get("profiles", []):
+        if not isinstance(profile, dict) or profile.get("automatic") is not True:
+            continue
+        payload = profile.get("adapter_payload") or {}
+        from_state = profile.get("from_closure_state")
+        to_state = profile.get("to_closure_state")
+        release_axis = profile.get("release_axis") or {}
+        if (
+            payload.get("authority_source")
+            != "external-hash-bound-official-upgrade-profile"
+            or not isinstance(from_state, dict)
+            or not isinstance(to_state, dict)
+            or to_state != current_state
+            or from_state.get("layout") != manifest_layout
+            or from_state.get("target_wrapper_version")
+            != manifest.get("wrapper_version")
+            or from_state.get("harness_skill_version")
+            != manifest.get("harness_skill_version")
+            or release_axis.get("target_wrapper_from")
+            != manifest.get("wrapper_version")
+            or release_axis.get("target_wrapper_to") != requested_wrapper_to
+        ):
+            continue
+        candidates.append(profile)
+    return sorted(candidates, key=lambda item: str(item.get("profile_id")))
+
+
+def _approved_automatic_profile(
+    migration_bundle: dict[str, Any],
+    planned_identity: object,
+) -> dict[str, Any]:
+    """Rebind an approved plan to the same verified profile after contract reload."""
+    if not isinstance(planned_identity, dict):
+        raise ValueError("migration apply is blocked: approved profile identity is missing")
+    profile_id = planned_identity.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise ValueError("migration apply is blocked: approved profile id is invalid")
+    profile = migration_kernel.contract_profile(
+        migration_bundle["contract"],
+        profile_id,
+    )
+    if profile.get("automatic") is not True:
+        raise ValueError("migration apply is blocked: approved profile is not automatic")
+    actual_identity = migration_kernel.profile_identity(profile)
+    if actual_identity != planned_identity:
+        raise ValueError(
+            "migration apply is blocked: approved profile identity differs from "
+            "the verified contract"
+        )
+    raw_profile = _official_upgrade_profile(migration_bundle, profile_id)
+    if (
+        raw_profile.get("_verified_profile_path")
+        != planned_identity.get("profile_path")
+        or raw_profile.get("_verified_profile_sha256")
+        != planned_identity.get("profile_sha256")
+    ):
+        raise ValueError(
+            "migration apply is blocked: approved profile artifact binding differs "
+            "from the verified contract"
+        )
+    return profile
+
+
 def _official_exact_file_mode(value: object) -> int:
     if value == "100644":
         return 0o644
@@ -3387,10 +3469,6 @@ def plan_target_layout_migration(
         migration_contract,
         "legacy-scattered-to-canonical-v1.0",
     )
-    canonical_profile = migration_kernel.contract_profile(
-        migration_contract,
-        "canonical-v1.0-to-v1.1",
-    )
     unknown_profile = migration_kernel.contract_profile(
         migration_contract,
         "unknown-to-manual-review",
@@ -3492,17 +3570,87 @@ def plan_target_layout_migration(
         or version_refresh_required
         or instruction_surface_migration_required
     )
-    canonical_evidence = _canonical_v1_upgrade_evidence(
-        target,
-        current_manifest or {},
-        instruction_surface,
-        canonical_profile,
-        activation_contract,
-    )
-    canonical_release_axis = canonical_profile.get("release_axis") or {}
     requested_wrapper_to = latest_version or current_version
+    state_candidates = _automatic_profile_candidates(
+        migration_bundle,
+        current_manifest or {},
+        requested_wrapper_to,
+    )
+    candidate_evidence = [
+        (
+            profile,
+            _canonical_v1_upgrade_evidence(
+                target,
+                current_manifest or {},
+                instruction_surface,
+                profile,
+                activation_contract,
+            ),
+        )
+        for profile in state_candidates
+    ]
+    automatic_candidates = [
+        profile for profile, evidence in candidate_evidence if evidence["matched"]
+    ]
+    canonical_profile = (
+        automatic_candidates[0] if len(automatic_candidates) == 1 else None
+    )
+    if canonical_profile is None:
+        selection_reason = (
+            "no verified automatic profile matches the exact target and current closure"
+            if not automatic_candidates
+            else "multiple verified automatic profiles match the exact target and current closure"
+        )
+        if len(candidate_evidence) == 1:
+            canonical_evidence = candidate_evidence[0][1]
+            canonical_evidence["blockers"] = list(
+                dict.fromkeys([*canonical_evidence["blockers"], selection_reason])
+            )
+        else:
+            canonical_evidence = {
+                "matched": False,
+                "manifest_identity": {},
+                "trusted_preimages": [],
+                "stable_block": {
+                    "block_id": activation_contract.get("block_id"),
+                    "path": instruction_surface,
+                    "expected_sha256_lf": (
+                        "sha256:" + str(activation_contract.get("sha256_lf"))
+                    ),
+                    "actual_sha256_lf": None,
+                    "matched": False,
+                },
+                "blockers": [selection_reason],
+                "authority": (
+                    "verified current closure + unique exact-from official profile"
+                ),
+            }
+        canonical_release_axis: dict[str, Any] = {}
+    else:
+        canonical_evidence = next(
+            evidence
+            for profile, evidence in candidate_evidence
+            if profile is canonical_profile
+        )
+        canonical_release_axis = canonical_profile.get("release_axis") or {}
     artifact_source_from = canonical_release_axis.get("artifact_source_from")
     artifact_source_to = canonical_release_axis.get("artifact_source_to")
+    artifact_source_from_release = (
+        artifact_source_from.get("release")
+        if isinstance(artifact_source_from, dict)
+        else None
+    )
+    artifact_source_from_release_valid = (
+        artifact_source_from_release is None
+        or (
+            isinstance(artifact_source_from_release, str)
+            and re.fullmatch(
+                r"v\d+\.\d+\.\d+",
+                artifact_source_from_release,
+            )
+            is not None
+        )
+    )
     upgrade_axis_evidence = {
         "target_wrapper": {
             "expected_from": canonical_release_axis.get("target_wrapper_from"),
@@ -3521,13 +3669,21 @@ def plan_target_layout_migration(
             current_version == canonical_release_axis.get("target_wrapper_from"),
             requested_wrapper_to == canonical_release_axis.get("target_wrapper_to"),
             isinstance(artifact_source_from, dict),
-            artifact_source_from.get("kind") == "construction_revision",
-            artifact_source_from.get("release") is None,
+            isinstance(artifact_source_from, dict)
+            and artifact_source_from.get("kind") == "construction_revision",
+            artifact_source_from_release_valid,
             isinstance(artifact_source_to, dict),
-            artifact_source_to.get("kind") == "required_release",
-            artifact_source_to.get("binding") == "contract_bundle.source_revision",
+            isinstance(artifact_source_to, dict)
+            and artifact_source_to.get("kind") == "required_release",
+            isinstance(artifact_source_to, dict)
+            and artifact_source_to.get("binding")
+            == "contract_bundle.source_revision",
             migration_bundle.get("source_trust", {}).get("release_tag")
-            == artifact_source_to.get("release"),
+            == (
+                artifact_source_to.get("release")
+                if isinstance(artifact_source_to, dict)
+                else None
+            ),
         )
     )
     if not upgrade_axis_evidence["matched"]:
@@ -3603,9 +3759,24 @@ def plan_target_layout_migration(
                 }
             )
 
+    verified_current_closure = migration_bundle.get("current_closure", {}).get(
+        "closure",
+        {},
+    )
+    verified_current_state = (
+        verified_current_closure.get("state")
+        if isinstance(verified_current_closure, dict)
+        else {}
+    )
+    verified_current_harness_version = (
+        verified_current_state.get("harness_skill_version")
+        if isinstance(verified_current_state, dict)
+        else None
+    )
     prerelease_ambiguous = bool(
         current_manifest
-        and current_manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION
+        and current_manifest.get("harness_skill_version")
+        == verified_current_harness_version
         and not _manifest_proves_canonical_harness_ownership(
             current_manifest,
             migration_bundle["identity"],
@@ -3613,8 +3784,12 @@ def plan_target_layout_migration(
         )
     )
     authority_rules = migration_contract.get("authority_rules") or {}
-    canonical_payload = canonical_profile.get("adapter_payload") or {}
-    canonical_profile_authorized = all(
+    canonical_payload = (
+        canonical_profile.get("adapter_payload") or {}
+        if canonical_profile is not None
+        else {}
+    )
+    canonical_profile_authorized = canonical_profile is not None and all(
         (
             canonical_profile.get("automatic") is True,
             canonical_payload.get("type") == "exact-artifact-and-stable-block",
@@ -3637,7 +3812,7 @@ def plan_target_layout_migration(
     elif canonical_evidence["matched"] and canonical_profile_authorized:
         selected_profile = canonical_profile
         decision = "automatic_migration_available"
-    elif canonical_evidence["matched"]:
+    elif canonical_evidence["matched"] and canonical_profile is not None:
         selected_profile = canonical_profile
         decision = "manual_migration_required"
     else:
@@ -3666,7 +3841,7 @@ def plan_target_layout_migration(
     migration_record = None
     if requires_migration:
         day = (today or date.today()).isoformat()
-        if selected_profile and selected_profile["profile_id"] == "canonical-v1.0-to-v1.1":
+        if selected_profile and selected_profile.get("automatic") is True:
             official_profile = _official_upgrade_profile(
                 migration_bundle,
                 selected_profile["profile_id"],
@@ -3731,7 +3906,7 @@ def plan_target_layout_migration(
                 target,
                 current_manifest,
                 migration_bundle,
-                canonical_profile["profile_id"],
+                selected_profile["profile_id"],
             )
         except ValueError as exc:
             conflicts.append(str(exc))
@@ -3828,6 +4003,10 @@ def plan_target_layout_migration(
         "ownership_evidence": canonical_evidence,
         "automatic_profile_authorized": canonical_profile_authorized,
         "upgrade_axis_evidence": upgrade_axis_evidence,
+        "automatic_profile_candidates": [
+            migration_kernel.profile_identity(item)
+            for item in automatic_candidates
+        ],
         "discovery_candidates": discovery_candidates,
         "discovery_candidates_have_destructive_authority": False,
         "from_layout": "scattered-v1" if layout_migration_required else "consolidated-v2",
@@ -4006,7 +4185,11 @@ def _apply_canonical_v1_upgrade(
     snapshot_root: Path | None,
 ) -> dict[str, Any]:
     allowed_paths = {item["path"] for item in plan["write_set"]}
-    profile_id = (plan.get("profile") or {}).get("profile_id")
+    approved_profile = _approved_automatic_profile(
+        migration_bundle,
+        plan.get("profile"),
+    )
+    profile_id = approved_profile["profile_id"]
     official_profile = _official_upgrade_profile(migration_bundle, profile_id)
     expected_paths = {
         item.get("target_path")
@@ -4245,11 +4428,9 @@ def migrate_target_layout(
                 "approved plan digest does not match the current plan",
             ],
         }
-    if (plan.get("profile") or {}).get("profile_id") != "canonical-v1.0-to-v1.1":
-        raise ValueError("migration apply is blocked: unsupported automatic profile")
-    approved_profile = migration_kernel.contract_profile(
-        migration_bundle["contract"],
-        "canonical-v1.0-to-v1.1",
+    approved_profile = _approved_automatic_profile(
+        migration_bundle,
+        plan.get("profile"),
     )
     approved_payload = approved_profile.get("adapter_payload") or {}
     authority_rules = migration_bundle["contract"].get("authority_rules") or {}

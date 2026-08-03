@@ -76,6 +76,8 @@ def _make_release_source(
     tmp_path: Path,
     *,
     publish_tag: bool = True,
+    released_from: str | None = None,
+    contract_current_harness_version: str | None = None,
 ) -> Path:
     source = tmp_path / ("source-published" if publish_tag else "source-forged")
     source.mkdir()
@@ -97,6 +99,25 @@ def _make_release_source(
     manifest_path = source / "contracts/v1/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["source_revision"] = RELEASE_TAG
+    contract_path = source / "contracts/v1/migrations/harness-migration-contract-v1.json"
+    if contract_current_harness_version is not None:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["current_harness_skill_version"] = contract_current_harness_version
+        _write_json(contract_path, contract)
+        next(
+            entry
+            for entry in manifest["files"]
+            if entry["path"] == "migrations/harness-migration-contract-v1.json"
+        )["sha256"] = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+    from_closure_path = (
+        source
+        / "contracts/v1/migrations/history/harness-skill/v1.0.0/closure.json"
+    )
+    if released_from is not None:
+        from_closure = json.loads(from_closure_path.read_text(encoding="utf-8"))
+        from_closure["source"]["release_status"] = "release_required_for_apply"
+        from_closure["source"]["required_release"] = released_from
+        _write_json(from_closure_path, from_closure)
     closure_path = (
         source
         / "contracts/v1/migrations/history/harness-skill/v1.1.0/closure.json"
@@ -117,6 +138,11 @@ def _make_release_source(
         / "contracts/v1/migrations/profiles/canonical-v1.0-to-v1.1-v1.json"
     )
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    if released_from is not None:
+        profile["from_closure"]["sha256"] = hashlib.sha256(
+            from_closure_path.read_bytes()
+        ).hexdigest()
+        profile["release_axis"]["artifact_source_from"]["release"] = released_from
     profile["to_closure"]["sha256"] = closure_sha256
     profile["release_axis"]["artifact_source_to"]["release"] = RELEASE_TAG
     _write_json(profile_path, profile)
@@ -126,6 +152,7 @@ def _make_release_source(
     profile_pointer["entries"][0]["sha256"] = profile_sha256
     _write_json(profile_pointer_path, profile_pointer)
     for path in (
+        from_closure_path,
         closure_path,
         history_pointer_path,
         profile_path,
@@ -241,6 +268,24 @@ def _plan(target: Path, source: Path) -> dict[str, object]:
         wrapper_root=source,
         remote_tag_resolver=_source_tag_resolver(source),
     )
+
+
+def _rename_active_profile(
+    bundle: dict[str, object],
+    profile_id: str,
+) -> None:
+    profile = next(
+        item
+        for item in bundle["contract"]["profiles"]
+        if item.get("automatic") is True
+    )
+    profile["profile_id"] = profile_id
+    profile["adapter_payload"]["official_profile"]["profile_id"] = profile_id
+    profile["adapter_sha256"] = migration_kernel.canonical_json_sha256(
+        profile["adapter_payload"]
+    )
+    raw_profile = bundle["official_upgrade"]["profiles"][0]
+    raw_profile["profile_id"] = profile_id
 
 
 def _refresh_snapshot_receipt(snapshot: Path) -> None:
@@ -1047,6 +1092,148 @@ def test_structure_validation_disables_python_bytecode_writes(tmp_path: Path) ->
 
     assert result["returncode"] == 0
     assert not script.parent.joinpath("__pycache__").exists()
+
+
+def test_current_harness_version_is_derived_from_the_verified_closure(
+    tmp_path: Path,
+) -> None:
+    source = _make_release_source(
+        tmp_path,
+        contract_current_harness_version="v9.9.9",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="current_harness_skill_version disagrees with the verified current closure",
+    ):
+        migration_kernel.load_migration_contract(source)
+
+
+def test_released_from_closure_is_a_valid_automatic_profile_source(
+    tmp_path: Path,
+) -> None:
+    source = _make_release_source(tmp_path, released_from="v0.14.0")
+    target = _prepare_exact_v1_target(tmp_path)
+
+    plan = _plan(target, source)
+
+    assert plan["decision"] == "automatic_migration_available"
+    assert plan["upgrade_axis_evidence"]["artifact_source_from"]["release"] == (
+        "v0.14.0"
+    )
+    assert plan["upgrade_axis_evidence"]["matched"] is True
+
+
+def test_dynamic_profile_selection_and_apply_binding_do_not_depend_on_fixed_id(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    bundle = _trusted_development_bundle()
+    dynamic_id = "canonical-v1.0-to-current"
+    _rename_active_profile(bundle, dynamic_id)
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        today=date(2026, 8, 2),
+        _migration_bundle=bundle,
+    )
+
+    assert plan["decision"] == "automatic_migration_available"
+    assert plan["profile"]["profile_id"] == dynamic_id
+    assert re.fullmatch(r"contracts/v1/.+\.json", plan["profile"]["profile_path"])
+    assert re.fullmatch(r"[0-9a-f]{64}", plan["profile"]["profile_sha256"])
+    assert lifecycle._approved_automatic_profile(bundle, plan["profile"])[
+        "profile_id"
+    ] == dynamic_id
+
+    tampered = copy.deepcopy(plan["profile"])
+    tampered["profile_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="approved profile identity differs"):
+        lifecycle._approved_automatic_profile(bundle, tampered)
+
+
+def test_zero_or_ambiguous_dynamic_profile_match_is_manual_zero_write(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    no_match_bundle = _trusted_development_bundle()
+    only_profile = next(
+        item
+        for item in no_match_bundle["contract"]["profiles"]
+        if item.get("automatic") is True
+    )
+    only_profile["from_closure_state"]["target_wrapper_version"] = "v0.13.0"
+    no_match = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=no_match_bundle,
+    )
+    assert no_match["decision"] == "manual_migration_required"
+    assert no_match["write_set"] == []
+    assert no_match["automatic_profile_candidates"] == []
+
+    ambiguous_bundle = _trusted_development_bundle()
+    original = next(
+        item
+        for item in ambiguous_bundle["contract"]["profiles"]
+        if item.get("automatic") is True
+    )
+    duplicate = copy.deepcopy(original)
+    duplicate["profile_id"] = "canonical-v1.0-to-current-duplicate"
+    duplicate["adapter_payload"]["official_profile"]["profile_id"] = duplicate[
+        "profile_id"
+    ]
+    duplicate["adapter_sha256"] = migration_kernel.canonical_json_sha256(
+        duplicate["adapter_payload"]
+    )
+    ambiguous_bundle["contract"]["profiles"].append(duplicate)
+    ambiguous = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=ambiguous_bundle,
+    )
+    assert ambiguous["decision"] == "manual_migration_required"
+    assert ambiguous["write_set"] == []
+    assert len(ambiguous["automatic_profile_candidates"]) == 2
+    assert any(
+        "multiple verified automatic profiles" in blocker
+        for blocker in ambiguous["ownership_evidence"]["blockers"]
+    )
+
+
+def test_dynamic_selection_uses_exact_closure_preimages_before_profile_id(
+    tmp_path: Path,
+) -> None:
+    target = _prepare_exact_v1_target(tmp_path)
+    bundle = _trusted_development_bundle()
+    original = next(
+        item
+        for item in bundle["contract"]["profiles"]
+        if item.get("automatic") is True
+    )
+    mismatched = copy.deepcopy(original)
+    mismatched["profile_id"] = "canonical-same-version-wrong-preimage"
+    mismatched["adapter_payload"]["official_profile"]["profile_id"] = mismatched[
+        "profile_id"
+    ]
+    mismatched["adapter_payload"]["trusted_preimages"][0]["sha256"] = "0" * 64
+    mismatched["adapter_sha256"] = migration_kernel.canonical_json_sha256(
+        mismatched["adapter_payload"]
+    )
+    bundle["contract"]["profiles"].append(mismatched)
+
+    plan = lifecycle.plan_target_layout_migration(
+        target,
+        latest_version="v0.15.0",
+        _migration_bundle=bundle,
+    )
+
+    assert plan["decision"] == "automatic_migration_available"
+    assert plan["profile"]["profile_id"] == original["profile_id"]
+    assert [
+        item["profile_id"] for item in plan["automatic_profile_candidates"]
+    ] == [original["profile_id"]]
 
 
 def test_trusted_remote_tag_exact_profile_apply_and_rollback(tmp_path: Path) -> None:

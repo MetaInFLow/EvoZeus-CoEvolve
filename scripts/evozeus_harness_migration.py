@@ -804,7 +804,6 @@ def _release_source_trust(
 
 def _official_upgrade_profile_compatibility(
     raw_profile: dict[str, Any],
-    bundle_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     """Expose the data profile through the legacy planner shape during v1 rollout."""
     from_closure = raw_profile.get("_verified_from_closure")
@@ -905,13 +904,15 @@ def _official_upgrade_profile_compatibility(
     if not isinstance(release_axis, dict):
         raise ValueError("official upgrade profile lacks a release axis")
     artifact_source_to = release_axis.get("artifact_source_to")
+    to_source = to_closure.get("source")
     if (
         not isinstance(artifact_source_to, dict)
+        or not isinstance(to_source, dict)
         or artifact_source_to.get("kind") != "required_release"
-        or artifact_source_to.get("release") != bundle_manifest.get("source_revision")
+        or artifact_source_to.get("release") != to_source.get("required_release")
         or artifact_source_to.get("binding") != "contract_bundle.source_revision"
     ):
-        raise ValueError("official upgrade profile is not bound to bundle source_revision")
+        raise ValueError("official upgrade profile target release is not closure-bound")
     return {
         "profile_id": raw_profile.get("profile_id"),
         "profile_version": raw_profile.get("profile_version"),
@@ -939,13 +940,14 @@ def _official_upgrade_profile_compatibility(
         "protected_business_rule": "instruction_surface_bytes_unchanged",
         "default_decision": "automatic_migration_available",
         "reason": "Exact closure diff and operations are a verified one-to-one mapping.",
+        "from_closure_state": copy.deepcopy(from_state),
+        "to_closure_state": copy.deepcopy(to_state),
     }
 
 
 def _load_official_upgrade_profiles(
     wrapper_root: Path,
     contract: dict[str, Any],
-    bundle_manifest: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     official = contract.get("official_upgrade")
     expected = {
@@ -973,6 +975,8 @@ def _load_official_upgrade_profiles(
     protocol = official_verifier.load_protocol(store)
     profiles: list[dict[str, Any]] = []
     raw_profiles: list[dict[str, Any]] = []
+    current_closure_path = catalog_report.get("current_closure")
+    current_closure: dict[str, Any] | None = None
     for entry in pointer_entries:
         profile_path = _safe_relative_path(
             entry["path"],
@@ -989,14 +993,32 @@ def _load_official_upgrade_profiles(
         )
         raw_profile["_verified_profile_path"] = repository_profile_path
         raw_profile["_verified_profile_sha256"] = entry["sha256"]
+        if raw_profile.get("_verified_to_path") != current_closure_path:
+            raise ValueError(
+                "official current profile does not target the verified current closure: "
+                + str(raw_profile.get("profile_id"))
+            )
+        verified_to_closure = raw_profile.get("_verified_to_closure")
+        if not isinstance(verified_to_closure, dict):
+            raise ValueError("official current profile target closure is missing")
+        if current_closure is None:
+            current_closure = copy.deepcopy(verified_to_closure)
+        elif current_closure != verified_to_closure:
+            raise ValueError("official current profiles disagree on the current closure")
         raw_profiles.append(raw_profile)
         profiles.append(
-            _official_upgrade_profile_compatibility(raw_profile, bundle_manifest)
+            _official_upgrade_profile_compatibility(raw_profile)
         )
+    if current_closure is None:
+        raise ValueError("official current closure is unavailable")
     return profiles, {
         "report": catalog_report,
         "protocol": protocol,
         "profiles": raw_profiles,
+        "current_closure": {
+            "path": current_closure_path,
+            "closure": current_closure,
+        },
     }
 
 
@@ -1054,7 +1076,6 @@ def load_migration_contract(
         "migration_protocol_version": MIGRATION_PROTOCOL_VERSION,
         "contract_id": MIGRATION_CONTRACT_ID,
         "contract_version": MIGRATION_CONTRACT_VERSION,
-        "current_harness_skill_version": "v1.1.0",
         "canonical_harness_skill_path": CANONICAL_HARNESS_SKILL,
         "canonical_activation_block": CANONICAL_ACTIVATION_CONTRACT,
     }
@@ -1086,8 +1107,24 @@ def load_migration_contract(
     official_profiles, official_upgrade = _load_official_upgrade_profiles(
         wrapper_root,
         contract_source,
-        bundle_manifest,
     )
+    current_closure = official_upgrade["current_closure"]["closure"]
+    current_state = current_closure.get("state")
+    current_harness_skill_version = (
+        current_state.get("harness_skill_version")
+        if isinstance(current_state, dict)
+        else None
+    )
+    if (
+        not isinstance(current_harness_skill_version, str)
+        or re.fullmatch(r"v\d+\.\d+\.\d+", current_harness_skill_version) is None
+        or contract_source.get("current_harness_skill_version")
+        != current_harness_skill_version
+    ):
+        raise ValueError(
+            "Harness migration current_harness_skill_version disagrees with "
+            "the verified current closure"
+        )
     contract = copy.deepcopy(contract_source)
     contract["profiles"] = [*copy.deepcopy(discovery_profiles), *official_profiles]
     profiles = contract.get("profiles")
@@ -1148,22 +1185,41 @@ def load_migration_contract(
                 raise ValueError(f"migration source release axis is invalid: {profile_id}")
             artifact_source_from = release_axis.get("artifact_source_from")
             artifact_source_to = release_axis.get("artifact_source_to")
+            artifact_source_from_release = (
+                artifact_source_from.get("release")
+                if isinstance(artifact_source_from, dict)
+                else None
+            )
             if (
                 not isinstance(artifact_source_from, dict)
                 or artifact_source_from.get("kind") != "construction_revision"
                 or not isinstance(artifact_source_from.get("revision"), str)
                 or re.fullmatch(r"[0-9a-f]{40}", artifact_source_from["revision"])
                 is None
-                or artifact_source_from.get("release") is not None
+                or (
+                    artifact_source_from_release is not None
+                    and (
+                        not isinstance(artifact_source_from_release, str)
+                        or re.fullmatch(
+                            r"v\d+\.\d+\.\d+",
+                            artifact_source_from_release,
+                        )
+                        is None
+                    )
+                )
                 or not isinstance(artifact_source_to, dict)
                 or artifact_source_to.get("kind") != "required_release"
                 or artifact_source_to.get("binding")
                 != "contract_bundle.source_revision"
-                or artifact_source_to.get("release")
-                != bundle_manifest.get("source_revision")
+                or not isinstance(artifact_source_to.get("release"), str)
+                or re.fullmatch(
+                    r"v\d+\.\d+\.\d+",
+                    artifact_source_to["release"],
+                )
+                is None
             ):
                 raise ValueError(
-                    f"migration target source release is not bundle-bound: {profile_id}"
+                    f"migration profile release provenance is invalid: {profile_id}"
                 )
             managed_diff_paths = release_axis.get("managed_diff_paths")
             if (
@@ -1259,6 +1315,7 @@ def load_migration_contract(
         "wrapper_root": wrapper_root,
         "source_trust": source_trust,
         "official_upgrade": official_upgrade,
+        "current_closure": copy.deepcopy(official_upgrade["current_closure"]),
     }
 
 
@@ -1290,6 +1347,14 @@ def profile_identity(profile: dict[str, Any]) -> dict[str, Any]:
     identity["from_state"] = profile.get("from")
     identity["to_state"] = profile.get("to")
     identity["release_axis"] = profile.get("release_axis")
+    official_profile = (profile.get("adapter_payload") or {}).get("official_profile")
+    if isinstance(official_profile, dict):
+        identity["profile_path"] = official_profile.get("path")
+        identity["profile_sha256"] = official_profile.get("sha256")
+        identity["from_closure"] = copy.deepcopy(
+            official_profile.get("from_closure")
+        )
+        identity["to_closure"] = copy.deepcopy(official_profile.get("to_closure"))
     return identity
 
 
