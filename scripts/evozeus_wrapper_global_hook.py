@@ -32,7 +32,6 @@ CORE_DISPATCHER_SOURCE = Path("scripts/evozeus-coevolve-dispatcher.py")
 CORE_ACTIVE_CHANNEL_SCHEMA = "evozeus.active-channel.v1"
 CORE_CHANNEL_STATE_SCHEMA = "evozeus.channel-state.v1"
 CORE_PRODUCT_MANIFEST_SCHEMA = "evozeus.product-channel.v2"
-HARNESS_UPGRADE_BACKUPS = Path(".evozeus/backups/harness-upgrades")
 LATEST_VERSION_CACHE = Path(".evozeus/cache/evozeus-wrapper-latest.json")
 LATEST_VERSION_CACHE_LIMIT_SECONDS = 86400
 TARGET_MANIFEST = Path(".evozeus-wrapper/wrapper.json")
@@ -47,6 +46,22 @@ WRAPPER_UPGRADE_SOURCE_FILES = (
     Path("templates/target/.github/workflows/evozeus-wrapper-preflight.yml"),
     Path("templates/target/docs/onboarding.md"),
 )
+
+
+def _batch_plan_digest(plan: dict[str, Any]) -> str:
+    digest_input = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"batch_plan_sha256", "approval"}
+    }
+    encoded = json.dumps(
+        digest_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _utc_transaction_id() -> str:
@@ -171,6 +186,7 @@ def _product_manifest_digest(manifest: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
@@ -781,8 +797,8 @@ def _registered_upgrade_targets(home: Path) -> tuple[list[dict[str, Any]], list[
                     continue
                 manifest_path = legacy
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
+                manifest = lifecycle._read_manifest_json(manifest_path)
+            except (OSError, ValueError):
                 errors.append(f"invalid wrapper manifest: {owner_dir.name}/{pointer.name}")
                 continue
             expected_repo = f"{owner_dir.name}/{pointer.name}"
@@ -840,6 +856,7 @@ def _target_write_errors(target: Path, migration: dict[str, Any]) -> list[str]:
         TARGET_MANIFEST.as_posix(),
         ".codex/hooks.json",
         migration.get("migration_record"),
+        *(migration.get("migration_records") or []),
         *migration.get("managed_file_refreshes", []),
         *migration.get("text_rewrite_candidates", []),
         *migration.get("generated_cache_candidates", []),
@@ -991,6 +1008,7 @@ def plan_upgrade_all(
             target["target"],
             latest_version,
             require_clean_git=True,
+            wrapper_root=wrapper_root,
         )
         public_target = {
             **target,
@@ -1007,7 +1025,7 @@ def plan_upgrade_all(
             f"{target['repo']}: {item}"
             for item in _target_write_errors(target["target"], migration)
         )
-    return {
+    plan = {
         "stage": "harness_upgrade_all",
         "status": "blocked" if errors else "planned",
         "writes": False,
@@ -1017,119 +1035,8 @@ def plan_upgrade_all(
         "target_count": len(target_plans),
         "targets": target_plans,
     }
-
-
-def _snapshot_candidate_paths(target: Path, migration: dict[str, Any]) -> set[Path]:
-    paths = {
-        target / migration.get("instruction_surface", "SKILL.md"),
-        target / ".codex/hooks.json",
-        target / ".github/ISSUE_TEMPLATE/config.yml",
-        target / ".github/workflows/evozeus-wrapper-preflight.yml",
-        target / migration.get("migration_record", ".evozeus-wrapper/docs/migrations/refresh.md"),
-    }
-    for relative in migration.get("managed_file_refreshes", []):
-        paths.add(target / relative)
-    for relative in migration.get("text_rewrite_candidates", []):
-        paths.add(target / relative)
-    for relative in migration.get("generated_cache_candidates", []):
-        paths.add(target / relative)
-    for move in migration.get("moves", []):
-        paths.add(target / move["source"])
-        paths.add(target / move["destination"])
-    for directory in (".evozeus-wrapper", ".evozeus_evoinfra", ".evozeus"):
-        root = target / directory
-        if root.is_dir() and not root.is_symlink():
-            paths.update(path for path in root.rglob("*") if path.is_file() or path.is_symlink())
-    return paths
-
-
-def _candidate_directories(target: Path, candidates: set[Path]) -> set[Path]:
-    directories: set[Path] = set()
-    for candidate in candidates:
-        parent = candidate.parent
-        while parent != target and target in parent.parents:
-            directories.add(parent)
-            parent = parent.parent
-    for relative in (".evozeus-wrapper", ".evozeus_evoinfra", ".evozeus"):
-        root = target / relative
-        if root.is_dir() and not root.is_symlink():
-            directories.add(root)
-            directories.update(path for path in root.rglob("*") if path.is_dir())
-    return directories
-
-
-def _snapshot_target(
-    target: Path,
-    migration: dict[str, Any],
-    backup_root: Path,
-) -> dict[str, Any]:
-    candidates = _snapshot_candidate_paths(target, migration)
-    existing_directories = {
-        str(path.relative_to(target))
-        for path in _candidate_directories(target, candidates)
-        if path.is_dir() and not path.is_symlink()
-    }
-    files: dict[str, dict[str, Any]] = {}
-    for path in sorted(candidates):
-        relative = str(path.relative_to(target))
-        exists = path.is_file() or path.is_symlink()
-        item = {"exists": exists, "mode": path.lstat().st_mode if exists else None}
-        files[relative] = item
-        if exists:
-            destination = backup_root / "files" / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if path.is_symlink():
-                item["symlink"] = str(path.readlink())
-            else:
-                destination.write_bytes(path.read_bytes())
-    backup_root.mkdir(parents=True, exist_ok=True)
-    (backup_root / "snapshot.json").write_text(
-        json.dumps(files, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return {
-        "target": target,
-        "migration": migration,
-        "backup_root": backup_root,
-        "files": files,
-        "directories": existing_directories,
-    }
-
-
-def _restore_target(snapshot: dict[str, Any]) -> None:
-    target: Path = snapshot["target"]
-    migration = snapshot["migration"]
-    files: dict[str, dict[str, Any]] = snapshot["files"]
-    current_candidates = _snapshot_candidate_paths(target, migration)
-    for path in sorted(current_candidates, reverse=True):
-        relative = str(path.relative_to(target))
-        if relative not in files or not files[relative]["exists"]:
-            if path.is_file() or path.is_symlink():
-                path.unlink()
-    for relative, item in files.items():
-        path = target / relative
-        if not item["exists"]:
-            if path.is_file() or path.is_symlink():
-                path.unlink()
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_file() or path.is_symlink():
-            path.unlink()
-        if item.get("symlink") is not None:
-            path.symlink_to(item["symlink"])
-        else:
-            source = snapshot["backup_root"] / "files" / relative
-            path.write_bytes(source.read_bytes())
-            path.chmod(item["mode"])
-    existing_directories: set[str] = snapshot["directories"]
-    current_directories = _candidate_directories(target, _snapshot_candidate_paths(target, migration))
-    for directory in sorted(current_directories, reverse=True):
-        if str(directory.relative_to(target)) in existing_directories:
-            continue
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
+    plan["batch_plan_sha256"] = f"sha256:{_batch_plan_digest(plan)}"
+    return plan
 
 
 def apply_upgrade_all(
@@ -1138,6 +1045,7 @@ def apply_upgrade_all(
     latest_version: str,
     *,
     approve: bool = False,
+    approved_plan_sha256: str | None = None,
     latest_resolver=None,
     admin_resolver=None,
 ) -> dict[str, Any]:
@@ -1150,8 +1058,32 @@ def apply_upgrade_all(
     )
     if plan["status"] in {"blocked", "up_to_date"}:
         return plan
-    if not approve:
-        return {**plan, "status": "approval_required"}
+    if not approve or approved_plan_sha256 is None:
+        return {
+            **plan,
+            "status": "approval_required",
+            "writes": False,
+            "approval": {
+                "approve_flag_required": True,
+                "expected_batch_plan_sha256": plan["batch_plan_sha256"],
+            },
+        }
+    if approved_plan_sha256 != plan["batch_plan_sha256"]:
+        return {
+            **plan,
+            "status": "blocked",
+            "writes": False,
+            "errors": ["approved batch plan digest does not match the current batch plan"],
+            "approval": {
+                "approved_batch_plan_sha256": approved_plan_sha256,
+                "expected_batch_plan_sha256": plan["batch_plan_sha256"],
+                "matched": False,
+            },
+        }
+    plan["approval"] = {
+        "approved_batch_plan_sha256": approved_plan_sha256,
+        "matched": True,
+    }
 
     home = home.expanduser().resolve()
     lifecycle = _lifecycle_module()
@@ -1171,33 +1103,34 @@ def apply_upgrade_all(
             "administrator_authorities": authorities,
         }
     refresh_installed_global_hook = read_global_hook_status(home)["any_registration_installed"]
-    backup_root = home / HARNESS_UPGRADE_BACKUPS / _utc_transaction_id()
-    snapshots: list[dict[str, Any]] = []
-    for index, item in enumerate(plan["targets"]):
-        label = item["repo"].replace("/", "--")
-        snapshots.append(
-            _snapshot_target(
-                Path(item["target"]),
-                item["migration"],
-                backup_root / f"{index:04d}-{label}",
-            )
-        )
-
     results: list[dict[str, Any]] = []
     global_hook_refresh: dict[str, Any] = {
         "status": "not_installed",
         "writes": False,
     }
+    current_rollback_failed: dict[str, Any] | None = None
     try:
         for item in plan["targets"]:
-            results.append(
-                lifecycle.migrate_target_layout(
-                    Path(item["target"]),
-                    latest_version,
-                    wrapper_root=wrapper_root,
-                    require_clean_git=True,
-                )
+            result = lifecycle.migrate_target_layout(
+                Path(item["target"]),
+                latest_version,
+                wrapper_root=wrapper_root,
+                require_clean_git=True,
+                approved_plan_sha256=item["migration"]["plan_sha256"],
             )
+            if result.get("status") == "rollback_failed" and result.get("writes") is True:
+                current_rollback_failed = result
+                results.append(result)
+                raise RuntimeError(
+                    f"target apply rollback failed: {item['repo']}: "
+                    f"apply={result.get('error')}; rollback={result.get('rollback_error')}"
+                )
+            if result.get("status") != "applied" or result.get("writes") is not True:
+                raise RuntimeError(
+                    f"target apply did not consume its approved plan: {item['repo']}: "
+                    f"status={result.get('status')}"
+                )
+            results.append(result)
         if refresh_installed_global_hook:
             global_hook_refresh = apply_global_hook_install(home, wrapper_root, approve=True)
             if global_hook_refresh["status"] not in {"installed", "already_installed"}:
@@ -1206,22 +1139,46 @@ def apply_upgrade_all(
                     + "; ".join(global_hook_refresh.get("errors", []))
                 )
     except Exception as exc:
-        for snapshot in reversed(snapshots):
-            _restore_target(snapshot)
+        rollback_errors: list[str] = []
+        rollback_candidates = (
+            results[:-1] if current_rollback_failed is not None else results
+        )
+        for result in reversed(rollback_candidates):
+            try:
+                lifecycle.rollback_target_layout_migration(
+                    Path(result["target"]),
+                    Path(result["snapshot"]),
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(str(rollback_exc))
+        if current_rollback_failed is not None or rollback_errors:
+            status = "rollback_failed"
+            writes = True
+        elif results:
+            status = "rolled_back"
+            writes = False
+        else:
+            status = "blocked"
+            writes = False
         return {
             **plan,
-            "status": "rolled_back",
-            "writes": False,
-            "backup": str(backup_root),
-            "errors": [str(exc)],
-            "results": [],
+            "status": status,
+            "writes": writes,
+            "backup": [result.get("snapshot") for result in results],
+            "errors": [str(exc), *rollback_errors],
+            "results": results if status == "rollback_failed" else [],
+            "rollback_verified": (
+                current_rollback_failed is None
+                and bool(results)
+                and not rollback_errors
+            ),
             "global_hook_refresh": global_hook_refresh,
         }
     return {
         **plan,
         "status": "applied",
         "writes": True,
-        "backup": str(backup_root),
+        "backup": [result.get("snapshot") for result in results],
         "errors": [],
         "results": results,
         "global_hook_refresh": global_hook_refresh,

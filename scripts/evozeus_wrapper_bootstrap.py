@@ -1,51 +1,221 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import sys
+
+
+def _bootstrap_trusted_sources() -> dict:
+    trusted_loader = globals().get("_EVOZEUS_TRUSTED_SOURCE_LOADER")
+    if trusted_loader is not None:
+        if trusted_loader not in sys.meta_path:
+            raise RuntimeError("trusted source loader is not authoritative")
+        trusted_loader.verify_directory()
+        sys.meta_path.remove(trusted_loader)
+        sys.meta_path.insert(0, trusted_loader)
+        scripts_dir = trusted_loader.scripts_dir
+        return {
+            "scripts_dir": scripts_dir,
+            "repository_root": scripts_dir.rsplit("/", 1)[0],
+            "pycache_prefix": sys.pycache_prefix,
+            "loader": trusted_loader,
+        }
+    posix = __import__("posix")
+    cwd = posix.getcwd()
+    original_sys_path = tuple(sys.path)
+
+    def lexical_absolute(raw: str) -> str:
+        value = raw if raw.startswith("/") else cwd + "/" + raw
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/" + "/".join(parts)
+
+    script = lexical_absolute(__file__)
+    scripts_dir = script.rsplit("/", 1)[0]
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    directory_flag = getattr(posix, "O_DIRECTORY", 0)
+    close_on_exec = getattr(posix, "O_CLOEXEC", 0)
+    if nofollow == 0 or directory_flag == 0:
+        raise RuntimeError("trusted source bootstrap requires no-follow directory traversal")
+
+    entrypoint_parent = posix.open(
+        "/",
+        posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+    )
+    try:
+        for component in script.split("/")[1:-1]:
+            next_parent = posix.open(
+                component,
+                posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+                dir_fd=entrypoint_parent,
+            )
+            posix.close(entrypoint_parent)
+            entrypoint_parent = next_parent
+        entrypoint_descriptor = posix.open(
+            script.rsplit("/", 1)[1],
+            posix.O_RDONLY | nofollow | close_on_exec,
+            dir_fd=entrypoint_parent,
+        )
+        try:
+            entrypoint_metadata = posix.fstat(entrypoint_descriptor)
+            named_entrypoint = posix.stat(
+                script.rsplit("/", 1)[1],
+                dir_fd=entrypoint_parent,
+                follow_symlinks=False,
+            )
+            if (
+                entrypoint_metadata.st_mode & 0o170000 != 0o100000
+                or entrypoint_metadata.st_nlink != 1
+                or (
+                    entrypoint_metadata.st_dev,
+                    entrypoint_metadata.st_ino,
+                    entrypoint_metadata.st_mode,
+                )
+                != (
+                    named_entrypoint.st_dev,
+                    named_entrypoint.st_ino,
+                    named_entrypoint.st_mode,
+                )
+            ):
+                raise RuntimeError(
+                    "trusted source entrypoint must be one canonical regular file"
+                )
+        finally:
+            posix.close(entrypoint_descriptor)
+    except OSError as exc:
+        posix.close(entrypoint_parent)
+        raise RuntimeError(
+            "trusted source entrypoint path contains a symlink or alias"
+        ) from exc
+    except BaseException:
+        posix.close(entrypoint_parent)
+        raise
+    system_roots = {
+        lexical_absolute(sys.base_prefix),
+        lexical_absolute(sys.prefix),
+    }
+    sys.path[:] = [
+        item
+        for item in original_sys_path
+        if any(
+            lexical_absolute(item or cwd) == root
+            or lexical_absolute(item or cwd).startswith(root + "/")
+            for root in system_roots
+        )
+    ]
+    guard_path = scripts_dir + "/evozeus_source_guard.py"
+    flags = posix.O_RDONLY | close_on_exec
+    descriptor = posix.open(
+        "evozeus_source_guard.py",
+        flags | nofollow,
+        dir_fd=entrypoint_parent,
+    )
+    try:
+        metadata = posix.fstat(descriptor)
+        if metadata.st_mode & 0o170000 != 0o100000:
+            raise RuntimeError("trusted source bootstrap is not a regular file")
+        source = b""
+        while len(source) < metadata.st_size:
+            chunk = posix.read(descriptor, metadata.st_size - len(source))
+            if not chunk:
+                raise RuntimeError("trusted source bootstrap changed while reading")
+            source += chunk
+        if posix.read(descriptor, 1):
+            raise RuntimeError("trusted source bootstrap grew while reading")
+        final_metadata = posix.fstat(descriptor)
+        if (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        ) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_mode,
+            final_metadata.st_size,
+            final_metadata.st_mtime_ns,
+            final_metadata.st_ctime_ns,
+        ):
+            raise RuntimeError("trusted source bootstrap changed while reading")
+        trusted_scripts_metadata = posix.fstat(entrypoint_parent)
+        trusted_scripts_descriptor = posix.dup(entrypoint_parent)
+    finally:
+        posix.close(descriptor)
+        posix.close(entrypoint_parent)
+    try:
+        namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
+        exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
+        return namespace["bootstrap"](
+            __file__,
+            original_sys_path,
+            scripts_dir_fd=trusted_scripts_descriptor,
+            scripts_dir_identity=(
+                trusted_scripts_metadata.st_dev,
+                trusted_scripts_metadata.st_ino,
+            ),
+            scripts_dir_path=scripts_dir,
+        )
+    finally:
+        posix.close(trusted_scripts_descriptor)
+
+
+_TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()
+
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
-import sys
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-try:
-    from .evozeus_wrapper_lifecycle import (
+from scripts import evozeus_harness_migration as migration_kernel
+from scripts.evozeus_wrapper_lifecycle import (
+        HARNESS_SKILL_VERSION,
+        CURRENT_WRAPPER_VERSION,
+        LEGACY_TARGET_WRAPPER_MANIFEST,
+        OLDEST_TARGET_WRAPPER_MANIFEST,
+        TARGET_HARNESS_SKILL,
+        TARGET_MIGRATION_CONTRACT,
         WRAPPER_MANAGED_FILES,
+        add_fresh_harness_entry,
         build_onboarding_contract,
-        build_status_section,
+        build_status_section,  # noqa: F401 - public bootstrap compatibility export
         build_wrapper_manifest,
         independent_repo_root,
         latest_changelog_tag,
+        load_wrapper_manifest,
         require_repo_admin,
+        render_fresh_harness_entry,
+        validate_instruction_surface_for_harness_entry,
         version_key,
-        write_wrapper_manifest,
-    )
-except ImportError:
-    from evozeus_wrapper_lifecycle import (
-        WRAPPER_MANAGED_FILES,
-        build_onboarding_contract,
-        build_status_section,
-        build_wrapper_manifest,
-        independent_repo_root,
-        latest_changelog_tag,
-        require_repo_admin,
-        version_key,
-        write_wrapper_manifest,
-    )
+        wrapper_manifest_bytes,
+        wrapper_manifest_status,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
-STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
-LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
+MIGRATION_CONTRACT_SOURCE = (
+    ROOT / "contracts" / "v1" / "migrations" / "harness-migration-contract-v1.json"
+)
+TARGET_TEMPLATE_INVENTORY_SOURCE = ROOT / "contracts" / "v1" / "target-template-inventory.json"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
-LEGACY_WRAPPER_SECTION_HEADING = "## EvoZeus-wrapper"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
-WRAPPER_VERSION = "v0.14.0"
+WRAPPER_VERSION = CURRENT_WRAPPER_VERSION
 TARGET_EVOINFRA_DIR = ".evozeus-wrapper"
 TARGET_WRAPPER_MANIFEST = f"{TARGET_EVOINFRA_DIR}/wrapper.json"
 TARGET_CHANGELOG = f"{TARGET_EVOINFRA_DIR}/CHANGELOG.md"
@@ -136,11 +306,16 @@ def resolve_current_skillware_version(target: Path, repo: str, explicit: str | N
 
 
 def copy_template_file(src: Path, dst: Path, replacements: dict[str, str], force: bool) -> str:
-    if dst.exists() and not force:
-        return f"skip existing {dst}"
+    expected = render_text(src.read_text(encoding="utf-8"), replacements).encode("utf-8")
+    if dst.exists() or dst.is_symlink():
+        if dst.is_symlink() or not dst.is_file() or dst.read_bytes() != expected:
+            raise ValueError(
+                f"existing managed destination differs from the trusted source: {dst}; "
+                "target was not modified"
+            )
+        return f"skip exact existing {dst}"
     dst.parent.mkdir(parents=True, exist_ok=True)
-    data = src.read_text(encoding="utf-8")
-    dst.write_text(render_text(data, replacements), encoding="utf-8")
+    dst.write_bytes(expected)
     return f"write {dst}"
 
 
@@ -150,6 +325,8 @@ def target_template_path(rel: Path) -> Path:
         return rel
     if rel_text.startswith(".codex/hooks/"):
         return Path(TARGET_EVOINFRA_DIR) / "hooks" / rel.name
+    if rel_text.startswith(".evozeus_evoinfra/skills/"):
+        return Path(TARGET_EVOINFRA_DIR) / rel.relative_to(".evozeus_evoinfra")
     if rel_text.startswith(".evozeus_evoinfra/"):
         return Path(TARGET_EVOINFRA_DIR) / "policies" / rel.name
     if rel_text.startswith("docs/wrapper-migrations/"):
@@ -157,31 +334,641 @@ def target_template_path(rel: Path) -> Path:
     return Path(TARGET_EVOINFRA_DIR) / rel
 
 
-def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> list[str]:
-    actions: list[str] = []
-    for src in sorted(TARGET_TEMPLATE_DIR.rglob("*")):
-        if src.is_dir() or "__pycache__" in src.parts or src.suffix in {".pyc", ".pyo"}:
-            continue
-        rel = src.relative_to(TARGET_TEMPLATE_DIR)
-        actions.append(copy_template_file(src, target / target_template_path(rel), replacements, force))
+def validate_template_destination(target: Path, destination: Path) -> None:
+    """Reject template writes that would traverse a symlink inside the target Repo."""
+    try:
+        relative = destination.relative_to(target)
+    except ValueError as exc:
+        raise ValueError(f"template destination escapes target repository: {destination}") from exc
+    cursor = target
+    for index, part in enumerate(relative.parts):
+        cursor /= part
+        if cursor.is_symlink():
+            raise ValueError(
+                "template destination contains a symlink component: "
+                + str(cursor.relative_to(target))
+            )
+        if cursor.exists() and index < len(relative.parts) - 1 and not cursor.is_dir():
+            raise ValueError(
+                "template destination parent is not a directory: "
+                + str(cursor.relative_to(target))
+            )
+        if cursor.exists() and index == len(relative.parts) - 1 and not cursor.is_file():
+            raise ValueError(
+                "template destination is not a regular file: "
+                + str(cursor.relative_to(target))
+            )
 
-    script_dst = target / TARGET_PREFLIGHT_SCRIPT
-    if script_dst.exists() and not force:
-        actions.append(f"skip existing {script_dst}")
-    else:
-        script_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(PREFLIGHT_SCRIPT, script_dst)
-        script_dst.chmod(0o755)
-        actions.append(f"write {script_dst}")
-    notice_dst = target / TARGET_NOTICE_SCRIPT
-    if notice_dst.exists() and not force:
-        actions.append(f"skip existing {notice_dst}")
-    else:
-        notice_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(NOTICE_SCRIPT, notice_dst)
-        notice_dst.chmod(0o755)
-        actions.append(f"write {notice_dst}")
+
+def validate_existing_manifest_for_attach(
+    target: Path,
+    repo: str,
+    instruction_surface: str = "SKILL.md",
+) -> None:
+    """Allow an idempotent attach only for an already canonical wrapper manifest."""
+    try:
+        for relative in (
+            TARGET_WRAPPER_MANIFEST,
+            LEGACY_TARGET_WRAPPER_MANIFEST,
+            OLDEST_TARGET_WRAPPER_MANIFEST,
+        ):
+            validate_template_destination(target, target / relative)
+        status = wrapper_manifest_status(target)
+        if not status["active_manifest_path"]:
+            return
+        manifest = load_wrapper_manifest(target)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(
+            "existing wrapper manifest cannot be reused safely; run migrate-layout or an "
+            "approved Harness repair before attach"
+        ) from exc
+    migration_bundle = validate_migration_contract_source()
+    migration_identity = migration_bundle["identity"]
+    activation_contract = migration_bundle["contract"]["canonical_activation_block"]
+    expected = {
+        "wrapper_version": WRAPPER_VERSION,
+        "layout_version": 2,
+        "canonical_repo": repo,
+        "instruction_surface": instruction_surface,
+        "harness_skill_path": TARGET_HARNESS_SKILL,
+        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_managed": True,
+    }
+    mismatches = [
+        field
+        for field, value in expected.items()
+        if not isinstance(manifest, dict) or manifest.get(field) != value
+    ]
+    managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
+    if (
+        not isinstance(managed_files, list)
+        or TARGET_HARNESS_SKILL not in managed_files
+        or TARGET_MIGRATION_CONTRACT not in managed_files
+    ):
+        mismatches.append("managed_files")
+    expected_contract = {
+        "migration_protocol_version": migration_identity["migration_protocol_version"],
+        "contract_id": migration_identity["contract_id"],
+        "contract_version": migration_identity["contract_version"],
+        "path": migration_identity["target_path"],
+        "sha256": migration_identity["sha256"],
+    }
+    if not isinstance(manifest, dict) or manifest.get("migration_contract") != expected_contract:
+        mismatches.append("migration_contract")
+    expected_blocks = [
+        {
+            "block_id": activation_contract["block_id"],
+            "path": instruction_surface,
+            "marker_version": activation_contract["marker_version"],
+            "begin_marker": activation_contract["begin_marker"],
+            "end_marker": activation_contract["end_marker"],
+            "sha256_lf": activation_contract["sha256_lf"],
+        }
+    ]
+    if not isinstance(manifest, dict) or manifest.get("managed_blocks") != expected_blocks:
+        mismatches.append("managed_blocks")
+    if mismatches:
+        raise ValueError(
+            "existing wrapper manifest requires migrate-layout before attach; incompatible fields: "
+            + ", ".join(mismatches)
+        )
+
+
+def _tree_sha256(root: Path, relative_paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for relative_text in sorted(relative_paths):
+        path = root / relative_text
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"target template source is missing or unsafe: {relative_text}")
+        digest.update(relative_text.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _safe_source_file(root: Path, raw: object, label: str) -> Path:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise ValueError(f"{label} must be a non-empty POSIX relative path")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != raw:
+        raise ValueError(f"{label} escapes its source root: {raw}")
+    candidate = root / relative
+    cursor = candidate
+    while cursor != root:
+        if cursor.is_symlink():
+            raise ValueError(f"{label} contains a symlink: {raw}")
+        cursor = cursor.parent
+    if not candidate.is_file():
+        raise ValueError(f"{label} is missing: {raw}")
+    return candidate
+
+
+def validate_target_source_inventory(bundle: dict[str, object]) -> dict[str, object]:
+    inventory = json.loads(TARGET_TEMPLATE_INVENTORY_SOURCE.read_text(encoding="utf-8"))
+    if not isinstance(inventory, dict):
+        raise ValueError("target template inventory must be a JSON object")
+    governed = (inventory.get("modes") or {}).get("governed-sidecar")
+    if not isinstance(governed, dict) or governed.get("target_writes") is not True:
+        raise ValueError("governed target template inventory is unavailable")
+    declared = governed.get("files")
+    if not isinstance(declared, list) or any(not isinstance(item, str) for item in declared):
+        raise ValueError("target template inventory files must be a string list")
+    actual = [
+        path.relative_to(TARGET_TEMPLATE_DIR).as_posix()
+        for path in TARGET_TEMPLATE_DIR.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
+    if sorted(declared) != sorted(actual):
+        raise ValueError("target template inventory does not cover the complete source tree")
+    tree_digest = f"sha256:{_tree_sha256(TARGET_TEMPLATE_DIR, declared)}"
+    if governed.get("source_tree_sha256") != tree_digest:
+        raise ValueError("target template inventory source tree digest mismatch")
+
+    external_sources = governed.get("external_sources")
+    if not isinstance(external_sources, list) or not external_sources:
+        raise ValueError("target template inventory must bind external source files")
+    for entry in external_sources:
+        if not isinstance(entry, dict):
+            raise ValueError("target template external source entry must be an object")
+        source = _safe_source_file(ROOT, entry.get("source"), "external source")
+        if entry.get("sha256") != hashlib.sha256(source.read_bytes()).hexdigest():
+            raise ValueError(f"target template external source digest mismatch: {entry.get('source')}")
+
+    contract_files = governed.get("contract_files")
+    if not isinstance(contract_files, list) or not contract_files:
+        raise ValueError("target template inventory must bind contract files")
+    bundle_root = Path(bundle["bundle_root"])
+    for entry in contract_files:
+        if not isinstance(entry, dict):
+            raise ValueError("target template contract file entry must be an object")
+        source = _safe_source_file(bundle_root, entry.get("source"), "contract source")
+        if entry.get("sha256") != hashlib.sha256(source.read_bytes()).hexdigest():
+            raise ValueError(f"target template contract source digest mismatch: {entry.get('source')}")
+    return governed
+
+
+def validate_migration_contract_source(
+    *,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
+    require_trusted_release: bool = False,
+) -> dict[str, object]:
+    """Verify the contracts/v1 manifest binding before the first target write."""
+    bundle = migration_kernel.load_migration_contract(
+        ROOT,
+        remote_tag_resolver=remote_tag_resolver,
+    )
+    if Path(bundle["path"]).resolve() != MIGRATION_CONTRACT_SOURCE.resolve():
+        raise ValueError(
+            "migration contract source path is not the canonical contracts/v1 artifact"
+        )
+    validate_target_source_inventory(bundle)
+    if require_trusted_release and bundle["source_trust"]["status"] != "trusted_release":
+        reasons = "; ".join(bundle["source_trust"].get("reasons", []))
+        raise ValueError(
+            "Harness attachment requires an immutable trusted source release"
+            + (f": {reasons}" if reasons else "")
+        )
+    return bundle
+
+
+def _canonical_relative_path(raw: object, label: str) -> str:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise ValueError(f"{label} must be a non-empty POSIX relative path")
+    relative = PurePosixPath(raw)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or any(part in {"", "."} for part in relative.parts)
+        or relative.as_posix() != raw
+    ):
+        raise ValueError(f"{label} is not canonical: {raw}")
+    return raw
+
+
+def current_release_lineage_artifacts(
+    bundle: dict[str, object],
+    target: Path,
+) -> list[tuple[Path, bytes, bool]]:
+    """Materialize closure-owned release lineage for fresh and migrated targets alike."""
+    try:
+        from . import evozeus_official_upgrade_verify as official_verifier
+    except ImportError:
+        import evozeus_official_upgrade_verify as official_verifier
+
+    wrapper_root_raw = bundle.get("wrapper_root")
+    declared_current = bundle.get("current_closure")
+    if not isinstance(wrapper_root_raw, Path) or not isinstance(declared_current, dict):
+        raise ValueError("verified current Harness closure is unavailable")
+    declared_path = _canonical_relative_path(
+        declared_current.get("path"),
+        "verified current Harness closure path",
+    )
+    declared_closure = declared_current.get("closure")
+    if not isinstance(declared_closure, dict):
+        raise ValueError("verified current Harness closure payload is unavailable")
+
+    store = official_verifier.FilesystemStore(wrapper_root_raw)
+    try:
+        catalog = official_verifier.verify_catalog(store)
+        verified_path = _canonical_relative_path(
+            catalog.get("current_closure"),
+            "fresh attachment current Harness closure path",
+        )
+        verified_closure, _ = official_verifier.load_closure(store, verified_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(
+            "fresh attachment current Harness closure failed verification"
+        ) from exc
+    if verified_path != declared_path or verified_closure != declared_closure:
+        raise ValueError(
+            "fresh attachment current Harness closure changed after source verification"
+        )
+
+    closure_version = verified_closure.get("closure_version")
+    contract = bundle.get("contract")
+    official_upgrade = (
+        contract.get("official_upgrade") if isinstance(contract, dict) else None
+    )
+    pointer_relative = (
+        official_upgrade.get("current_closure_pointer")
+        if isinstance(official_upgrade, dict)
+        else None
+    )
+    pointer_relative = _canonical_relative_path(
+        pointer_relative,
+        "current Harness closure pointer path",
+    )
+    if not isinstance(closure_version, str):
+        raise ValueError("current Harness closure version is unavailable")
+    expected_closure_path = (
+        PurePosixPath(migration_kernel.MIGRATION_CONTRACT_BUNDLE_ROOT)
+        / PurePosixPath(pointer_relative).parent
+        / closure_version
+        / "closure.json"
+    ).as_posix()
+    if verified_path != expected_closure_path:
+        raise ValueError(
+            "fresh attachment current Harness closure path is not canonical: "
+            f"expected={expected_closure_path}; actual={verified_path}"
+        )
+
+    lineage: list[tuple[Path, bytes, bool]] = []
+    seen_targets: set[str] = set()
+    for item in verified_closure.get("files", []):
+        if not isinstance(item, dict):
+            raise ValueError("current Harness closure contains an invalid file entry")
+        materialization = item.get("materialization")
+        if (
+            not isinstance(materialization, dict)
+            or materialization.get("generated_release_artifact") is not True
+        ):
+            continue
+        target_path = _canonical_relative_path(
+            item.get("target_path"),
+            "fresh release lineage target path",
+        )
+        if target_path in seen_targets:
+            raise ValueError(f"duplicate fresh release lineage target: {target_path}")
+        seen_targets.add(target_path)
+        if (
+            item.get("kind") != "exact"
+            or item.get("ownership") != "wrapper_managed"
+            or materialization != {
+                "policy": "copy_exact",
+                "generated_release_artifact": True,
+            }
+            or item.get("source_binding") != "generated_release_artifact"
+        ):
+            raise ValueError(
+                f"fresh release lineage contract is invalid: {target_path}"
+            )
+        mode = item.get("mode")
+        if mode not in {"100644", "100755"}:
+            raise ValueError(f"fresh release lineage mode is invalid: {target_path}")
+        artifact_relative = _canonical_relative_path(
+            item.get("artifact_path"),
+            "fresh release lineage artifact path",
+        )
+        artifact_path = (
+            PurePosixPath(verified_path).parent / PurePosixPath(artifact_relative)
+        ).as_posix()
+        artifact_bytes = store.read_bytes(artifact_path)
+        expected_sha256 = item.get("sha256")
+        actual_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        if expected_sha256 != actual_sha256:
+            raise ValueError(
+                "fresh release lineage artifact digest mismatch: "
+                f"{artifact_path}"
+            )
+        if store.mode(artifact_path) != mode:
+            raise ValueError(
+                f"fresh release lineage artifact mode mismatch: {artifact_path}"
+            )
+        lineage.append((target / target_path, artifact_bytes, mode == "100755"))
+    return lineage
+
+
+def _attachment_template_artifacts(
+    target: Path,
+    replacements: dict[str, str],
+    *,
+    bundle: dict[str, object],
+) -> list[dict[str, object]]:
+    if bundle["source_trust"]["status"] != "trusted_release":
+        raise ValueError("Harness attachment source is not a trusted immutable release")
+    governed = validate_target_source_inventory(bundle)
+    template_files = [
+        src
+        for src in sorted(TARGET_TEMPLATE_DIR.rglob("*"))
+        if not src.is_dir()
+        and "__pycache__" not in src.parts
+        and src.suffix not in {".pyc", ".pyo"}
+    ]
+    template_destinations = [
+        (src, target / target_template_path(src.relative_to(TARGET_TEMPLATE_DIR)))
+        for src in template_files
+    ]
+    expected_artifacts: list[tuple[Path, bytes, bool]] = [
+        (
+            destination,
+            render_text(source.read_text(encoding="utf-8"), replacements).encode("utf-8"),
+            False,
+        )
+        for source, destination in template_destinations
+    ]
+    for entry in governed["external_sources"]:
+        source = _safe_source_file(ROOT, entry["source"], "external source")
+        expected_artifacts.append(
+            (target / entry["target"], source.read_bytes(), entry.get("executable") is True)
+        )
+    bundle_root = Path(bundle["bundle_root"])
+    for entry in governed["contract_files"]:
+        source = _safe_source_file(bundle_root, entry["source"], "contract source")
+        expected_artifacts.append((target / entry["target"], source.read_bytes(), False))
+    expected_artifacts.extend(current_release_lineage_artifacts(bundle, target))
+    relative_artifacts: list[dict[str, object]] = []
+    seen_destinations: set[str] = set()
+    for destination, expected, executable in expected_artifacts:
+        validate_template_destination(target, destination)
+        relative = destination.relative_to(target).as_posix()
+        if relative in seen_destinations:
+            raise ValueError(f"duplicate target artifact destination: {relative}")
+        seen_destinations.add(relative)
+        relative_artifacts.append(
+            {
+                "path": relative,
+                "postimage": expected,
+                "post_mode": 0o755 if executable else 0o644,
+                "policy": "create_or_exact",
+            }
+        )
+    return relative_artifacts
+
+
+def _apply_attachment_artifact_batch(
+    target: Path,
+    artifacts: list[dict[str, object]],
+    *,
+    force: bool,
+) -> list[str]:
+    planned: list[dict[str, object]] = []
+    with migration_kernel.SecureTargetFS(target) as planning_target:
+        approved_target_binding = planning_target.binding
+        for artifact in artifacts:
+            relative = str(artifact["path"])
+            postimage = artifact["postimage"]
+            post_mode = artifact["post_mode"]
+            policy = artifact["policy"]
+            if not isinstance(postimage, bytes) or not isinstance(post_mode, int):
+                raise ValueError(f"invalid attachment artifact declaration: {relative}")
+            state = planning_target.file_state(relative)
+            post_sha256 = "sha256:" + hashlib.sha256(postimage).hexdigest()
+            item = {
+                **artifact,
+                "preimage_sha256": state.get("sha256"),
+                "preimage_mode": state.get("mode"),
+                "preimage": None,
+                "postimage_sha256": post_sha256,
+                "mutate": False,
+            }
+            if policy == "create_or_exact":
+                if (
+                    state["kind"] == "file"
+                    and state["sha256"] == post_sha256
+                    and state["mode"] == post_mode
+                ):
+                    planned.append(item)
+                    continue
+                if state["kind"] != "absent":
+                    raise ValueError(
+                        "existing managed destination has no exact trusted preimage: "
+                        f"{relative}; --force cannot authorize replacement; "
+                        "target was not modified"
+                    )
+                item["mutate"] = True
+                planned.append(item)
+                continue
+            if policy == "replace_required":
+                required_preimage = artifact.get("required_preimage_sha256")
+                if (
+                    state["kind"] != "file"
+                    or state.get("sha256") != required_preimage
+                    or not isinstance(state.get("mode"), int)
+                ):
+                    raise ValueError(
+                        f"fresh attachment preimage changed before planning: {relative}"
+                    )
+                item["preimage"] = planning_target.read_exact(
+                    relative,
+                    str(required_preimage),
+                )
+                item["post_mode"] = int(state["mode"])
+                item["mutate"] = (
+                    state["sha256"] != post_sha256
+                    or state["mode"] != item["post_mode"]
+                )
+                planned.append(item)
+                continue
+            if policy != "manifest":
+                raise ValueError(f"unknown attachment artifact policy: {policy}")
+            if state["kind"] == "absent":
+                item["mutate"] = True
+                planned.append(item)
+                continue
+            if state["kind"] != "file" or not isinstance(state.get("mode"), int):
+                raise ValueError(f"wrapper manifest destination is unsafe: {relative}")
+            preimage = planning_target.read_exact(relative, str(state["sha256"]))
+            item["preimage"] = preimage
+            item["post_mode"] = int(state["mode"])
+            if state["sha256"] == post_sha256:
+                planned.append(item)
+                continue
+            if not force:
+                item["postimage"] = preimage
+                item["postimage_sha256"] = state["sha256"]
+                planned.append(item)
+                continue
+            item["mutate"] = True
+            planned.append(item)
+
+    actions: list[str] = []
+    mutations = [item for item in planned if item["mutate"] is True]
+    if not mutations:
+        return [f"skip exact existing {target / str(item['path'])}" for item in planned]
+    retirement_root = migration_kernel.create_secure_retirement_root(
+        target,
+        prefix=f"{target.name}.evozeus-attachment",
+    )
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=approved_target_binding,
+        retirement_root=retirement_root,
+    ) as secure_target:
+        try:
+            secure_target.prepare_mutation_batch(
+                [str(item["path"]) for item in mutations]
+            )
+            for item in planned:
+                relative = str(item["path"])
+                if item["mutate"] is not True:
+                    actions.append(f"skip exact existing {target / relative}")
+                    continue
+                secure_target.write_exact(
+                    relative,
+                    item["postimage"],
+                    expected_preimage=item["preimage_sha256"],
+                    expected_mode=item["preimage_mode"],
+                    mode=int(item["post_mode"]),
+                )
+                actions.append(f"write {target / relative}")
+            for item in planned:
+                relative = str(item["path"])
+                current = secure_target.file_state(relative)
+                if (
+                    current.get("sha256") != item["postimage_sha256"]
+                    or current.get("mode") != item["post_mode"]
+                ):
+                    raise ValueError(f"target artifact postimage changed: {relative}")
+        except Exception as exc:
+            rollback_errors: list[str] = []
+            for item in reversed(planned):
+                if item["mutate"] is not True:
+                    continue
+                relative = str(item["path"])
+                try:
+                    current = secure_target.file_state(relative)
+                    if (
+                        current.get("sha256") == item["preimage_sha256"]
+                        and current.get("mode") == item["preimage_mode"]
+                    ) or (
+                        current["kind"] == "absent"
+                        and item["preimage_sha256"] is None
+                    ):
+                        continue
+                    if (
+                        current.get("sha256") != item["postimage_sha256"]
+                        or current.get("mode") != item["post_mode"]
+                    ):
+                        rollback_errors.append(
+                            f"{relative}: unexpected rollback state {current}"
+                        )
+                        continue
+                    if item["preimage_sha256"] is None:
+                        secure_target.remove_exact(
+                            relative,
+                            str(item["postimage_sha256"]),
+                            expected_mode=int(item["post_mode"]),
+                        )
+                    else:
+                        secure_target.write_exact(
+                            relative,
+                            item["preimage"],
+                            expected_preimage=str(item["postimage_sha256"]),
+                            expected_mode=int(item["post_mode"]),
+                            mode=int(item["preimage_mode"]),
+                        )
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"{relative}: {rollback_exc}")
+            try:
+                unresolved_directories = secure_target.cleanup_created_directories()
+                if unresolved_directories:
+                    rollback_errors.append(
+                        "created directories preserved in quarantine: "
+                        + ", ".join(unresolved_directories)
+                    )
+            except Exception as rollback_exc:
+                rollback_errors.append(f"created directories: {rollback_exc}")
+            if rollback_errors:
+                raise ValueError(
+                    "Harness attachment failed and rollback_failed; writes may remain: "
+                    + "; ".join(rollback_errors)
+                    + f"; quarantine={retirement_root}"
+                ) from exc
+            raise ValueError(
+                "Harness attachment transaction failed and rolled back all target "
+                "artifacts: "
+                f"{exc}; quarantine={retirement_root}"
+            ) from exc
+    actions.append(f"retain attachment transaction quarantine {retirement_root}")
     return actions
+
+
+def copy_templates(
+    target: Path,
+    replacements: dict[str, str],
+    force: bool,
+    *,
+    _migration_bundle: dict[str, object] | None = None,
+) -> list[str]:
+    bundle = _migration_bundle or validate_migration_contract_source(
+        require_trusted_release=True
+    )
+    return _apply_attachment_artifact_batch(
+        target,
+        _attachment_template_artifacts(target, replacements, bundle=bundle),
+        force=force,
+    )
+
+
+def attach_harness_transaction(
+    target: Path,
+    replacements: dict[str, str],
+    force: bool,
+    *,
+    manifest: dict[str, object],
+    _migration_bundle: dict[str, object] | None = None,
+) -> list[str]:
+    """Commit every target-owned fresh attachment surface as one CAS batch."""
+    bundle = _migration_bundle or validate_migration_contract_source(
+        require_trusted_release=True
+    )
+    artifacts = _attachment_template_artifacts(target, replacements, bundle=bundle)
+    original_skill = validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+    original_skill_bytes = original_skill.encode("utf-8")
+    artifacts.append(
+        {
+            "path": "SKILL.md",
+            "postimage": render_fresh_harness_entry(original_skill).encode("utf-8"),
+            "post_mode": 0o644,
+            "policy": "replace_required",
+            "required_preimage_sha256": (
+                "sha256:" + hashlib.sha256(original_skill_bytes).hexdigest()
+            ),
+        }
+    )
+    artifacts.append(
+        {
+            "path": TARGET_WRAPPER_MANIFEST,
+            "postimage": wrapper_manifest_bytes(manifest),
+            "post_mode": 0o644,
+            "policy": "manifest",
+        }
+    )
+    paths = [str(item["path"]) for item in artifacts]
+    if len(paths) != len(set(paths)):
+        raise ValueError("fresh attachment target artifact set contains duplicates")
+    return _apply_attachment_artifact_batch(target, artifacts, force=force)
 
 
 def local_project_dir(repo: str) -> Path:
@@ -194,14 +981,18 @@ def ensure_project_pointer(target: Path, repo: str, force: bool) -> list[str]:
     actions: list[str] = []
 
     if project_dir.is_symlink():
-        if project_dir.resolve() == target:
+        try:
+            resolved = project_dir.resolve(strict=True)
+        except (OSError, RuntimeError):
+            resolved = None
+        if resolved == target:
             actions.append(f"skip existing pointer {project_dir}")
-        elif force:
-            project_dir.unlink()
-            project_dir.symlink_to(target, target_is_directory=True)
-            actions.append(f"update pointer {project_dir} -> {target}")
         else:
-            actions.append(f"skip existing pointer {project_dir}; points to {project_dir.resolve()}")
+            actions.append(
+                "manual action required: preserve mismatched project pointer "
+                f"{project_dir}; observed_target={resolved}; requested_target={target}; "
+                f"force_ignored={force}"
+            )
         return actions
 
     if project_dir.exists():
@@ -209,7 +1000,14 @@ def ensure_project_pointer(target: Path, repo: str, force: bool) -> list[str]:
         return actions
 
     project_dir.parent.mkdir(parents=True, exist_ok=True)
-    project_dir.symlink_to(target, target_is_directory=True)
+    try:
+        project_dir.symlink_to(target, target_is_directory=True)
+    except FileExistsError:
+        actions.append(
+            "manual action required: project pointer appeared concurrently; "
+            f"preserved={project_dir}; requested_target={target}"
+        )
+        return actions
     actions.append(f"write pointer {project_dir} -> {target}")
 
     return actions
@@ -294,56 +1092,14 @@ Runtime integration modes:
 """
 
 
-def has_heading(text: str, heading: str) -> bool:
-    return any(line.strip() == heading for line in text.splitlines())
-
-
-def content_insert_index(text: str) -> int:
-    if not text.startswith("---\n"):
-        return 0
-    end = text.find("\n---\n", 4)
-    if end == -1:
-        return 0
-    return end + len("\n---\n")
-
-
-def prepend_status_section_if_missing(target: Path, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    if has_heading(text, STATUS_SECTION_HEADING) or has_heading(text, LEGACY_STATUS_SECTION_HEADING):
-        return f"skip existing {STATUS_SECTION_HEADING} in {skill_path}"
-
-    insert_at = content_insert_index(text)
-    prefix = text[:insert_at].rstrip()
-    suffix = text[insert_at:].lstrip()
-    if prefix:
-        updated = prefix + "\n\n" + section.rstrip() + "\n\n" + suffix
-    else:
-        updated = section.rstrip() + "\n\n" + suffix
-    skill_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
-    return f"prepend {STATUS_SECTION_HEADING} to {skill_path}"
-
-
-def append_section_if_missing(target: Path, heading: str, section: str) -> str:
-    skill_path = target / "SKILL.md"
-    text = skill_path.read_text(encoding="utf-8")
-    compatible_headings = {heading}
-    if heading == WRAPPER_SECTION_HEADING:
-        compatible_headings.add(LEGACY_WRAPPER_SECTION_HEADING)
-    if any(has_heading(text, candidate) for candidate in compatible_headings):
-        return f"skip existing {heading} in {skill_path}"
-
-    updated = text.rstrip() + "\n\n" + section.rstrip() + "\n"
-    skill_path.write_text(updated, encoding="utf-8")
-    return f"append {heading} to {skill_path}"
-
-
-def inject_evolution_method(target: Path, replacements: dict[str, str]) -> list[str]:
-    return [
-        prepend_status_section_if_missing(target, build_status_section(replacements)),
-        append_section_if_missing(target, EVOLUTION_SECTION_HEADING, build_evolution_section(replacements)),
-        append_section_if_missing(target, WRAPPER_SECTION_HEADING, build_wrapper_section(replacements)),
-    ]
+def inject_evolution_method(
+    target: Path,
+    replacements: dict[str, str],
+    instruction_surface: str = "SKILL.md",
+) -> list[str]:
+    changed = add_fresh_harness_entry(target, instruction_surface)
+    action = "write" if changed else "keep"
+    return [f"{action} canonical Harness Skill activation block in {target / instruction_surface}"]
 
 
 def main() -> int:
@@ -386,7 +1142,15 @@ def main() -> int:
             "Harness can only be attached at the independent Git repository root: "
             f"requested={target}; repo_root={repo_root}"
         )
+    try:
+        validate_instruction_surface_for_harness_entry(target, "SKILL.md")
+    except ValueError as exc:
+        fail(str(exc))
     validate_repo(args.repo)
+    try:
+        validate_existing_manifest_for_attach(target, args.repo)
+    except ValueError as exc:
+        fail(str(exc))
     if not TARGET_TEMPLATE_DIR.exists():
         fail(f"template folder missing: {TARGET_TEMPLATE_DIR}")
     if not PREFLIGHT_SCRIPT.exists():
@@ -433,22 +1197,38 @@ def main() -> int:
         f"verified independent Git repository root: {target}",
         f"verified GitHub ADMIN authority: {authority['repository']}",
     ]
-    actions.extend(copy_templates(target, replacements, args.force))
-    actions.extend(ensure_project_pointer(target, args.repo, args.force))
-    actions.extend(inject_evolution_method(target, replacements))
-    actions.append(
-        write_wrapper_manifest(
-            target,
-            build_wrapper_manifest(
-                args.repo,
-                WRAPPER_VERSION,
-                WRAPPER_MANAGED_FILES,
-                [],
-                onboarding=onboarding,
-            ),
-            args.force,
+    try:
+        attachment_bundle = validate_migration_contract_source(
+            require_trusted_release=True
         )
-    )
+        manifest = build_wrapper_manifest(
+            args.repo,
+            WRAPPER_VERSION,
+            WRAPPER_MANAGED_FILES,
+            [],
+            instruction_surface="SKILL.md",
+            onboarding=onboarding,
+            migration_bundle=attachment_bundle,
+        )
+        actions.extend(
+            attach_harness_transaction(
+                target,
+                replacements,
+                args.force,
+                manifest=manifest,
+                _migration_bundle=attachment_bundle,
+            )
+        )
+    except ValueError as exc:
+        fail(str(exc))
+    try:
+        actions.extend(ensure_project_pointer(target, args.repo, args.force))
+    except OSError as exc:
+        fail(
+            "Harness target attachment committed completely, but the external "
+            f"project pointer was not created: {exc}; manual action required: "
+            f"{local_project_dir(args.repo)} -> {target}"
+        )
     print("EvoZeus-CoEvolve repository Harness attachment complete.")
     print(f"Target: {target}")
     print(f"Repo: {args.repo}")

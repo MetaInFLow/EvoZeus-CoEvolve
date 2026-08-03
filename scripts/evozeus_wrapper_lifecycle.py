@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import math
+import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -15,9 +19,11 @@ from typing import Any
 try:
     from .evozeus_wrapper_global_hook import read_global_hook_status
     from .evozeus_notice import load_notice_policy, render_notice
+    from . import evozeus_harness_migration as migration_kernel
 except ImportError:
     from evozeus_wrapper_global_hook import read_global_hook_status
     from evozeus_notice import load_notice_policy, render_notice
+    import evozeus_harness_migration as migration_kernel
 
 
 STAGE_LABELS = {
@@ -57,6 +63,30 @@ TARGET_MIGRATIONS_README = f"{TARGET_EVOINFRA_DIR}/docs/migrations/README.md"
 TARGET_ONBOARDING_GUIDE = f"{TARGET_EVOINFRA_DIR}/docs/onboarding.md"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_HARNESS_SKILL = f"{TARGET_EVOINFRA_DIR}/skills/using-evozeus-harness/SKILL.md"
+TARGET_MIGRATION_CONTRACT = migration_kernel.TARGET_MIGRATION_CONTRACT
+CURRENT_WRAPPER_VERSION = "v0.15.0"
+HARNESS_SKILL_VERSION = "v1.1.0"
+HARNESS_ENTRY_BEGIN = "<!-- evozeus-harness-entry:v1 -->"
+HARNESS_ENTRY_END = "<!-- /evozeus-harness-entry -->"
+HARNESS_SKILL_REQUIRED_TERMS = (
+    TARGET_WRAPPER_MANIFEST,
+    TARGET_NOTICE_POLICY,
+    "prompt_runtime_check",
+    "bootstrap_skill",
+    "integration.capabilities",
+    "SkillInvoke",
+    "runtime-only install",
+    "doctor --target .",
+    "identity --json",
+    "Feedback Issue",
+    "Issue-to-PR",
+    "Harness 维护",
+    "UAT",
+    "Release",
+    "rollback",
+    "普通 Skill 调用不授权",
+)
 
 REQUIRED_WRAPPER_FILES = [
     TARGET_CHANGELOG,
@@ -79,6 +109,8 @@ REQUIRED_WRAPPER_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_HARNESS_SKILL,
+    TARGET_MIGRATION_CONTRACT,
 ]
 
 WRAPPER_MANAGED_FILES = [
@@ -101,6 +133,8 @@ WRAPPER_MANAGED_FILES = [
     ".github/workflows/evozeus-wrapper-preflight.yml",
     TARGET_PREFLIGHT_SCRIPT,
     TARGET_NOTICE_SCRIPT,
+    TARGET_HARNESS_SKILL,
+    TARGET_MIGRATION_CONTRACT,
 ]
 
 LEGACY_LAYOUT_FILE_MAP = (
@@ -124,8 +158,6 @@ LEGACY_LAYOUT_TREE_MAP = (
 WRAPPER_REPO = "MetaInFLow/EvoZeus-CoEvolve"
 INITIAL_SKILL_VERSION = "v0.1.0"
 VERSION_HEADER_RE = re.compile(r"^##\s+\[?(v\d+\.\d+\.\d+)\]?\b", re.MULTILINE)
-SKILL_STATUS_SECTION = "SKILL.md EvoZeus-CoEvolve status check section (front matter prelude)"
-SKILL_WRAPPER_SECTION = "SKILL.md EvoZeus-CoEvolve section or migration note (append only)"
 STATUS_SECTION_HEADING = "## EvoZeus-CoEvolve 状态检查"
 LEGACY_STATUS_SECTION_HEADING = "## EvoZeus-wrapper 状态检查"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
@@ -266,12 +298,289 @@ def file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def run_command(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
+def run_command(
+    args: list[str],
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     try:
-        result = subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
     except FileNotFoundError:
         return {"returncode": 127, "stdout": "", "stderr": "command not found"}
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+
+
+_TRUSTED_STRUCTURE_SOURCE_MAX_BYTES = 8 * 1024 * 1024
+
+
+_TRUSTED_STRUCTURE_RUNNER = r"""
+import hashlib
+import sys
+
+max_source_bytes = 8 * 1024 * 1024
+header = sys.stdin.buffer.read(16)
+if len(header) < 16:
+    raise SystemExit("trusted structure payload header is incomplete")
+preflight_size = int.from_bytes(header[:8], "big")
+notice_size = int.from_bytes(header[8:16], "big")
+if (
+    preflight_size < 1
+    or preflight_size > max_source_bytes
+    or notice_size < 1
+    or notice_size > max_source_bytes
+):
+    raise SystemExit("trusted structure payload source size is invalid")
+body_size = preflight_size + notice_size
+body = sys.stdin.buffer.read(body_size)
+if len(body) != body_size or sys.stdin.buffer.read(1):
+    raise SystemExit("trusted structure payload length is invalid")
+preflight_source = body[:preflight_size]
+notice_source = body[preflight_size:]
+if hashlib.sha256(preflight_source).hexdigest() != sys.argv[1]:
+    raise SystemExit("trusted preflight source digest changed")
+if hashlib.sha256(notice_source).hexdigest() != sys.argv[2]:
+    raise SystemExit("trusted notice source digest changed")
+notice_sha256 = sys.argv[2]
+label = "/__evozeus_trusted__/evozeus_wrapper_preflight.py"
+sys.argv = [label, *sys.argv[3:]]
+namespace = {
+    "__file__": label,
+    "__name__": "__main__",
+    "_EVOZEUS_TRUSTED_NOTICE_SOURCE": notice_source,
+    "_EVOZEUS_TRUSTED_NOTICE_SHA256": notice_sha256,
+}
+exec(compile(preflight_source, label, "exec", dont_inherit=True), namespace)
+"""
+
+
+class _TrustedStructureSnapshot:
+    def __init__(
+        self,
+        *,
+        preflight_source: bytes,
+        notice_source: bytes,
+        preflight_sha256: str,
+        notice_sha256: str,
+    ) -> None:
+        self.preflight_source = preflight_source
+        self.notice_source = notice_source
+        self.preflight_sha256 = preflight_sha256
+        self.notice_sha256 = notice_sha256
+
+    def verify(self) -> None:
+        if (
+            not isinstance(self.preflight_source, bytes)
+            or not (
+                1
+                <= len(self.preflight_source)
+                <= _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            )
+            or hashlib.sha256(self.preflight_source).hexdigest()
+            != self.preflight_sha256
+            or not isinstance(self.notice_source, bytes)
+            or not (
+                1
+                <= len(self.notice_source)
+                <= _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            )
+            or hashlib.sha256(self.notice_source).hexdigest()
+            != self.notice_sha256
+        ):
+            raise ValueError("trusted structure source bytes changed")
+
+    def cleanup(self) -> None:
+        return None
+
+
+def _trusted_structure_preflight(
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    _target: Path,
+) -> _TrustedStructureSnapshot:
+    if (migration_bundle.get("source_trust") or {}).get("status") != (
+        "trusted_release"
+    ):
+        raise ValueError("structure validation source is not a trusted release")
+    wrapper_root = migration_bundle.get("wrapper_root")
+    current = migration_bundle.get("current_closure") or {}
+    closure = current.get("closure")
+    closure_path = current.get("path")
+    if (
+        not isinstance(wrapper_root, Path)
+        or not isinstance(closure, dict)
+        or not isinstance(closure_path, str)
+        or (
+            profile.get("_verified_target_closure")
+            or profile.get("_verified_to_closure")
+        )
+        != closure
+    ):
+        raise ValueError("structure validation closure binding is unavailable")
+    closure_entries = {
+        item.get("target_path"): item
+        for item in closure.get("files", [])
+        if isinstance(item, dict)
+    }
+
+    def verified_closure_source(
+        target_path: str,
+        expected_target_mode: str,
+        expected_artifact_mode: str,
+    ) -> bytes:
+        entry = closure_entries.get(target_path)
+        if (
+            not isinstance(entry, dict)
+            or entry.get("kind") != "exact"
+            or entry.get("mode") != expected_target_mode
+            or not isinstance(entry.get("artifact_path"), str)
+            or not isinstance(entry.get("sha256"), str)
+        ):
+            raise ValueError(
+                f"structure validation dependency is not closure-exact: {target_path}"
+            )
+        relative = migration_kernel._safe_relative_path(
+            (
+                Path(closure_path).parent / str(entry["artifact_path"])
+            ).as_posix(),
+            "trusted structure validation source",
+        )
+        source = migration_kernel._safe_file_below(
+            wrapper_root,
+            relative,
+            "trusted structure validation source",
+        )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if nofollow == 0:
+            raise ValueError("trusted structure source requires O_NOFOLLOW")
+        descriptor = os.open(source, flags | nofollow)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size < 1
+                or metadata.st_size > _TRUSTED_STRUCTURE_SOURCE_MAX_BYTES
+            ):
+                raise ValueError(
+                    f"trusted structure source size/type is invalid: {target_path}"
+                )
+            chunks: list[bytes] = []
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise ValueError(
+                        "trusted structure source changed while reading"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise ValueError("trusted structure source grew while reading")
+            final_metadata = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        data = b"".join(chunks)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            != (
+                final_metadata.st_dev,
+                final_metadata.st_ino,
+                final_metadata.st_mode,
+                final_metadata.st_size,
+                final_metadata.st_mtime_ns,
+                final_metadata.st_ctime_ns,
+            )
+            or stat.S_IMODE(metadata.st_mode)
+            != (int(expected_artifact_mode, 8) & 0o7777)
+            or hashlib.sha256(data).hexdigest() != entry["sha256"]
+        ):
+            raise ValueError(
+                f"trusted structure source bytes/mode changed: {target_path}"
+            )
+        return data
+
+    preflight = verified_closure_source(
+        TARGET_PREFLIGHT_SCRIPT,
+        "100755",
+        "100755",
+    )
+    notice = verified_closure_source(
+        TARGET_NOTICE_SCRIPT,
+        "100755",
+        "100644",
+    )
+    return _TrustedStructureSnapshot(
+        preflight_source=preflight,
+        notice_source=notice,
+        preflight_sha256=hashlib.sha256(preflight).hexdigest(),
+        notice_sha256=hashlib.sha256(notice).hexdigest(),
+    )
+
+
+def _run_harness_structure_check(
+    target: Path,
+    *,
+    trusted_preflight: _TrustedStructureSnapshot,
+) -> dict[str, Any]:
+    trusted_preflight.verify()
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONSAFEPATH"] = "1"
+    environment.pop("PYTHONPATH", None)
+    environment.pop("EVOZEUS_TRUSTED_NOTICE_FD", None)
+    environment.pop("EVOZEUS_TRUSTED_NOTICE_SHA256", None)
+    preflight_size = len(trusted_preflight.preflight_source).to_bytes(8, "big")
+    notice_size = len(trusted_preflight.notice_source).to_bytes(8, "big")
+    payload = b"".join(
+        (
+            preflight_size,
+            notice_size,
+            trusted_preflight.preflight_source,
+            trusted_preflight.notice_source,
+        )
+    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _TRUSTED_STRUCTURE_RUNNER,
+                trusted_preflight.preflight_sha256,
+                trusted_preflight.notice_sha256,
+                "structure",
+                "--target",
+                str(target),
+            ],
+            cwd=Path("/"),
+            env=environment,
+            input=payload,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return {"returncode": 127, "stdout": "", "stderr": "command not found"}
+    return {
+        "returncode": result.returncode,
+        "stdout": result.stdout.decode("utf-8", errors="replace"),
+        "stderr": result.stderr.decode("utf-8", errors="replace"),
+    }
 
 
 def latest_changelog_tag_from_text(changelog: str) -> str | None:
@@ -1007,6 +1316,8 @@ def surface_has_status_check(path: Path) -> bool:
     if not path.exists() or not path.is_file():
         return False
     text = path.read_text(encoding="utf-8")
+    if _has_canonical_harness_entry(text):
+        return True
     if text.startswith("---\n"):
         end = text.find("\n---\n", 4)
         if end != -1:
@@ -1025,9 +1336,12 @@ def surface_has_status_check(path: Path) -> bool:
 def safe_target_relative_file(target: Path, raw: object) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
+    if re.match(r"^[A-Za-z]:[\\/]", raw) or "\\" in raw:
+        return None
     relative = Path(raw)
     if relative.is_absolute() or ".." in relative.parts:
         return None
+    target = target.expanduser().resolve()
     candidate = target / relative
     cursor = candidate
     while cursor != target:
@@ -1105,7 +1419,7 @@ def assess_component_gaps(target: Path, evolution_surface: dict[str, Any]) -> di
     if not selected:
         missing_concepts.append("evolution surface diagnosis result")
     elif not selected.get("has_wrapper_status_check"):
-        missing_concepts.append(f"{selected['path']} EvoZeus-CoEvolve status check")
+        missing_concepts.append(f"{selected['path']} canonical Harness Skill activation block")
     if not (target / TARGET_CHANGELOG).exists():
         missing_concepts.append("Skill or kit release changelog")
     if not wrapper_manifest_path(target).exists():
@@ -1182,8 +1496,8 @@ def detect_target_architecture(target: Path) -> dict[str, Any]:
     current_manifest = target / TARGET_WRAPPER_MANIFEST
     if current_manifest.is_file():
         try:
-            manifest_data = json.loads(current_manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            manifest_data = _read_manifest_json(current_manifest)
+        except (OSError, ValueError):
             manifest_data = {}
         manifest_surface = (
             manifest_data.get("instruction_surface")
@@ -1351,12 +1665,78 @@ def oldest_wrapper_manifest_path(target: Path) -> Path:
 
 
 def _read_manifest_json(path: Path) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in parsed:
+                raise ValueError(f"duplicate key: {key}")
+            parsed[key] = value
+        return parsed
+
+    def reject_non_finite_number(value: str) -> None:
+        raise ValueError(f"non-finite numeric value: {value}")
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        path_metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        ) from exc
+    if not stat.S_ISREG(path_metadata.st_mode):
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        )
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                f"invalid wrapper manifest file: {path}: expected a readable regular non-symlink file"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read()
+    finally:
+        os.close(descriptor)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid wrapper manifest UTF-8: {path}") from exc
+    try:
+        data = json.loads(
+            text,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_non_finite_number,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"invalid wrapper manifest JSON: {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"wrapper manifest must be a JSON object: {path}")
+
+    def reject_decoded_non_finite(value: object, location: str) -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(
+                f"invalid wrapper manifest JSON: {path}: "
+                f"non-finite numeric value at {location}"
+            )
+        if isinstance(value, dict):
+            for key, item in value.items():
+                reject_decoded_non_finite(item, f"{location}.{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                reject_decoded_non_finite(item, f"{location}[{index}]")
+
+    reject_decoded_non_finite(data, "$")
     return data
 
 
@@ -1366,7 +1746,11 @@ def wrapper_manifest_status(target: Path) -> dict[str, Any]:
         ("legacy_evoinfra", legacy_wrapper_manifest_path(target)),
         ("legacy_evozeus", oldest_wrapper_manifest_path(target)),
     ]
-    detected = [(source, path, _read_manifest_json(path)) for source, path in candidates if path.exists()]
+    detected = [
+        (source, path, _read_manifest_json(path))
+        for source, path in candidates
+        if path.exists() or path.is_symlink()
+    ]
     active_source, active_path, active_manifest = detected[0] if detected else ("missing", None, None)
     conflict = any(manifest != active_manifest for _, _, manifest in detected[1:])
     source = "conflict" if conflict else active_source
@@ -1651,9 +2035,17 @@ def build_wrapper_manifest(
     integration: dict[str, Any] | None = None,
     onboarding: dict[str, Any] | None = None,
     dashboard: dict[str, Any] | None = None,
+    migration_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    migration_bundle = migration_bundle or migration_kernel.load_migration_contract()
+    migration_identity = migration_bundle["identity"]
+    activation_contract = migration_bundle["contract"]["canonical_activation_block"]
+    effective_managed_files = list(dict.fromkeys([*managed_files, TARGET_HARNESS_SKILL]))
+    effective_managed_files = list(
+        dict.fromkeys([*effective_managed_files, TARGET_MIGRATION_CONTRACT])
+    )
     default_hook_files = []
-    if CODEX_HOOKS_CONFIG in managed_files and CODEX_START_HOOK_SCRIPT in managed_files:
+    if CODEX_HOOKS_CONFIG in effective_managed_files and CODEX_START_HOOK_SCRIPT in effective_managed_files:
         default_hook_files = [CODEX_HOOKS_CONFIG, CODEX_START_HOOK_SCRIPT]
     effective_integration = integration or classify_integration_mode(
         target_kind="single_skill",
@@ -1677,7 +2069,28 @@ def build_wrapper_manifest(
         "target_infra_dir": TARGET_EVOINFRA_DIR,
         "legacy_layout_dirs": [LEGACY_TARGET_EVOINFRA_DIR, OLDEST_TARGET_EVOINFRA_DIR],
         "canonical_repo": repo,
-        "managed_files": managed_files,
+        "instruction_surface": instruction_surface or "SKILL.md",
+        "harness_skill_path": TARGET_HARNESS_SKILL,
+        "harness_skill_version": HARNESS_SKILL_VERSION,
+        "harness_skill_managed": True,
+        "migration_contract": {
+            "migration_protocol_version": migration_identity["migration_protocol_version"],
+            "contract_id": migration_identity["contract_id"],
+            "contract_version": migration_identity["contract_version"],
+            "path": migration_identity["target_path"],
+            "sha256": migration_identity["sha256"],
+        },
+        "managed_blocks": [
+            {
+                "block_id": activation_contract["block_id"],
+                "path": instruction_surface or "SKILL.md",
+                "marker_version": activation_contract["marker_version"],
+                "begin_marker": activation_contract["begin_marker"],
+                "end_marker": activation_contract["end_marker"],
+                "sha256_lf": activation_contract["sha256_lf"],
+            }
+        ],
+        "managed_files": effective_managed_files,
         "install_links": install_links,
         "dashboard": dashboard if dashboard is not None else build_dashboard_contract(),
         "onboarding": (
@@ -1703,72 +2116,33 @@ def build_wrapper_manifest(
         },
         "integration": effective_integration,
     }
-    if instruction_surface:
-        manifest["instruction_surface"] = instruction_surface
     return manifest
+
+
+def wrapper_manifest_bytes(manifest: dict[str, Any]) -> bytes:
+    """Serialize the complete manifest postimage before any target mutation."""
+    try:
+        serialized = json.dumps(
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+            allow_nan=False,
+        ) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"wrapper manifest cannot be serialized as strict JSON: {exc}"
+        ) from exc
+    return serialized.encode("utf-8")
 
 
 def write_wrapper_manifest(target: Path, manifest: dict[str, Any], force: bool = False) -> str:
     path = wrapper_manifest_path(target)
     if path.exists() and not force:
         return f"skip existing {path}"
+    serialized = wrapper_manifest_bytes(manifest)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_bytes(serialized)
     return f"write {path}"
-
-
-TARGET_INFRA_PATH_REPLACEMENTS = (
-    (LEGACY_TARGET_WRAPPER_MANIFEST, TARGET_WRAPPER_MANIFEST),
-    (OLDEST_TARGET_WRAPPER_MANIFEST, TARGET_WRAPPER_MANIFEST),
-    (LEGACY_TARGET_FEEDBACK_POLICY, TARGET_FEEDBACK_POLICY),
-    (OLDEST_TARGET_FEEDBACK_POLICY, TARGET_FEEDBACK_POLICY),
-    (LEGACY_TARGET_AUDIT_RULE, TARGET_AUDIT_RULE),
-    (OLDEST_TARGET_AUDIT_RULE, TARGET_AUDIT_RULE),
-    (".codex/hooks/evozeus_wrapper_start_check.py", CODEX_START_HOOK_SCRIPT),
-    ("scripts/evozeus_wrapper_preflight.py", TARGET_PREFLIGHT_SCRIPT),
-    ("docs/wrapper-migrations", f"{TARGET_EVOINFRA_DIR}/docs/migrations"),
-    ("docs/design-doc-template.md", TARGET_DESIGN_TEMPLATE),
-    ("docs/designs", f"{TARGET_EVOINFRA_DIR}/docs/designs"),
-    ("docs/index.md", TARGET_DASHBOARD_INDEX),
-    ("docs/_config.yml", TARGET_DASHBOARD_CONFIG),
-    ("WRAPPER.md", TARGET_WRAPPER_GUIDE),
-    ("CHANGELOG.md", TARGET_CHANGELOG),
-    ("`.evozeus/.projects", "`~/.evozeus/.projects"),
-)
-
-
-def rewrite_target_infra_string(value: str) -> str:
-    updated = value
-    protected: dict[str, str] = {}
-    for index, replacement in enumerate(dict(TARGET_INFRA_PATH_REPLACEMENTS).values()):
-        token = f"__EVOZEUS_WRAPPER_PATH_{index}__"
-        if replacement in updated:
-            updated = updated.replace(replacement, token)
-            protected[token] = replacement
-    for old, new in TARGET_INFRA_PATH_REPLACEMENTS:
-        updated = updated.replace(old, new)
-    for token, replacement in protected.items():
-        updated = updated.replace(token, replacement)
-    return updated
-
-
-def rewrite_target_infra_json(value: Any) -> Any:
-    if isinstance(value, str):
-        return rewrite_target_infra_string(value)
-    if isinstance(value, list):
-        return [rewrite_target_infra_json(item) for item in value]
-    if isinstance(value, dict):
-        return {key: rewrite_target_infra_json(item) for key, item in value.items()}
-    return value
-
-
-def rewrite_target_infra_json_file(path: Path) -> bool:
-    data = _read_manifest_json(path) if path.name == "wrapper.json" else json.loads(path.read_text(encoding="utf-8"))
-    updated = rewrite_target_infra_json(data)
-    if updated == data:
-        return False
-    path.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return True
 
 
 def target_infra_text_files(target: Path) -> list[Path]:
@@ -1801,30 +2175,6 @@ def target_infra_text_files(target: Path) -> list[Path]:
     if codex_hooks.is_file():
         files.append(codex_hooks)
     return list(dict.fromkeys(files))
-
-
-def rewrite_target_infra_text_file(path: Path) -> bool:
-    text = path.read_text(encoding="utf-8")
-    updated = rewrite_target_infra_string(text)
-    if updated == text:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
-
-
-def rewrite_dashboard_contact_link(target: Path) -> bool:
-    path = target / ".github" / "ISSUE_TEMPLATE" / "config.yml"
-    if not path.is_file():
-        return False
-    text = path.read_text(encoding="utf-8")
-    updated = text.replace(
-        "/tree/main/docs",
-        f"/tree/main/{TARGET_EVOINFRA_DIR}/docs",
-    )
-    if updated == text:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
 
 
 def feedback_policy_path(target: Path) -> Path:
@@ -2077,10 +2427,296 @@ def _frontmatter_end(text: str) -> int:
     if not lines or not re.fullmatch(r"---[ \t]*", lines[0].rstrip("\r\n")):
         return 0
     offset = len(lines[0])
+    body_lines: list[str] = []
     for line in lines[1:]:
         offset += len(line)
         if re.fullmatch(r"(?:---|\.\.\.)[ \t]*", line.rstrip("\r\n")):
+            break
+        body_lines.append(line.rstrip("\r\n"))
+    else:
+        return 0
+
+    flow_lines = list(body_lines)
+    while flow_lines and (not flow_lines[0].strip() or flow_lines[0].lstrip().startswith("#")):
+        flow_lines.pop(0)
+    while flow_lines and (not flow_lines[-1].strip() or flow_lines[-1].lstrip().startswith("#")):
+        flow_lines.pop()
+    flow_candidate = "\n".join(flow_lines).strip()
+    if flow_candidate.startswith("{") and flow_candidate.endswith("}"):
+        inner = flow_candidate[1:-1]
+        quote: str | None = None
+        quote_closes_key = False
+        escaped = False
+        comment = False
+        frames = [
+            {
+                "kind": "map",
+                "content": False,
+                "separator": False,
+                "items": 0,
+                "key_closed": False,
+                "closes_key": False,
+                "value_started": False,
+                "value_complete": False,
+                "node_properties": False,
+                "property_pending": False,
+            }
+        ]
+        valid_flow = True
+        for index, character in enumerate(inner):
+            if comment:
+                if character in "\r\n":
+                    comment = False
+                continue
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                    if quote_closes_key:
+                        frames[-1]["key_closed"] = True
+                    quote_closes_key = False
+                continue
+            if character in {"'", '"'}:
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                frame["property_pending"] = False
+                quote = character
+                quote_closes_key = not frame["content"] and not frame["separator"]
+                if not quote_closes_key:
+                    frame["key_closed"] = False
+                frame["content"] = True
+                if frame["separator"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
+            elif character == "#" and (
+                not frames[-1]["property_pending"]
+                and (index == 0 or inner[index - 1].isspace() or inner[index - 1] in ",[]{}:")
+            ):
+                comment = True
+            elif character in "[{":
+                parent = frames[-1]
+                parent["property_pending"] = False
+                if parent["value_complete"] or (
+                    parent["separator"]
+                    and parent["value_started"]
+                    and not parent["node_properties"]
+                ) or (
+                    not parent["separator"]
+                    and parent["content"]
+                    and not (parent["node_properties"] and not parent["value_started"])
+                ):
+                    valid_flow = False
+                    break
+                closes_key = (
+                    not parent["separator"]
+                    and not parent["value_started"]
+                    and (not parent["content"] or parent["node_properties"])
+                )
+                parent["content"] = True
+                if parent["separator"]:
+                    parent["value_started"] = True
+                parent["node_properties"] = False
+                if not closes_key:
+                    parent["key_closed"] = False
+                frames.append(
+                    {
+                        "kind": "sequence" if character == "[" else "map",
+                        "content": False,
+                        "separator": False,
+                        "items": 0,
+                        "key_closed": False,
+                        "closes_key": closes_key,
+                        "value_started": False,
+                        "value_complete": False,
+                        "node_properties": False,
+                        "property_pending": False,
+                    }
+                )
+            elif character in "]}":
+                expected = "sequence" if character == "]" else "map"
+                if len(frames) == 1 or frames[-1]["kind"] != expected:
+                    valid_flow = False
+                    break
+                frame = frames.pop()
+                if frame["property_pending"] or (
+                    frame["node_properties"] and not frame["value_started"]
+                ):
+                    valid_flow = False
+                    break
+                if frame["content"]:
+                    frame["items"] += 1
+                if frame["closes_key"]:
+                    frames[-1]["key_closed"] = True
+                else:
+                    frames[-1]["value_complete"] = True
+                    frames[-1]["value_started"] = True
+            elif character == ",":
+                frame = frames[-1]
+                if frame["property_pending"]:
+                    continue
+                if (
+                    not frame["content"]
+                    or frame["property_pending"]
+                    or (frame["node_properties"] and not frame["value_started"])
+                ):
+                    valid_flow = False
+                    break
+                frame["items"] += 1
+                frame["content"] = False
+                frame["separator"] = False
+                frame["key_closed"] = False
+                frame["value_started"] = False
+                frame["value_complete"] = False
+                frame["node_properties"] = False
+                frame["property_pending"] = False
+            elif character == ":":
+                frame = frames[-1]
+                if frame["property_pending"]:
+                    continue
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                next_character = inner[index + 1 : index + 2]
+                is_separator = (
+                    not next_character
+                    or next_character.isspace()
+                    or next_character in ",[]{}"
+                    or bool(frame["key_closed"])
+                )
+                if not is_separator:
+                    frame["content"] = True
+                    frame["key_closed"] = False
+                    if frame["separator"]:
+                        frame["value_started"] = True
+                    continue
+                if frame["kind"] == "map":
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        valid_flow = False
+                        break
+                    else:
+                        frame["separator"] = True
+                        frame["key_closed"] = False
+                        frame["value_started"] = False
+                        frame["value_complete"] = False
+                        frame["node_properties"] = False
+                else:
+                    if not frame["content"]:
+                        valid_flow = False
+                        break
+                    if frame["separator"]:
+                        valid_flow = False
+                        break
+                    else:
+                        frame["separator"] = True
+                        frame["key_closed"] = False
+                        frame["value_started"] = False
+                        frame["value_complete"] = False
+                        frame["node_properties"] = False
+            elif character in "&!":
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                if frame["property_pending"]:
+                    continue
+                if (
+                    not frame["content"]
+                    or (frame["separator"] and not frame["value_started"])
+                    or (frame["node_properties"] and not frame["value_started"])
+                ):
+                    frame["content"] = True
+                    frame["node_properties"] = True
+                    frame["property_pending"] = True
+                    frame["key_closed"] = False
+                else:
+                    frame["key_closed"] = False
+            elif not character.isspace():
+                frame = frames[-1]
+                if frame["value_complete"]:
+                    valid_flow = False
+                    break
+                if frame["property_pending"]:
+                    continue
+                frame["content"] = True
+                frame["key_closed"] = False
+                if frame["separator"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
+                elif frame["node_properties"]:
+                    frame["value_started"] = True
+                    frame["node_properties"] = False
+        valid_flow = valid_flow and quote is None and len(frames) == 1
+        root = frames[0]
+        if root["content"]:
+            root["items"] += 1
+        if valid_flow and (not inner.strip() or root["items"]):
             return offset
+        return 0
+
+    def mapping_key_separator(line: str) -> int | None:
+        quote: str | None = None
+        escaped = False
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if quote == '"' and character == "\\":
+                escaped = True
+                continue
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ":" and (index + 1 == len(line) or line[index + 1] in " \t"):
+                return index if line[:index].strip() else None
+        return None
+
+    saw_mapping_key = False
+    explicit_key = False
+    mapping_tag = False
+    allows_indentless_sequence = False
+    for line in body_lines:
+        stripped = line.strip()
+        if not stripped or line.lstrip().startswith("#"):
+            continue
+        if stripped in {"{}", "!!map {}"} and not saw_mapping_key:
+            saw_mapping_key = True
+            continue
+        if stripped == "!!map" and not saw_mapping_key:
+            mapping_tag = True
+            continue
+        if line.startswith((" ", "\t")) and (saw_mapping_key or mapping_tag):
+            continue
+        if allows_indentless_sequence and (line == "-" or line.startswith("- ")):
+            continue
+        if line.startswith("? "):
+            explicit_key = True
+            continue
+        if explicit_key and (line == ":" or line.startswith(": ")):
+            saw_mapping_key = True
+            explicit_key = False
+            continue
+        separator = mapping_key_separator(line)
+        if separator is not None:
+            saw_mapping_key = True
+            allows_indentless_sequence = not line[separator + 1 :].strip()
+            continue
+        return 0
+    if saw_mapping_key and not explicit_key:
+        return offset
     return 0
 
 
@@ -2153,6 +2789,423 @@ def _write_text_preserving_newlines(path: Path, text: str) -> None:
         stream.write(text)
 
 
+def build_harness_activation_block(newline: str = "\n") -> str:
+    """Return the entire wrapper-owned target entry contract."""
+    return newline.join(
+        [
+            HARNESS_ENTRY_BEGIN,
+            "**CRITICAL — 进入业务主链路前 MUST 使用 Read 工具读取并执行",
+            f"[{TARGET_HARNESS_SKILL}]({TARGET_HARNESS_SKILL})。**",
+            HARNESS_ENTRY_END,
+        ]
+    )
+
+
+def _harness_entry_pattern() -> re.Pattern[str]:
+    block = r"\r?\n".join(
+        re.escape(line) for line in build_harness_activation_block().splitlines()
+    )
+    return re.compile(
+        rf"^{block}[ \t]*(?:\r?\n|$)(?:\r?\n)*",
+        re.MULTILINE,
+    )
+
+
+def _mask_markdown_fenced_code(text: str) -> str:
+    """Mask non-contract Markdown bytes while preserving offsets and newlines."""
+    masked: list[str] = []
+    offset = 0
+    frontmatter_end = _frontmatter_end(text)
+    fence: tuple[str, int] | None = None
+    html_block: tuple[str, re.Pattern[str] | None] | None = None
+
+    def mask_line(line: str) -> str:
+        return "".join(character if character in "\r\n" else " " for character in line)
+
+    def is_complete_html_tag(line: str) -> bool:
+        match = re.match(r"^[ ]{0,3}</?[A-Za-z][A-Za-z0-9-]*", line)
+        if not match:
+            return False
+        quote: str | None = None
+        for index in range(match.end(), len(line)):
+            character = line[index]
+            if quote:
+                if character == quote:
+                    quote = None
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                continue
+            if character == ">":
+                return not line[index + 1 :].strip()
+        return False
+
+    for line in text.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if offset < frontmatter_end:
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        if fence:
+            fence_char, minimum_length = fence
+            if re.match(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{minimum_length},}}[ \t]*$",
+                content,
+            ):
+                fence = None
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        if html_block:
+            mode, end_pattern = html_block
+            if (mode == "blank" and not content.strip()) or (
+                end_pattern is not None and end_pattern.search(content)
+            ):
+                html_block = None
+            masked.append(mask_line(line))
+            offset += len(line)
+            continue
+        fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", content)
+        if fence_match:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            masked.append(mask_line(line))
+        elif re.fullmatch(
+            rf"(?:{re.escape(HARNESS_ENTRY_BEGIN)}|{re.escape(HARNESS_ENTRY_END)})[ \t]*",
+            content,
+        ):
+            masked.append(line)
+        elif html_match := re.match(
+            r"^[ ]{0,3}<(script|pre|style|textarea)(?:[ \t>]|$)",
+            content,
+            re.IGNORECASE,
+        ):
+            end_pattern = re.compile(rf"</{html_match.group(1)}[ \t]*>", re.IGNORECASE)
+            if not end_pattern.search(content[html_match.end() :]):
+                html_block = ("pattern", end_pattern)
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!--", content):
+            if "-->" not in content[content.find("<!--") + 4 :]:
+                html_block = ("pattern", re.compile(r"-->"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<\?", content):
+            if "?>" not in content[content.find("<?") + 2 :]:
+                html_block = ("pattern", re.compile(r"\?>"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<![A-Z]", content):
+            if ">" not in content[content.find("<!") + 2 :]:
+                html_block = ("pattern", re.compile(r">"))
+            masked.append(mask_line(line))
+        elif re.match(r"^[ ]{0,3}<!\[CDATA\[", content):
+            if "]]>" not in content[content.find("<![CDATA[") + 9 :]:
+                html_block = ("pattern", re.compile(r"\]\]>"))
+            masked.append(mask_line(line))
+        elif re.match(
+            r"^[ ]{0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)",
+            content,
+            re.IGNORECASE,
+        ) or is_complete_html_tag(content):
+            html_block = ("blank", None)
+            masked.append(mask_line(line))
+        elif re.match(r"^(?: {4,}|\t)", content):
+            masked.append(mask_line(line))
+        else:
+            masked.append(line)
+        offset += len(line)
+    return "".join(masked)
+
+
+def _harness_entry_markers_well_formed(text: str) -> bool:
+    """Accept zero or more complete, non-nested top-level canonical entry blocks."""
+    text = _mask_markdown_fenced_code(text)
+    marker_pattern = re.compile(
+        rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+        rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*\r?$",
+        re.MULTILINE,
+    )
+    entry_open = False
+    for match in marker_pattern.finditer(text):
+        if match.group("begin"):
+            if entry_open:
+                return False
+            entry_open = True
+        else:
+            if not entry_open:
+                return False
+            entry_open = False
+    return not entry_open
+
+
+def _consume_following_newlines(text: str, offset: int) -> int:
+    """Include wrapper-owned blank-line separators after a proven terminal."""
+    while offset < len(text) and text[offset] in "\r\n":
+        offset += 1
+    return offset
+
+
+def _managed_terminal_match(
+    section: str,
+    terminal_pattern: str,
+    predecessor_sequences: tuple[tuple[str, ...], ...],
+) -> re.Match[str] | None:
+    """Accept a terminal only after a contiguous suffix from a known managed template."""
+    terminator = re.search(terminal_pattern, section)
+    if not terminator:
+        return None
+    preceding_lines = [
+        line.strip()
+        for line in section[: terminator.start()].splitlines()
+        if line.strip()
+    ]
+    for sequence in predecessor_sequences:
+        if len(preceding_lines) < len(sequence):
+            continue
+        suffix = preceding_lines[-len(sequence) :]
+        if all(re.fullmatch(pattern, line) for pattern, line in zip(sequence, suffix)):
+            return terminator
+    return None
+
+
+def _wrapper_owned_section_analysis(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[str]]:
+    """Find proven wrapper spans and report owned sections with unproven endings."""
+    spans: list[tuple[int, int]] = []
+    conflicts: list[str] = []
+    signatures = {
+        STATUS_SECTION_HEADING: (("Skill 入口 preflight", TARGET_WRAPPER_MANIFEST),),
+        LEGACY_STATUS_SECTION_HEADING: (("Skill 入口 preflight", "wrapper"),),
+        EVOLUTION_SECTION_HEADING: (
+            ("本 Skill 已由 EvoZeus-CoEvolve 接入自进化闭环",),
+            ("本 Skill 已由 EvoZeus-wrapper 接入自进化闭环",),
+        ),
+        WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-CoEvolve 追加",),),
+        LEGACY_WRAPPER_SECTION_HEADING: (("本区由 EvoZeus-wrapper 追加",),),
+    }
+    terminal_patterns = {
+        STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        LEGACY_STATUS_SECTION_HEADING: r"(?m)^(?:解决顺序|处理顺序|解决方法)：[^\r\n]*(?:\r?\n|$)",
+        EVOLUTION_SECTION_HEADING: r"(?m)^Wrapper harness version:[^\r\n]*(?:\r?\n|$)",
+        WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
+        LEGACY_WRAPPER_SECTION_HEADING: r"(?m)^- `manual_only`[^\r\n]*(?:\r?\n|$)",
+    }
+    terminal_predecessors = {
+        STATUS_SECTION_HEADING: (
+            (
+                r"- 检查命令：`python3 .*evozeus_wrapper_preflight\.py doctor --repo [^`]+`",
+                r"- 如果 `~/.evozeus/\.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。",
+            ),
+            (
+                r"- 身份头固定以 `🧙🏻‍♂️` 开始；禁止使用 HTML、自定义图片或 shortcode 替代。",
+                r"- 同一次 invocation 的后续 commentary 和 final 不重复；下一次 invocation 再展示一次。",
+            ),
+            (
+                r"- Lesson Notice 的 Tag 为 `EvoZeus · Lesson`、状态为 `待记录`，只询问是否记录到 Skill Feedback Issue。",
+                r"- Lesson 记录、Skill 修复、Harness 维护、UAT 与正式发布分别使用配置中的独立 kind；任何 Notice 都不扩张写入授权。",
+            ),
+        ),
+        LEGACY_STATUS_SECTION_HEADING: (
+            (
+                r"- 检查命令：`python3 .*evozeus_wrapper_preflight\.py doctor --repo [^`]+`",
+                r"- 如果 `~/.evozeus/\.projects`、git origin 或 runtime install 不一致：先修复为同一个 canonical repo，再继续。",
+            ),
+        ),
+        EVOLUTION_SECTION_HEADING: (
+            (
+                r"Visibility: `(public|private)`",
+                r"Current Skill version: `v\d+\.\d+\.\d+`",
+            ),
+        ),
+        WRAPPER_SECTION_HEADING: (
+            (
+                r"- `bootstrap_skill`：[^\r\n]+",
+                r"- `prompt_runtime_check`：[^\r\n]+",
+            ),
+        ),
+        LEGACY_WRAPPER_SECTION_HEADING: (
+            (
+                r"- `bootstrap_skill`：[^\r\n]+",
+                r"- `prompt_runtime_check`：[^\r\n]+",
+            ),
+        ),
+    }
+    headings = _markdown_headings(text)
+    for index, (start, level, heading) in enumerate(headings):
+        end = next(
+            (
+                next_start
+                for next_start, next_level, _ in headings[index + 1 :]
+                if next_level <= level
+            ),
+            len(text),
+        )
+        span = (start, end)
+        accepted_signatures = signatures.get(heading)
+        if accepted_signatures:
+            section = text[start:end]
+            if any(
+                all(term in section for term in required_terms)
+                for required_terms in accepted_signatures
+            ):
+                terminator = _managed_terminal_match(
+                    section,
+                    terminal_patterns[heading],
+                    terminal_predecessors[heading],
+                )
+                if not terminator:
+                    conflicts.append(
+                        f"{heading} has a wrapper ownership signature but no proven managed terminal signature; "
+                        "restore the managed section or use an approved manual repair"
+                    )
+                    continue
+                span_end = _consume_following_newlines(
+                    text,
+                    start + terminator.end(),
+                )
+                span = (start, span_end)
+                spans.append(span)
+            continue
+        if not (
+            heading.startswith("## EvoZeus-CoEvolve Migration Note:")
+            or heading.startswith("## EvoZeus-CoEvolve Version Refresh Note:")
+            or heading.startswith("## EvoZeus-wrapper Migration Note:")
+            or heading.startswith("## EvoZeus-wrapper Version Refresh Note:")
+        ):
+            continue
+        section = text[start:end]
+        if "Wrapper harness:" not in section or "- Layout:" not in section:
+            continue
+        terminator = _managed_terminal_match(
+            section,
+            r"(?m)^- Target business rules were preserved\.[ \t]*(?:\r?\n|$)",
+            (
+                (
+                    r"- Wrapper harness: `v\d+\.\d+\.\d+ -> v\d+\.\d+\.\d+`",
+                    r"- Layout: `[^`]+ -> [^`]+`",
+                ),
+            ),
+        )
+        if not terminator:
+            conflicts.append(
+                f"{heading} has a wrapper ownership signature but no proven managed terminal signature; "
+                "restore the managed note or use an approved manual repair"
+            )
+            continue
+        span_end = _consume_following_newlines(
+            text,
+            start + terminator.end(),
+        )
+        spans.append((start, span_end))
+    return sorted(set(spans)), list(dict.fromkeys(conflicts))
+
+
+def _wrapper_owned_section_spans(text: str) -> list[tuple[int, int]]:
+    return _wrapper_owned_section_analysis(text)[0]
+
+
+def _has_canonical_harness_entry(text: str) -> bool:
+    normalized = text.replace("\r\n", "\n")
+    visible = _mask_markdown_fenced_code(text).replace("\r\n", "\n")
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(text)
+    content = normalized[_frontmatter_end(normalized) :].lstrip()
+    lines = content.splitlines()
+    entries = list(_harness_entry_pattern().finditer(visible))
+    precedes_business = content.startswith(HARNESS_ENTRY_BEGIN) or bool(
+        lines
+        and lines[0].startswith("# ")
+        and "\n".join(lines[1:]).lstrip().startswith(HARNESS_ENTRY_BEGIN)
+    )
+    return (
+        len(entries) == 1
+        and precedes_business
+        and not owned_spans
+        and not owned_conflicts
+    )
+
+
+def _instruction_insert_index(text: str) -> int:
+    frontmatter_end = _frontmatter_end(text)
+    if frontmatter_end:
+        return frontmatter_end
+    first_line_end = text.find("\n")
+    first_line = text if first_line_end == -1 else text[:first_line_end].rstrip("\r")
+    if first_line.startswith("# "):
+        return len(text) if first_line_end == -1 else first_line_end + 1
+    return 0
+
+
+def validate_instruction_surface_for_harness_entry(target: Path, surface_rel: str) -> str:
+    """Return the read-only surface only when canonical entry migration is provably safe."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    text = _read_text_preserving_newlines(surface)
+    if not _harness_entry_markers_well_formed(text):
+        raise ValueError(
+            f"instruction surface has an unbalanced canonical Harness entry or invalid nesting: "
+            f"{surface_rel}"
+        )
+    candidates, conflicts = _wrapper_owned_section_analysis(text)
+    if candidates or conflicts:
+        raise ValueError(
+            f"manual_migration_required: instruction surface {surface_rel} contains "
+            "historical discovery candidates without versioned ownership authority"
+            + ("\n- " + "\n- ".join(conflicts) if conflicts else "")
+        )
+    return text
+
+
+def render_fresh_harness_entry(original: str) -> str:
+    """Return the complete postimage for a prevalidated fresh instruction surface."""
+    if _has_canonical_harness_entry(original):
+        return original
+
+    entry_spans = [
+        (match.start(), match.end())
+        for match in _harness_entry_pattern().finditer(_mask_markdown_fenced_code(original))
+    ]
+    owned_spans, owned_conflicts = _wrapper_owned_section_analysis(original)
+    if entry_spans or owned_spans or owned_conflicts:
+        diagnostics = [
+            *(f"candidate span {start}:{end}" for start, end in owned_spans),
+            *owned_conflicts,
+        ]
+        if entry_spans:
+            diagnostics.append("an existing canonical marker block requires a versioned profile")
+        raise ValueError(
+            "manual_migration_required: historical instruction candidates are read-only "
+            "and cannot authorize deletion or relocation"
+            + ("\n- " + "\n- ".join(diagnostics) if diagnostics else "")
+        )
+
+    newline = "\r\n" if "\r\n" in original else "\n"
+    insert_at = _instruction_insert_index(original)
+    prefix = original[:insert_at]
+    suffix = original[insert_at:]
+    before = "" if not prefix or prefix.endswith(newline * 2) else newline if prefix.endswith(newline) else newline * 2
+    after = "" if suffix.startswith(newline * 2) else newline if suffix.startswith(newline) else newline * 2
+    return prefix + before + build_harness_activation_block(newline) + after + suffix
+
+
+def add_fresh_harness_entry(target: Path, surface_rel: str) -> bool:
+    """Add one canonical marker block only to a surface with zero legacy candidates."""
+    surface = safe_target_relative_file(target, surface_rel)
+    if surface is None:
+        raise ValueError(f"instruction surface is missing, unsafe, or symlinked: {surface_rel}")
+    original = validate_instruction_surface_for_harness_entry(target, surface_rel)
+    updated = render_fresh_harness_entry(original)
+
+    if updated == original:
+        return False
+    _write_text_preserving_newlines(surface, updated)
+    return True
+
+
+def migrate_instruction_surface_to_harness_entry(target: Path, surface_rel: str) -> bool:
+    """Compatibility entrypoint; it has additive-only, zero-delete semantics."""
+    return add_fresh_harness_entry(target, surface_rel)
+
+
 def _replace_markdown_section(text: str, heading: str, replacement: str) -> str:
     span = _markdown_section_span(text, heading)
     if span:
@@ -2199,71 +3252,20 @@ def _refresh_migration_instruction_surface(
 ) -> tuple[str, bool]:
     architecture = detect_target_architecture(target)
     surface_rel = manifest.get("instruction_surface") or architecture.get("root_entry") or "SKILL.md"
-    surface = target / surface_rel
-    if not surface.is_file():
-        raise ValueError(f"migration instruction surface is missing: {surface_rel}")
-    original = _read_text_preserving_newlines(surface)
-    canonical_repo = manifest.get("canonical_repo") or "OWNER/REPO"
-    status = build_status_section(
-        {
-            "CURRENT_VERSION": latest_changelog_tag(target) or "unknown",
-            "REPO_NAME": canonical_repo,
-            "WRAPPER_VERSION": latest_wrapper_version,
-        }
-    )
-    status_heading = (
-        STATUS_SECTION_HEADING
-        if _markdown_section_span(original, STATUS_SECTION_HEADING)
-        else LEGACY_STATUS_SECTION_HEADING
-        if _markdown_section_span(original, LEGACY_STATUS_SECTION_HEADING)
-        else STATUS_SECTION_HEADING
-    )
-    updated = _replace_markdown_section(original, status_heading, status)
-    for owned_heading in (
-        EVOLUTION_SECTION_HEADING,
-        WRAPPER_SECTION_HEADING,
-        LEGACY_WRAPPER_SECTION_HEADING,
-    ):
-        updated = _refresh_owned_markdown_section(
-            updated,
-            owned_heading,
-            latest_wrapper_version,
-        )
-    note_kind = "Migration" if layout_migration_required else "Version Refresh"
-    migration_heading = (
-        f"## EvoZeus-CoEvolve {note_kind} Note: "
-        f"{current_wrapper_version or 'unknown'} -> {latest_wrapper_version}"
-    )
-    if not _markdown_section_span(updated, migration_heading):
-        if not updated or updated.endswith("\n\n"):
-            separator = ""
-        elif updated.endswith("\n"):
-            separator = "\n"
-        else:
-            separator = "\n\n"
-        updated = (
-            updated
-            + separator
-            + migration_heading
-            + "\n\n"
-            + f"- Wrapper harness: `{current_wrapper_version or 'unknown'} -> {latest_wrapper_version}`\n"
-            + f"- Layout: `{from_layout} -> {to_layout}`\n"
-            + "- Host hook registration, status prelude, manifest integration, and managed links were refreshed.\n"
-            + "- Target business rules were preserved.\n"
-        )
-    if updated != original:
-        _write_text_preserving_newlines(surface, updated)
-        return surface_rel, True
-    return surface_rel, False
+    if not isinstance(surface_rel, str):
+        raise ValueError("migration instruction_surface must be a relative string")
+    return surface_rel, add_fresh_harness_entry(target, surface_rel)
 
 
 def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     manifest_status = wrapper_manifest_status(target)
-    if manifest_status["current_manifest_detected"] and not manifest_status["legacy_manifest_detected"]:
-        current_manifest = _read_manifest_json(wrapper_manifest_path(target))
-        if current_manifest.get("layout_version") == 2:
-            return grouped
+    if (
+        manifest_status["current_manifest_detected"]
+        and not manifest_status["legacy_manifest_detected"]
+        and _read_manifest_json(wrapper_manifest_path(target)).get("layout_version") == 2
+    ):
+        return grouped
 
     def add(source: Path, destination: str) -> None:
         if source.is_file():
@@ -2286,27 +3288,1884 @@ def _legacy_layout_sources(target: Path) -> dict[str, list[Path]]:
     return grouped
 
 
+def _harness_contract_needs_migration(
+    target: Path,
+    manifest: dict[str, Any] | None,
+    instruction_surface: object,
+    migration_identity: dict[str, Any],
+    activation_contract: dict[str, Any],
+) -> bool:
+    manifest = manifest or {}
+    if not _manifest_proves_canonical_harness_ownership(
+        manifest,
+        migration_identity,
+        activation_contract,
+    ):
+        return True
+    target_contract = safe_target_relative_file(target, TARGET_MIGRATION_CONTRACT)
+    if (
+        target_contract is None
+        or f"sha256:{file_sha256(target_contract)}" != migration_identity.get("sha256")
+    ):
+        return True
+    harness = safe_target_relative_file(target, TARGET_HARNESS_SKILL)
+    if harness is None:
+        return True
+    harness_text = _read_text_preserving_newlines(harness)
+    if not canonical_harness_skill_text_valid(harness_text):
+        return True
+    if not isinstance(instruction_surface, str):
+        return True
+    surface = safe_target_relative_file(target, instruction_surface)
+    if surface is None:
+        return True
+    return not _has_canonical_harness_entry(_read_text_preserving_newlines(surface))
+
+
+def _manifest_proves_canonical_harness_ownership(
+    manifest: dict[str, Any],
+    migration_identity: dict[str, Any],
+    activation_contract: dict[str, Any],
+) -> bool:
+    managed_files = manifest.get("managed_files")
+    contract_identity = manifest.get("migration_contract")
+    expected_contract = {
+        "migration_protocol_version": migration_identity.get(
+            "migration_protocol_version"
+        ),
+        "contract_id": migration_identity.get("contract_id"),
+        "contract_version": migration_identity.get("contract_version"),
+        "path": migration_identity.get("target_path"),
+        "sha256": migration_identity.get("sha256"),
+    }
+    expected_blocks = [
+        {
+            "block_id": activation_contract.get("block_id"),
+            "path": manifest.get("instruction_surface"),
+            "marker_version": activation_contract.get("marker_version"),
+            "begin_marker": activation_contract.get("begin_marker"),
+            "end_marker": activation_contract.get("end_marker"),
+            "sha256_lf": activation_contract.get("sha256_lf"),
+        }
+    ]
+    return (
+        manifest.get("wrapper_version") == CURRENT_WRAPPER_VERSION
+        and manifest.get("layout_version") == 2
+        and isinstance(manifest.get("instruction_surface"), str)
+        and manifest.get("harness_skill_path") == TARGET_HARNESS_SKILL
+        and manifest.get("harness_skill_version") == HARNESS_SKILL_VERSION
+        and manifest.get("harness_skill_managed") is True
+        and isinstance(managed_files, list)
+        and TARGET_HARNESS_SKILL in managed_files
+        and TARGET_MIGRATION_CONTRACT in managed_files
+        and contract_identity == expected_contract
+        and manifest.get("managed_blocks") == expected_blocks
+    )
+
+
+def canonical_harness_skill_text_valid(harness_text: str) -> bool:
+    """Validate the canonical Harness Skill using the same bounded frontmatter contract as preflight."""
+    frontmatter = re.match(
+        r"\A---\r?\n(?P<body>.*?)\r?\n(?:---|\.\.\.)\r?\n",
+        harness_text,
+        re.DOTALL,
+    )
+    if not frontmatter:
+        return False
+    body = frontmatter.group("body")
+    if not re.search(
+        r"(?m)^name:[ \t]*[\"']?using-evozeus-harness[\"']?[ \t]*\r?$",
+        body,
+    ):
+        return False
+    metadata = re.search(
+        r"(?m)^metadata:[ \t]*\r?\n(?P<values>(?:^[ \t]+[^\r\n]*(?:\r?\n|$))*)",
+        body,
+    )
+    if not metadata or not re.search(
+        rf"(?m)^[ \t]+version:[ \t]*[\"']?{re.escape(HARNESS_SKILL_VERSION)}[\"']?[ \t]*\r?$",
+        metadata.group("values"),
+    ):
+        return False
+    if any(term not in harness_text for term in HARNESS_SKILL_REQUIRED_TERMS):
+        return False
+    return True
+
+
+def _canonical_v1_upgrade_evidence(
+    target: Path,
+    manifest: dict[str, Any],
+    instruction_surface: object,
+    profile: dict[str, Any],
+    activation_contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Match only release-bound exact artifacts; discovery regexes are not consulted."""
+    blockers: list[str] = []
+    closure_files = (profile.get("adapter_payload") or {}).get("from_closure_files")
+    closure_evidence: list[dict[str, Any]] = []
+    manifest_identity: dict[str, Any] = {}
+    if not isinstance(closure_files, list):
+        blockers.append("verified from closure file set is missing")
+        closure_files = []
+    for entry in closure_files:
+        if not isinstance(entry, dict):
+            blockers.append("verified from closure contains an invalid file entry")
+            continue
+        target_path = entry.get("target_path")
+        kind = entry.get("kind")
+        if kind == "exact":
+            path = (
+                safe_target_relative_file(target, target_path)
+                if isinstance(target_path, str)
+                else None
+            )
+            actual_sha256 = f"sha256:{file_sha256(path)}" if path is not None else None
+            actual_mode = path.stat().st_mode & 0o7777 if path is not None else None
+            expected_sha256 = f"sha256:{entry.get('sha256')}"
+            try:
+                expected_mode = _official_exact_file_mode(entry.get("mode"))
+            except ValueError:
+                expected_mode = None
+            matched = (
+                actual_sha256 == expected_sha256
+                and actual_mode == expected_mode
+            )
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                    "expected_mode": expected_mode,
+                    "actual_mode": actual_mode,
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(f"from closure exact artifact mismatch: {target_path}")
+        elif kind == "absent":
+            candidate = None
+            if isinstance(target_path, str):
+                relative = Path(target_path)
+                if (
+                    not relative.is_absolute()
+                    and ".." not in relative.parts
+                    and "\\" not in target_path
+                    and relative.as_posix() == target_path
+                ):
+                    candidate = target / relative
+                    cursor = candidate
+                    while cursor != target:
+                        if cursor.is_symlink():
+                            candidate = None
+                            break
+                        cursor = cursor.parent
+            matched = bool(
+                candidate is not None
+                and not candidate.exists()
+                and not candidate.is_symlink()
+            )
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "expected": "absent",
+                    "actual": "absent" if matched else "present_or_unsafe",
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(
+                    f"from closure absent artifact is present or unsafe: {target_path}"
+                )
+        elif kind == "manifest_state":
+            owned_state = entry.get("owned_state")
+            field_evidence: list[dict[str, Any]] = []
+            if not isinstance(owned_state, dict):
+                blockers.append("from closure manifest owned state is missing")
+                owned_state = {}
+            for field, expected in owned_state.items():
+                if field == "managed_files_require":
+                    actual = manifest.get("managed_files")
+                    matched = bool(
+                        isinstance(expected, list)
+                        and isinstance(actual, list)
+                        and all(isinstance(item, str) for item in [*expected, *actual])
+                        and set(expected).issubset(actual)
+                    )
+                    normalized_expected: object = copy.deepcopy(expected)
+                elif field == "managed_blocks":
+                    normalized_blocks: list[dict[str, Any]] = []
+                    valid = isinstance(expected, list)
+                    for block in expected if isinstance(expected, list) else []:
+                        if not isinstance(block, dict):
+                            valid = False
+                            continue
+                        normalized = copy.deepcopy(block)
+                        selector = normalized.pop("path_selector", None)
+                        if selector == "manifest.instruction_surface":
+                            instruction_path = manifest.get("instruction_surface")
+                            if not isinstance(instruction_path, str):
+                                valid = False
+                            else:
+                                normalized["path"] = instruction_path
+                        elif selector is not None:
+                            valid = False
+                        normalized_blocks.append(normalized)
+                    actual = manifest.get("managed_blocks")
+                    normalized_expected = normalized_blocks
+                    matched = valid and actual == normalized_blocks
+                else:
+                    actual = manifest.get(field)
+                    normalized_expected = copy.deepcopy(expected)
+                    matched = field in manifest and actual == expected
+                field_evidence.append(
+                    {
+                        "field": field,
+                        "expected": normalized_expected,
+                        "actual": copy.deepcopy(actual),
+                        "matched": matched,
+                    }
+                )
+                manifest_identity[field] = copy.deepcopy(actual)
+                if not matched:
+                    blockers.append(f"from closure manifest state mismatch: {field}")
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "fields": field_evidence,
+                    "matched": all(item["matched"] for item in field_evidence),
+                }
+            )
+        elif kind == "rendered_template":
+            closure_evidence.append(
+                {
+                    "target_path": target_path,
+                    "kind": kind,
+                    "policy": "preserve_byte_exact_no_auto_upgrade",
+                    "planned_write": False,
+                }
+            )
+        else:
+            blockers.append(f"verified from closure contains an unsupported kind: {kind}")
+
+    manifest_patch_preconditions: list[dict[str, Any]] = []
+    operations = (profile.get("adapter_payload") or {}).get("operations")
+    if not isinstance(operations, list):
+        blockers.append("verified profile operation set is missing")
+        operations = []
+    for operation in operations:
+        if not isinstance(operation, dict) or operation.get("type") != "manifest_patch":
+            continue
+        preconditions = operation.get("preconditions")
+        if not isinstance(preconditions, dict):
+            blockers.append("verified manifest patch preconditions are missing")
+            continue
+        for field, expected in preconditions.items():
+            if expected == {"state": "absent"}:
+                matched = field not in manifest
+                actual: object = (
+                    {"state": "absent"}
+                    if matched
+                    else copy.deepcopy(manifest.get(field))
+                )
+            else:
+                actual = copy.deepcopy(manifest.get(field))
+                matched = field in manifest and actual == expected
+            manifest_patch_preconditions.append(
+                {
+                    "field": field,
+                    "expected": copy.deepcopy(expected),
+                    "actual": actual,
+                    "matched": matched,
+                }
+            )
+            if not matched:
+                blockers.append(f"manifest patch precondition mismatch: {field}")
+    if manifest.get("wrapper_repo") != WRAPPER_REPO:
+        blockers.append("manifest wrapper_repo does not identify EvoZeus-CoEvolve")
+    managed_files = manifest.get("managed_files")
+    required_managed = {TARGET_HARNESS_SKILL, TARGET_PREFLIGHT_SCRIPT}
+    if not isinstance(managed_files, list) or not required_managed.issubset(managed_files):
+        blockers.append(
+            "manifest managed_files does not include every exact-profile target"
+        )
+
+    preimages: list[dict[str, Any]] = []
+    for artifact in profile.get("adapter_payload", {}).get("trusted_preimages", []):
+        target_path = artifact.get("target_path")
+        path = safe_target_relative_file(target, target_path) if isinstance(target_path, str) else None
+        actual_sha256 = f"sha256:{file_sha256(path)}" if path is not None else None
+        expected_sha256 = f"sha256:{artifact.get('sha256')}"
+        expected_mode = _official_exact_file_mode(artifact.get("mode"))
+        actual_mode = path.stat().st_mode & 0o7777 if path is not None else None
+        matched = (
+            actual_sha256 == expected_sha256 and actual_mode == expected_mode
+        )
+        preimages.append(
+            {
+                "artifact_id": artifact.get("artifact_id"),
+                "target_path": target_path,
+                "artifact_path": artifact.get("artifact_path"),
+                "expected_sha256": expected_sha256,
+                "actual_sha256": actual_sha256,
+                "expected_mode": expected_mode,
+                "actual_mode": actual_mode,
+                "matched": matched,
+            }
+        )
+        if not matched:
+            blockers.append(f"exact trusted preimage mismatch: {target_path}")
+
+    stable_block: dict[str, Any] = {
+        "block_id": activation_contract.get("block_id"),
+        "path": instruction_surface,
+        "expected_sha256_lf": f"sha256:{activation_contract.get('sha256_lf')}",
+        "actual_sha256_lf": None,
+        "matched": False,
+    }
+    if not isinstance(instruction_surface, str):
+        blockers.append("manifest instruction_surface is not a relative string")
+    else:
+        surface = safe_target_relative_file(target, instruction_surface)
+        if surface is None:
+            blockers.append("manifest instruction_surface is missing or unsafe")
+        else:
+            surface_text = _read_text_preserving_newlines(surface)
+            visible = _mask_markdown_fenced_code(surface_text)
+            entries = list(_harness_entry_pattern().finditer(visible))
+            marker_pattern = re.compile(
+                rf"^(?:(?P<begin>{re.escape(HARNESS_ENTRY_BEGIN)})|"
+                rf"(?P<end>{re.escape(HARNESS_ENTRY_END)}))[ \t]*\r?$",
+                re.MULTILINE,
+            )
+            markers = list(marker_pattern.finditer(visible))
+            unique_marker_pair = (
+                len(markers) == 2
+                and markers[0].group("begin") is not None
+                and markers[1].group("end") is not None
+            )
+            if (
+                len(entries) != 1
+                or not unique_marker_pair
+                or not _harness_entry_markers_well_formed(surface_text)
+            ):
+                blockers.append("canonical stable activation block is missing or ambiguous")
+            else:
+                match = entries[0]
+                block = surface_text[match.start() : match.end()].rstrip("\r\n")
+                actual = hashlib.sha256(
+                    block.replace("\r\n", "\n").encode("utf-8")
+                ).hexdigest()
+                stable_block["actual_sha256_lf"] = f"sha256:{actual}"
+                stable_block["matched"] = actual == activation_contract.get("sha256_lf")
+                if not stable_block["matched"]:
+                    blockers.append("canonical activation block digest mismatch")
+
+    return {
+        "matched": not blockers,
+        "manifest_identity": manifest_identity,
+        "from_closure_files": closure_evidence,
+        "manifest_patch_preconditions": manifest_patch_preconditions,
+        "trusted_preimages": preimages,
+        "stable_block": stable_block,
+        "blockers": blockers,
+        "authority": (
+            "verified full from closure + manifest patch preconditions + "
+            "stable block + release-bound postimages"
+        ),
+    }
+
+
+def _official_upgrade_profile(
+    migration_bundle: dict[str, Any],
+    profile_id: str,
+) -> dict[str, Any]:
+    profiles = (migration_bundle.get("official_upgrade") or {}).get("profiles")
+    profile = next(
+        (
+            item
+            for item in profiles or []
+            if isinstance(item, dict) and item.get("profile_id") == profile_id
+        ),
+        None,
+    )
+    if profile is None:
+        raise ValueError(f"verified official upgrade profile is missing: {profile_id}")
+    return profile
+
+
+def _supervised_legacy_profiles(
+    migration_bundle: dict[str, Any],
+) -> list[dict[str, Any]]:
+    profiles = (migration_bundle.get("official_upgrade") or {}).get(
+        "supervised_legacy_profiles"
+    )
+    if not isinstance(profiles, list) or any(
+        not isinstance(item, dict) for item in profiles
+    ):
+        raise ValueError("verified supervised legacy profiles are unavailable")
+    return profiles
+
+
+def _supervised_legacy_profile_candidates(
+    migration_bundle: dict[str, Any],
+    manifest: dict[str, Any],
+    requested_wrapper_to: str | None,
+) -> list[dict[str, Any]]:
+    current = migration_bundle.get("current_closure") or {}
+    current_path = current.get("path")
+    candidates: list[dict[str, Any]] = []
+    for profile in _supervised_legacy_profiles(migration_bundle):
+        release_axis = profile.get("release_axis")
+        execution = profile.get("execution")
+        if (
+            profile.get("automatic") is not False
+            or profile.get("_active_for_current") is not True
+            or profile.get("_verified_target_path") != current_path
+            or not isinstance(release_axis, dict)
+            or release_axis.get("target_wrapper_from")
+            != manifest.get("wrapper_version")
+            or release_axis.get("target_wrapper_to") != requested_wrapper_to
+            or not isinstance(execution, dict)
+            or execution.get("mode") != "supervised_exact_plan"
+            or execution.get("discovery_authority") is not False
+            or execution.get("adapter_write_authority") is not False
+            or execution.get("approval")
+            != "one_time_exact_operation_sha256"
+        ):
+            continue
+        candidates.append(profile)
+    return sorted(candidates, key=lambda item: str(item.get("profile_id")))
+
+
+def _verified_profile_migration_records(
+    profile: dict[str, Any],
+) -> tuple[list[str], str]:
+    """Return verifier-derived cumulative ledgers and their current-hop record."""
+    payload = profile.get("adapter_payload")
+    if not isinstance(payload, dict):
+        raise ValueError("verified automatic profile adapter payload is missing")
+    operations = payload.get("operations")
+    if not isinstance(operations, list):
+        raise ValueError("verified automatic profile operations are missing")
+
+    declared_records = payload.get("migration_records")
+    if (
+        not isinstance(declared_records, list)
+        or not declared_records
+        or any(not isinstance(item, str) for item in declared_records)
+        or len(declared_records) != len(set(declared_records))
+    ):
+        raise ValueError(
+            "verified automatic profile migration_records are missing or invalid"
+        )
+    for target_path in declared_records:
+        relative = Path(target_path)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or "\\" in target_path
+            or relative.as_posix() != target_path
+            or not target_path.startswith(
+                f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
+            )
+        ):
+            raise ValueError(
+                f"verified migration record path is unsafe: {target_path}"
+            )
+
+    declared_record_set = set(declared_records)
+    operation_records = [
+        operation.get("target_path")
+        for operation in operations
+        if isinstance(operation, dict)
+        and operation.get("type") == "create_exact"
+        and operation.get("target_path") in declared_record_set
+    ]
+    if len(operation_records) != len(set(operation_records)):
+        raise ValueError("verified automatic profile migration records are duplicated")
+    if set(operation_records) != declared_record_set:
+        raise ValueError(
+            "verified automatic profile migration_records disagree with operations"
+        )
+
+    migration_records = list(declared_records)
+    current_record = payload.get("current_migration_record")
+    if (
+        not isinstance(current_record, str)
+        or current_record not in migration_records
+        or current_record != declared_records[-1]
+    ):
+        raise ValueError(
+            "verified automatic profile current_migration_record is missing or invalid"
+        )
+    return migration_records, current_record
+
+
+def _verified_supervised_lineage_records(
+    profile: dict[str, Any],
+) -> tuple[list[str], list[str], str]:
+    release_records = profile.get("release_lineage_records")
+    migration_records = profile.get("migration_records")
+    current_record = profile.get("current_migration_record")
+    operations = profile.get("operations")
+    if (
+        not isinstance(release_records, list)
+        or not release_records
+        or not isinstance(migration_records, list)
+        or len(migration_records) != 1
+        or not isinstance(current_record, str)
+        or current_record != migration_records[0]
+        or not isinstance(operations, list)
+        or set(release_records).intersection(migration_records)
+    ):
+        raise ValueError("verified supervised lineage records are invalid")
+    records = [*release_records, *migration_records]
+    if len(records) != len(set(records)) or any(
+        not isinstance(item, str)
+        or not item.startswith(f"{TARGET_EVOINFRA_DIR}/docs/migrations/")
+        or Path(item).is_absolute()
+        or ".." in Path(item).parts
+        or "\\" in item
+        or Path(item).as_posix() != item
+        for item in records
+    ):
+        raise ValueError("verified supervised lineage paths are unsafe")
+    created_records = [
+        item.get("target_path")
+        for item in operations
+        if isinstance(item, dict)
+        and item.get("type") == "create_exact"
+        and item.get("target_path") in set(records)
+    ]
+    if set(created_records) != set(records) or len(created_records) != len(records):
+        raise ValueError(
+            "verified supervised lineage records disagree with operations"
+        )
+    applied = profile.get("applied_lineage")
+    if (
+        not isinstance(applied, dict)
+        or applied.get("role") != "applied_migration_lineage"
+        or applied.get("target_path") != current_record
+    ):
+        raise ValueError("verified supervised applied lineage is invalid")
+    return list(release_records), list(migration_records), current_record
+
+
+def _automatic_profile_candidates(
+    migration_bundle: dict[str, Any],
+    manifest: dict[str, Any],
+    requested_wrapper_to: str | None,
+) -> list[dict[str, Any]]:
+    """Select only verified data profiles whose closure states fit this target."""
+    current = migration_bundle.get("current_closure") or {}
+    current_closure = current.get("closure")
+    current_state = (
+        current_closure.get("state")
+        if isinstance(current_closure, dict)
+        else None
+    )
+    if not isinstance(current_state, dict):
+        return []
+    manifest_layout = (
+        "consolidated-v2" if manifest.get("layout_version") == 2 else None
+    )
+    candidates: list[dict[str, Any]] = []
+    for profile in migration_bundle.get("contract", {}).get("profiles", []):
+        if not isinstance(profile, dict) or profile.get("automatic") is not True:
+            continue
+        payload = profile.get("adapter_payload") or {}
+        from_state = profile.get("from_closure_state")
+        to_state = profile.get("to_closure_state")
+        release_axis = profile.get("release_axis") or {}
+        if (
+            payload.get("authority_source")
+            != "external-hash-bound-official-upgrade-profile"
+            or not isinstance(from_state, dict)
+            or not isinstance(to_state, dict)
+            or to_state != current_state
+            or from_state.get("layout") != manifest_layout
+            or from_state.get("target_wrapper_version")
+            != manifest.get("wrapper_version")
+            or from_state.get("harness_skill_version")
+            != manifest.get("harness_skill_version")
+            or release_axis.get("target_wrapper_from")
+            != manifest.get("wrapper_version")
+            or release_axis.get("target_wrapper_to") != requested_wrapper_to
+        ):
+            continue
+        candidates.append(profile)
+    return sorted(candidates, key=lambda item: str(item.get("profile_id")))
+
+
+def _approved_automatic_profile(
+    migration_bundle: dict[str, Any],
+    planned_identity: object,
+) -> dict[str, Any]:
+    """Rebind an approved plan to the same verified profile after contract reload."""
+    if not isinstance(planned_identity, dict):
+        raise ValueError("migration apply is blocked: approved profile identity is missing")
+    profile_id = planned_identity.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise ValueError("migration apply is blocked: approved profile id is invalid")
+    profile = migration_kernel.contract_profile(
+        migration_bundle["contract"],
+        profile_id,
+    )
+    if profile.get("automatic") is not True:
+        raise ValueError("migration apply is blocked: approved profile is not automatic")
+    actual_identity = migration_kernel.profile_identity(profile)
+    if actual_identity != planned_identity:
+        raise ValueError(
+            "migration apply is blocked: approved profile identity differs from "
+            "the verified contract"
+        )
+    raw_profile = _official_upgrade_profile(migration_bundle, profile_id)
+    if (
+        raw_profile.get("_verified_profile_path")
+        != planned_identity.get("profile_path")
+        or raw_profile.get("_verified_profile_sha256")
+        != planned_identity.get("profile_sha256")
+    ):
+        raise ValueError(
+            "migration apply is blocked: approved profile artifact binding differs "
+            "from the verified contract"
+        )
+    return profile
+
+
+def _approved_supervised_legacy_profile(
+    migration_bundle: dict[str, Any],
+    planned_identity: object,
+) -> dict[str, Any]:
+    """Rebind one approved supervised plan to the same verifier-approved profile."""
+    if not isinstance(planned_identity, dict):
+        raise ValueError(
+            "supervised migration apply is blocked: approved profile identity is missing"
+        )
+    matches = [
+        profile
+        for profile in _supervised_legacy_profiles(migration_bundle)
+        if migration_kernel.supervised_legacy_profile_identity(profile)
+        == planned_identity
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "supervised migration apply is blocked: approved verifier profile "
+            "does not have one exact match"
+        )
+    profile = matches[0]
+    execution = profile.get("execution")
+    if (
+        profile.get("automatic") is not False
+        or profile.get("_active_for_current") is not True
+        or not isinstance(execution, dict)
+        or execution
+        != {
+            "mode": "supervised_exact_plan",
+            "discovery_authority": False,
+            "adapter_write_authority": False,
+            "approval": "one_time_exact_operation_sha256",
+            "approval_scope": "one_target_one_preimage_one_postimage",
+            "compare_and_swap": "full_file_preimage",
+            "snapshot": "required_before_any_write",
+            "post_verify": "adapter_proof_and_current_closure",
+            "rollback": "restore_snapshot_on_any_failure",
+            "runtime_apply": "trusted_kernel_exact_apply",
+        }
+    ):
+        raise ValueError(
+            "supervised migration apply is blocked: verified execution authority "
+            "is incomplete"
+        )
+    trusted_assets = migration_kernel.verify_supervised_legacy_source_assets(
+        migration_bundle,
+        profile,
+    )
+    if trusted_assets != planned_identity.get("trusted_source_assets"):
+        raise ValueError(
+            "supervised migration apply is blocked: trusted source assets changed"
+        )
+    return profile
+
+
+def _official_exact_file_mode(value: object) -> int:
+    if value == "100644":
+        return 0o644
+    if value == "100755":
+        return 0o755
+    raise ValueError(f"official exact file mode is invalid: {value}")
+
+
+def _apply_official_manifest_patch(
+    manifest: dict[str, Any],
+    operation: dict[str, Any],
+) -> dict[str, Any]:
+    if operation.get("type") != "manifest_patch":
+        raise ValueError("official manifest operation type is invalid")
+    if operation.get("encoding") != "utf-8-json-indent-2-lf":
+        raise ValueError("official manifest patch encoding is invalid")
+    if operation.get("preserve_unlisted_fields") is not True:
+        raise ValueError("official manifest patch must preserve unlisted fields")
+    preconditions = operation.get("preconditions")
+    if not isinstance(preconditions, dict):
+        raise ValueError("official manifest patch preconditions are missing")
+    for field, expected in preconditions.items():
+        if expected == {"state": "absent"}:
+            if field in manifest:
+                raise ValueError(
+                    f"official manifest patch expected an absent field: {field}"
+                )
+        elif manifest.get(field) != expected:
+            raise ValueError(
+                f"official manifest patch precondition mismatch: {field}"
+            )
+    result = copy.deepcopy(manifest)
+    patch = operation.get("patch")
+    if not isinstance(patch, list) or not patch:
+        raise ValueError("official manifest patch actions are missing")
+    touched: set[str] = set()
+    for item in patch:
+        if not isinstance(item, dict):
+            raise ValueError("official manifest patch action is invalid")
+        field = item.get("field")
+        action = item.get("action")
+        if not isinstance(field, str) or field in touched:
+            raise ValueError("official manifest patch fields must be unique")
+        touched.add(field)
+        if action == "replace":
+            if field not in result:
+                raise ValueError(f"official manifest replace field is absent: {field}")
+            result[field] = copy.deepcopy(item.get("value"))
+        elif action == "add":
+            if field in result:
+                raise ValueError(f"official manifest add field already exists: {field}")
+            result[field] = copy.deepcopy(item.get("value"))
+        elif action == "add_managed_block":
+            path_from = item.get("path_from")
+            value = item.get("value")
+            if (
+                field in result
+                or not isinstance(path_from, str)
+                or not isinstance(result.get(path_from), str)
+                or not isinstance(value, dict)
+            ):
+                raise ValueError("official managed block manifest patch is invalid")
+            result[field] = [
+                {
+                    "block_id": value.get("block_id"),
+                    "path": result[path_from],
+                    "marker_version": value.get("marker_version"),
+                    "begin_marker": value.get("begin_marker"),
+                    "end_marker": value.get("end_marker"),
+                    "sha256_lf": value.get("sha256_lf"),
+                }
+            ]
+        elif action == "append_unique":
+            values = item.get("values")
+            existing = result.get(field)
+            if (
+                not isinstance(existing, list)
+                or not isinstance(values, list)
+                or any(not isinstance(value, str) for value in [*existing, *values])
+            ):
+                raise ValueError("official managed file append is invalid")
+            result[field] = list(dict.fromkeys([*existing, *values]))
+        else:
+            raise ValueError(f"official manifest patch action is unknown: {action}")
+    return result
+
+
+def _official_upgrade_write_plan(
+    target: Path,
+    manifest: dict[str, Any],
+    migration_bundle: dict[str, Any],
+    profile_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+    profile = _official_upgrade_profile(migration_bundle, profile_id)
+    wrapper_root: Path = migration_bundle["wrapper_root"]
+    write_set: list[dict[str, Any]] = []
+    staged: dict[str, bytes] = {}
+    for operation in profile.get("operations", []):
+        if not isinstance(operation, dict):
+            raise ValueError("official upgrade operation is invalid")
+        operation_type = operation.get("type")
+        relative = operation.get("target_path")
+        if not isinstance(relative, str):
+            raise ValueError("official upgrade target path is invalid")
+        destination = target / relative
+        if operation_type in {"create_exact", "replace_exact"}:
+            postimage = operation.get("postimage")
+            if not isinstance(postimage, dict):
+                raise ValueError(f"official exact postimage is missing: {relative}")
+            artifact_relative = postimage.get("artifact_path")
+            if not isinstance(artifact_relative, str):
+                raise ValueError(f"official exact artifact path is invalid: {relative}")
+            source = wrapper_root / "contracts/v1" / artifact_relative
+            data = source.read_bytes()
+            expected_postimage = "sha256:" + str(postimage.get("sha256"))
+            if f"sha256:{hashlib.sha256(data).hexdigest()}" != expected_postimage:
+                raise ValueError(f"official exact artifact digest mismatch: {relative}")
+            postimage_mode = _official_exact_file_mode(postimage.get("mode"))
+            if operation_type == "create_exact":
+                preimage = None
+                preimage_mode = None
+                if destination.exists() or destination.is_symlink():
+                    raise ValueError(f"official create destination already exists: {relative}")
+            else:
+                preimage_value = operation.get("preimage")
+                if not isinstance(preimage_value, dict):
+                    raise ValueError(f"official replace preimage is missing: {relative}")
+                preimage = "sha256:" + str(preimage_value.get("sha256"))
+                preimage_mode = _official_exact_file_mode(preimage_value.get("mode"))
+                if (
+                    not destination.is_file()
+                    or destination.is_symlink()
+                    or f"sha256:{file_sha256(destination)}" != preimage
+                    or (destination.stat().st_mode & 0o7777) != preimage_mode
+                ):
+                    raise ValueError(f"official replace preimage mismatch: {relative}")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": preimage,
+                    "preimage_mode": preimage_mode,
+                    "postimage_sha256": expected_postimage,
+                    "postimage_mode": postimage_mode,
+                    "source_sha256": expected_postimage,
+                    "source_path": (
+                        Path("contracts/v1") / artifact_relative
+                    ).as_posix(),
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": "sha256:"
+                    + migration_kernel.canonical_json_sha256(operation),
+                }
+            )
+        elif operation_type == "manifest_patch":
+            if relative != TARGET_WRAPPER_MANIFEST:
+                raise ValueError("official manifest patch targets an unknown manifest")
+            preconditions = operation.get("preconditions")
+            patched = _apply_official_manifest_patch(manifest, operation)
+            try:
+                data = (
+                    json.dumps(
+                        patched,
+                        ensure_ascii=False,
+                        indent=2,
+                        allow_nan=False,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"official manifest postimage is not strict JSON: {exc}"
+                ) from exc
+            if not destination.is_file() or destination.is_symlink():
+                raise ValueError("official manifest patch target is unsafe")
+            manifest_mode = destination.stat().st_mode & 0o7777
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": f"sha256:{file_sha256(destination)}",
+                    "preimage_mode": manifest_mode,
+                    "postimage_sha256": f"sha256:{hashlib.sha256(data).hexdigest()}",
+                    "postimage_mode": manifest_mode,
+                    "source_sha256": None,
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": "sha256:"
+                    + migration_kernel.canonical_json_sha256(operation),
+                    "manifest_preconditions": copy.deepcopy(preconditions),
+                    "manifest_patch": copy.deepcopy(operation.get("patch")),
+                }
+            )
+        else:
+            raise ValueError(
+                f"official upgrade operation is unsupported at runtime: {operation_type}"
+            )
+    if len(write_set) != len({item["path"] for item in write_set}):
+        raise ValueError("official upgrade operation paths are not one-to-one")
+    return write_set, staged
+
+
+def _supervised_manifest_postimage(
+    manifest_bytes: bytes,
+    operation: dict[str, Any],
+    profile: dict[str, Any],
+    current_closure: dict[str, Any],
+) -> bytes:
+    if (
+        operation.get("type") != "manifest_patch"
+        or operation.get("encoding") != "utf-8-json-indent-2-lf"
+        or operation.get("preserve_unlisted_fields") is not True
+    ):
+        raise ValueError("supervised legacy manifest operation is invalid")
+    source_projection = operation.get("source_projection")
+    if not isinstance(source_projection, dict) or source_projection.get(
+        "envelope_path"
+    ) != profile.get("source_envelope", {}).get("path"):
+        raise ValueError("supervised legacy manifest source is not envelope-bound")
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy manifest preimage is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("supervised legacy manifest preimage must be an object")
+    result = copy.deepcopy(manifest)
+    patch = operation.get("patch")
+    if not isinstance(patch, list) or not patch:
+        raise ValueError("supervised legacy manifest patch is missing")
+    touched: set[str] = set()
+    for action in patch:
+        if not isinstance(action, dict):
+            raise ValueError("supervised legacy manifest patch action is invalid")
+        field = action.get("field")
+        kind = action.get("action")
+        if not isinstance(field, str) or field in touched:
+            raise ValueError("supervised legacy manifest patch fields are duplicated")
+        touched.add(field)
+        if kind == "replace":
+            if field not in result:
+                raise ValueError(
+                    f"supervised legacy manifest replace field is absent: {field}"
+                )
+            result[field] = copy.deepcopy(action.get("value"))
+        elif kind == "add":
+            if field in result:
+                raise ValueError(
+                    f"supervised legacy manifest add field already exists: {field}"
+                )
+            result[field] = copy.deepcopy(action.get("value"))
+        elif kind == "add_managed_block":
+            path_from = action.get("path_from")
+            value = action.get("value")
+            if (
+                field in result
+                or not isinstance(path_from, str)
+                or not isinstance(result.get(path_from), str)
+                or not isinstance(value, dict)
+            ):
+                raise ValueError("supervised legacy managed block patch is invalid")
+            result[field] = [
+                {
+                    "block_id": value.get("block_id"),
+                    "path": result[path_from],
+                    "marker_version": value.get("marker_version"),
+                    "begin_marker": value.get("begin_marker"),
+                    "end_marker": value.get("end_marker"),
+                    "sha256_lf": value.get("sha256_lf"),
+                }
+            ]
+        elif kind == "append_unique":
+            values = action.get("values")
+            existing = result.get(field)
+            if (
+                not isinstance(existing, list)
+                or not isinstance(values, list)
+                or any(
+                    not isinstance(value, str)
+                    for value in [*existing, *values]
+                )
+            ):
+                raise ValueError("supervised legacy managed file patch is invalid")
+            result[field] = list(dict.fromkeys([*existing, *values]))
+        else:
+            raise ValueError(
+                f"supervised legacy manifest patch action is unknown: {kind}"
+            )
+
+    closure_files = current_closure.get("files")
+    manifest_entry = next(
+        (
+            item
+            for item in closure_files or []
+            if isinstance(item, dict)
+            and item.get("target_path") == TARGET_WRAPPER_MANIFEST
+        ),
+        None,
+    )
+    owned_state = (
+        manifest_entry.get("owned_state")
+        if isinstance(manifest_entry, dict)
+        else None
+    )
+    if not isinstance(owned_state, dict):
+        raise ValueError("supervised legacy target manifest state is missing")
+    for field in (
+        "wrapper_repo",
+        "wrapper_version",
+        "layout_version",
+        "target_wrapper_dir",
+        "target_infra_dir",
+        "harness_skill_path",
+        "harness_skill_version",
+        "harness_skill_managed",
+        "migration_contract",
+    ):
+        if result.get(field) != owned_state.get(field):
+            raise ValueError(
+                f"supervised legacy manifest differs from target closure: {field}"
+            )
+    if not set(owned_state.get("managed_files_require", [])).issubset(
+        set(result.get("managed_files", []))
+    ):
+        raise ValueError(
+            "supervised legacy manifest managed files differ from target closure"
+        )
+    expected_blocks: list[dict[str, Any]] = []
+    for item in owned_state.get("managed_blocks", []):
+        if not isinstance(item, dict):
+            raise ValueError("supervised legacy target managed block is invalid")
+        block = copy.deepcopy(item)
+        selector = block.pop("path_selector", None)
+        if selector != "manifest.instruction_surface":
+            raise ValueError("supervised legacy managed block selector is invalid")
+        block["path"] = result.get("instruction_surface")
+        expected_blocks.append(block)
+    if result.get("managed_blocks") != expected_blocks:
+        raise ValueError(
+            "supervised legacy manifest managed blocks differ from target closure"
+        )
+    try:
+        return (
+            json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("supervised legacy manifest postimage is invalid") from exc
+
+
+def _planned_preimage_identity(state: dict[str, Any]) -> dict[str, int] | None:
+    device = state.get("st_dev")
+    inode = state.get("st_ino")
+    if not isinstance(device, int) or not isinstance(inode, int):
+        return None
+    return {"st_dev": device, "st_ino": inode}
+
+
+def _supervised_legacy_write_plan(
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, bytes], list[dict[str, Any]]]:
+    proof = evidence.get("proof")
+    trusted_source_assets = migration_kernel.verify_supervised_legacy_source_assets(
+        migration_bundle,
+        profile,
+    )
+    expected_proof_assets = {
+        key: copy.deepcopy(trusted_source_assets[key])
+        for key in (
+            "adapter",
+            "source_envelope",
+            "implementation",
+            "templates",
+            "commonmark_dependency_lock",
+        )
+    }
+    proof_without_digest = copy.deepcopy(proof) if isinstance(proof, dict) else None
+    proof_sha256 = (
+        proof_without_digest.pop("proof_sha256", None)
+        if isinstance(proof_without_digest, dict)
+        else None
+    )
+    if (
+        evidence.get("decision") != "supervised_migration_available"
+        or not isinstance(evidence.get("postimage"), bytes)
+        or evidence.get("profile_identity")
+        != migration_kernel.supervised_legacy_profile_identity(profile)
+        or evidence.get("trusted_source_assets") != trusted_source_assets
+        or not isinstance(proof, dict)
+        or proof.get("decision") != "supervised_migration_available"
+        or proof.get("writes") is not False
+        or proof.get("destructive_authority") is not False
+        or proof.get("trusted_source_assets") != expected_proof_assets
+        or proof.get("adapter")
+        != trusted_source_assets["proof_identity"]["adapter"]
+        or proof.get("source_envelope")
+        != trusted_source_assets["proof_identity"]["source_envelope"]
+        or proof_sha256
+        != "sha256:" + migration_kernel.canonical_json_sha256(proof_without_digest)
+    ):
+        raise ValueError("supervised legacy adapter proof is not plan-authoritative")
+    current = migration_bundle.get("current_closure") or {}
+    current_closure = current.get("closure")
+    current_closure_path = current.get("path")
+    if (
+        not isinstance(current_closure, dict)
+        or profile.get("_verified_target_path") != current_closure_path
+        or profile.get("_verified_target_closure") != current_closure
+    ):
+        raise ValueError("supervised legacy target closure binding changed")
+    closure_entries = {
+        item["target_path"]: item
+        for item in current_closure.get("files", [])
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
+    }
+    states = evidence.get("target_file_states")
+    if not isinstance(states, dict):
+        raise ValueError("supervised legacy target file facts are missing")
+    wrapper_root = migration_bundle.get("wrapper_root")
+    if not isinstance(wrapper_root, Path):
+        raise ValueError("supervised legacy repository source root is missing")
+    profile_identity = migration_kernel.supervised_legacy_profile_identity(profile)
+    profile_relative = migration_kernel._safe_relative_path(
+        profile_identity["profile_path"],
+        "supervised legacy profile source path",
+    )
+    profile_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        profile_relative,
+        "supervised legacy profile source",
+    )
+    profile_bytes = profile_source.read_bytes()
+    try:
+        profile_payload = migration_kernel._strict_json_loads(
+            profile_bytes.decode("utf-8", errors="strict"),
+            "supervised legacy profile source",
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy profile source is invalid") from exc
+    verifier_annotations = {
+        "_active_for_current",
+        "_verified_profile_path",
+        "_verified_profile_payload",
+        "_verified_profile_sha256",
+        "_verified_target_closure",
+        "_verified_target_path",
+        "_verified_trusted_source_assets",
+        "static_write_set",
+    }
+    runtime_payload = {
+        key: copy.deepcopy(value)
+        for key, value in profile.items()
+        if key not in verifier_annotations
+    }
+    if (
+        not isinstance(profile_payload, dict)
+        or profile_payload != profile.get("_verified_profile_payload")
+        or profile_payload != runtime_payload
+        or hashlib.sha256(profile_bytes).hexdigest()
+        != profile_identity["profile_sha256"]
+    ):
+        raise ValueError("supervised legacy verified profile payload changed")
+    pointer_binding = profile_payload.get("target_closure_pointer")
+    selected_closure = (
+        pointer_binding.get("selected")
+        if isinstance(pointer_binding, dict)
+        else None
+    )
+    if not isinstance(selected_closure, dict):
+        raise ValueError("supervised legacy target closure pointer is invalid")
+    expected_closure_path = (
+        Path("contracts/v1") / str(selected_closure.get("path"))
+    ).as_posix()
+    if (
+        current_closure_path != expected_closure_path
+        or profile.get("_verified_target_path") != expected_closure_path
+    ):
+        raise ValueError("supervised legacy target closure path changed")
+    pointer_path = (
+        Path("contracts/v1") / str(pointer_binding.get("path"))
+    ).as_posix()
+    pointer_relative = migration_kernel._safe_relative_path(
+        pointer_path,
+        "supervised legacy target closure pointer path",
+    )
+    pointer_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        pointer_relative,
+        "supervised legacy target closure pointer",
+    )
+    closure_relative = migration_kernel._safe_relative_path(
+        expected_closure_path,
+        "supervised legacy target closure path",
+    )
+    closure_source = migration_kernel._safe_file_below(
+        wrapper_root,
+        closure_relative,
+        "supervised legacy target closure",
+    )
+    try:
+        pointer_payload = migration_kernel._strict_json_loads(
+            pointer_source.read_text(encoding="utf-8", errors="strict"),
+            "supervised legacy target closure pointer",
+        )
+        closure_bytes = closure_source.read_bytes()
+        closure_payload = migration_kernel._strict_json_loads(
+            closure_bytes.decode("utf-8", errors="strict"),
+            "supervised legacy target closure",
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("supervised legacy target closure source is invalid") from exc
+    pointer_entries = (
+        pointer_payload.get("entries")
+        if isinstance(pointer_payload, dict)
+        and pointer_payload.get("pointer_id") == pointer_binding.get("pointer_id")
+        else None
+    )
+    closure_entry_binding = next(
+        (
+            item
+            for item in pointer_entries or []
+            if isinstance(item, dict)
+            and all(
+                item.get(field) == selected_closure.get(field)
+                for field in ("id", "version", "path")
+            )
+        ),
+        None,
+    )
+    if (
+        not isinstance(closure_entry_binding, dict)
+        or not migration_kernel._is_plain_sha256(
+            closure_entry_binding.get("sha256")
+        )
+        or hashlib.sha256(closure_bytes).hexdigest()
+        != closure_entry_binding.get("sha256")
+        or closure_payload != current_closure
+        or closure_payload != profile.get("_verified_target_closure")
+    ):
+        raise ValueError("supervised legacy target closure binding changed")
+    operations = profile.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("supervised legacy profile operations are missing")
+    write_set: list[dict[str, Any]] = []
+    staged: dict[str, bytes] = {}
+    operation_projection: list[dict[str, str]] = []
+    dynamic_operations = 0
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("supervised legacy profile operation is invalid")
+        operation_type = operation.get("type")
+        relative = operation.get("target_path")
+        if not isinstance(operation_type, str) or not isinstance(relative, str):
+            raise ValueError("supervised legacy operation identity is invalid")
+        operation_projection.append(
+            {"target_path": relative, "type": operation_type}
+        )
+        state = states.get(relative)
+        if not isinstance(state, dict):
+            raise ValueError(
+                f"supervised legacy target file fact is missing: {relative}"
+            )
+        operation_sha256 = (
+            "sha256:" + migration_kernel.canonical_json_sha256(operation)
+        )
+        if operation_type in {"create_exact", "replace_exact"}:
+            closure_entry = closure_entries.get(relative)
+            postimage = operation.get("postimage")
+            applied_lineage = profile.get("applied_lineage")
+            applied_artifact = (
+                applied_lineage.get("artifact")
+                if isinstance(applied_lineage, dict)
+                and applied_lineage.get("target_path") == relative
+                else None
+            )
+            is_applied_lineage = isinstance(applied_artifact, dict)
+            if is_applied_lineage:
+                if (
+                    operation_type != "create_exact"
+                    or not isinstance(postimage, dict)
+                    or applied_lineage.get("role")
+                    != "applied_migration_lineage"
+                    or postimage.get("artifact_path")
+                    != applied_artifact.get("path")
+                    or postimage.get("sha256")
+                    != applied_artifact.get("sha256")
+                    or postimage.get("mode") != applied_artifact.get("mode")
+                    or profile.get("migration_records") != [relative]
+                    or profile.get("current_migration_record") != relative
+                ):
+                    raise ValueError(
+                        "supervised applied lineage operation differs from profile"
+                    )
+                operation_ownership = "migration_applied_lineage"
+            else:
+                if (
+                    not isinstance(closure_entry, dict)
+                    or closure_entry.get("kind") != "exact"
+                    or closure_entry.get("ownership") != "wrapper_managed"
+                    or not isinstance(postimage, dict)
+                    or postimage.get("sha256") != closure_entry.get("sha256")
+                    or postimage.get("mode") != closure_entry.get("mode")
+                ):
+                    raise ValueError(
+                        "supervised legacy exact operation differs from closure: "
+                        + relative
+                    )
+                operation_ownership = closure_entry["ownership"]
+            source_path = (
+                Path("contracts/v1") / str(postimage.get("artifact_path"))
+            ).as_posix()
+            source_relative = migration_kernel._safe_relative_path(
+                source_path,
+                "supervised legacy exact postimage path",
+            )
+            if not is_applied_lineage:
+                closure_source_path = (
+                    Path(str(current_closure_path)).parent
+                    / str(closure_entry.get("artifact_path"))
+                ).as_posix()
+                closure_source_relative = migration_kernel._safe_relative_path(
+                    closure_source_path,
+                    "supervised legacy target closure artifact path",
+                )
+                if source_relative != closure_source_relative:
+                    raise ValueError(
+                        "supervised legacy exact source differs from closure: "
+                        + relative
+                    )
+            source_file = migration_kernel._safe_file_below(
+                wrapper_root,
+                source_relative,
+                "supervised legacy exact postimage",
+            )
+            source_metadata = source_file.lstat()
+            if not stat.S_ISREG(source_metadata.st_mode):
+                raise ValueError(
+                    f"supervised legacy exact artifact is unsafe: {relative}"
+                )
+            data = source_file.read_bytes()
+            expected_postimage = "sha256:" + str(postimage.get("sha256"))
+            if f"sha256:{hashlib.sha256(data).hexdigest()}" != expected_postimage:
+                raise ValueError(
+                    f"supervised legacy exact artifact digest mismatch: {relative}"
+                )
+            postimage_mode = _official_exact_file_mode(postimage.get("mode"))
+            if stat.S_IMODE(source_metadata.st_mode) != postimage_mode:
+                raise ValueError(
+                    f"supervised legacy exact artifact mode mismatch: {relative}"
+                )
+            preimage = operation.get("preimage")
+            if operation_type == "create_exact":
+                if preimage != {"state": "absent"} or state.get("kind") != "absent":
+                    raise ValueError(
+                        f"supervised legacy create preimage changed: {relative}"
+                    )
+                preimage_sha256 = None
+                preimage_mode = None
+                preimage_identity = None
+            else:
+                if (
+                    not isinstance(preimage, dict)
+                    or state.get("kind") != "file"
+                    or state.get("sha256")
+                    != "sha256:" + str(preimage.get("sha256"))
+                    or state.get("mode")
+                    != _official_exact_file_mode(preimage.get("mode"))
+                ):
+                    raise ValueError(
+                        f"supervised legacy replace preimage changed: {relative}"
+                    )
+                preimage_sha256 = state["sha256"]
+                preimage_mode = state["mode"]
+                preimage_identity = _planned_preimage_identity(state)
+                if preimage_identity is None:
+                    raise ValueError(
+                        f"supervised legacy replace identity is missing: {relative}"
+                    )
+                preimage_artifact = preimage.get("artifact")
+                if not isinstance(preimage_artifact, dict):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage is missing: {relative}"
+                    )
+                frozen_source_path = (
+                    Path("contracts/v1")
+                    / str(preimage_artifact.get("path"))
+                )
+                frozen_source_path = migration_kernel._safe_relative_path(
+                    frozen_source_path.as_posix(),
+                    "supervised legacy frozen preimage path",
+                )
+                frozen_source = migration_kernel._safe_file_below(
+                    wrapper_root,
+                    frozen_source_path,
+                    "supervised legacy frozen preimage",
+                )
+                frozen_metadata = frozen_source.lstat()
+                if not stat.S_ISREG(frozen_metadata.st_mode):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage is unsafe: {relative}"
+                    )
+                frozen_mode = _official_exact_file_mode(
+                    preimage_artifact.get("mode")
+                )
+                frozen_bytes = frozen_source.read_bytes()
+                if (
+                    stat.S_IMODE(frozen_metadata.st_mode) != frozen_mode
+                    or hashlib.sha256(frozen_bytes).hexdigest()
+                    != preimage_artifact.get("sha256")
+                    or state.get("sha256")
+                    != "sha256:" + str(preimage_artifact.get("sha256"))
+                    or state.get("mode") != frozen_mode
+                ):
+                    raise ValueError(
+                        f"supervised legacy frozen preimage changed: {relative}"
+                    )
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": preimage_sha256,
+                    "preimage_mode": preimage_mode,
+                    "preimage_identity": preimage_identity,
+                    "preimage_artifact": (
+                        copy.deepcopy(preimage.get("artifact"))
+                        if operation_type == "replace_exact"
+                        and isinstance(preimage, dict)
+                        else None
+                    ),
+                    "postimage_sha256": expected_postimage,
+                    "postimage_mode": postimage_mode,
+                    "source_root": "repository_root",
+                    "source_path": source_path,
+                    "source_sha256": expected_postimage,
+                    "ownership": operation_ownership,
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "target_closure_path": current_closure_path,
+                }
+            )
+        elif operation_type == "manifest_patch":
+            closure_entry = closure_entries.get(relative)
+            manifest_bytes = evidence.get("_manifest_bytes")
+            if (
+                relative != TARGET_WRAPPER_MANIFEST
+                or not isinstance(closure_entry, dict)
+                or closure_entry.get("kind") != "manifest_state"
+                or closure_entry.get("ownership") != "wrapper_managed"
+                or not isinstance(manifest_bytes, bytes)
+                or state.get("kind") != "file"
+            ):
+                raise ValueError("supervised legacy manifest target is invalid")
+            data = _supervised_manifest_postimage(
+                manifest_bytes,
+                operation,
+                profile,
+                current_closure,
+            )
+            preimage_identity = _planned_preimage_identity(state)
+            if preimage_identity is None:
+                raise ValueError("supervised legacy manifest identity is missing")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": state.get("sha256"),
+                    "preimage_mode": state.get("mode"),
+                    "preimage_identity": preimage_identity,
+                    "postimage_sha256": (
+                        f"sha256:{hashlib.sha256(data).hexdigest()}"
+                    ),
+                    "postimage_mode": state.get("mode"),
+                    "source_root": "repository_root",
+                    "source_path": profile_identity["profile_path"],
+                    "source_sha256": (
+                        "sha256:" + profile_identity["profile_sha256"]
+                    ),
+                    "ownership": closure_entry["ownership"],
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "manifest_source_projection": copy.deepcopy(
+                        operation.get("source_projection")
+                    ),
+                    "manifest_patch": copy.deepcopy(operation.get("patch")),
+                    "manifest_target_projection": copy.deepcopy(
+                        operation.get("target_projection")
+                    ),
+                    "target_closure_path": current_closure_path,
+                }
+            )
+        elif operation_type == "supervised_transform":
+            dynamic_operations += 1
+            transform = (
+                proof.get("instruction_surface_transform")
+                if isinstance(proof, dict) else None
+            )
+            proof_operation = (
+                proof.get("write_operation") if isinstance(proof, dict) else None
+            )
+            protected_rule = next(
+                (
+                    item.get("rule")
+                    for item in profile.get("protected_business_surfaces", [])
+                    if isinstance(item, dict)
+                    and item.get("selector") == "manifest.instruction_surface"
+                ),
+                None,
+            )
+            if (
+                relative != "SKILL.md"
+                or operation.get("source_envelope") != profile.get("source_envelope")
+                or operation.get("adapter") != profile.get("adapter")
+                or not isinstance(transform, dict)
+                or not isinstance(proof_operation, dict)
+                or proof_operation.get("path") != relative
+                or proof_operation.get("operation") != "replace_exact"
+                or state.get("kind") != "file"
+                or state.get("sha256") != transform.get("preimage_sha256")
+                or state.get("mode")
+                != _official_exact_file_mode(transform.get("preimage_mode"))
+                or any(
+                    proof_operation.get(field) != transform.get(field)
+                    for field in (
+                        "preimage_sha256",
+                        "preimage_mode",
+                        "postimage_sha256",
+                        "postimage_mode",
+                    )
+                )
+                or protected_rule != "adapter_proven_complement_bytes_exact"
+            ):
+                raise ValueError("supervised legacy transform proof is invalid")
+            preimage_identity = _planned_preimage_identity(state)
+            if preimage_identity is None:
+                raise ValueError("supervised legacy transform identity is missing")
+            data = evidence["postimage"]
+            postimage_sha256 = f"sha256:{hashlib.sha256(data).hexdigest()}"
+            if postimage_sha256 != transform.get("postimage_sha256"):
+                raise ValueError("supervised legacy transform postimage changed")
+            staged[relative] = data
+            write_set.append(
+                {
+                    "path": relative,
+                    "operation": operation_type,
+                    "preimage_sha256": transform.get("preimage_sha256"),
+                    "preimage_mode": _official_exact_file_mode(
+                        transform.get("preimage_mode")
+                    ),
+                    "preimage_identity": preimage_identity,
+                    "postimage_sha256": postimage_sha256,
+                    "postimage_mode": _official_exact_file_mode(
+                        transform.get("postimage_mode")
+                    ),
+                    "source_root": "target_repository_root",
+                    "source_path": relative,
+                    "source_sha256": transform.get("preimage_sha256"),
+                    "ownership": "business_preserved",
+                    "proof_policy": protected_rule,
+                    "authority": operation.get("change_id"),
+                    "operation_sha256": operation_sha256,
+                    "adapter_proof_sha256": proof.get("proof_sha256"),
+                    "retained_target_bytes": copy.deepcopy(
+                        transform.get("retained_target_bytes")
+                    ),
+                    "deleted_spans": copy.deepcopy(transform.get("deleted_spans")),
+                    "zero_context_diff": copy.deepcopy(
+                        transform.get("zero_context_diff")
+                    ),
+                }
+            )
+        else:
+            raise ValueError(
+                f"supervised legacy operation is unsupported: {operation_type}"
+            )
+    if operation_projection != profile.get("static_write_set"):
+        raise ValueError(
+            "supervised legacy runtime operation set differs from verified profile"
+        )
+    if dynamic_operations != 1:
+        raise ValueError(
+            "supervised legacy profile must contain one dynamic full-file transform"
+        )
+    if len(write_set) != len(staged) or len(staged) != len(set(staged)):
+        raise ValueError("supervised legacy operation paths are not one-to-one")
+
+    transform = proof["instruction_surface_transform"]
+    protected: list[dict[str, Any]] = [
+        {
+            "path": "SKILL.md",
+            "rule": "adapter_proven_complement_bytes_exact",
+            "ownership": "business_preserved",
+            "proof_policy": "adapter_proven_complement_bytes_exact",
+            "planned_write": True,
+            "preimage_sha256": transform["preimage_sha256"],
+            "preimage_mode": _official_exact_file_mode(transform["preimage_mode"]),
+            "preimage_identity": next(
+                item["preimage_identity"]
+                for item in write_set
+                if item["path"] == "SKILL.md"
+            ),
+            "postimage_sha256": transform["postimage_sha256"],
+            "postimage_mode": _official_exact_file_mode(transform["postimage_mode"]),
+            "retained_target_bytes": copy.deepcopy(
+                transform["retained_target_bytes"]
+            ),
+            "deleted_spans": copy.deepcopy(transform["deleted_spans"]),
+            "zero_context_diff": copy.deepcopy(transform["zero_context_diff"]),
+        }
+    ]
+    for item in proof.get("protected_no_write_surfaces", []):
+        if not isinstance(item, dict):
+            raise ValueError("supervised legacy preserve proof is invalid")
+        state = states.get(item.get("path"))
+        if not isinstance(state, dict):
+            raise ValueError("supervised legacy preserve file fact is missing")
+        preimage_identity = _planned_preimage_identity(state)
+        if preimage_identity is None:
+            raise ValueError("supervised legacy preserve identity is missing")
+        protected.append(
+            {
+                "path": item["path"],
+                "rule": "byte_exact",
+                "planned_write": False,
+                "preimage_sha256": item["preimage_sha256"],
+                "preimage_mode": _official_exact_file_mode(item["preimage_mode"]),
+                "preimage_identity": preimage_identity,
+            }
+        )
+    return write_set, staged, protected
+
+
+def _supervised_exact_plan_authorization(plan: dict[str, Any]) -> dict[str, Any]:
+    proof = plan.get("supervised_adapter_proof")
+    profile_identity = plan.get("profile")
+    write_set = plan.get("write_set")
+    planned_protected = [
+        item
+        for item in plan.get("protected_business_surfaces", [])
+        if isinstance(item, dict) and item.get("planned_write") is True
+    ]
+    if (
+        plan.get("decision") != "supervised_migration_available"
+        or not isinstance(proof, dict)
+        or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(proof.get("proof_sha256"))
+        )
+        or not isinstance(profile_identity, dict)
+        or not isinstance(write_set, list)
+        or len(planned_protected) != 1
+    ):
+        raise ValueError("supervised exact plan authorization inputs are invalid")
+    protected = planned_protected[0]
+    if (
+        protected.get("path") != plan.get("instruction_surface")
+        or protected.get("ownership") != "business_preserved"
+        or protected.get("proof_policy")
+        != "adapter_proven_complement_bytes_exact"
+    ):
+        raise ValueError("supervised protected write authorization is invalid")
+    return {
+        "class": migration_kernel.SUPERVISED_AUTHORIZATION_CLASS,
+        "profile_identity": copy.deepcopy(profile_identity),
+        "adapter_proof_sha256": proof["proof_sha256"],
+        "write_set_sha256": (
+            "sha256:" + migration_kernel.canonical_json_sha256(write_set)
+        ),
+        "instruction_surface": protected["path"],
+        "planned_protected_postconditions": [
+            {
+                "path": protected["path"],
+                "kind": "file",
+                "sha256": protected["postimage_sha256"],
+                "mode": protected["postimage_mode"],
+                "ownership": protected["ownership"],
+                "proof_policy": protected["proof_policy"],
+            }
+        ],
+    }
+
+
+def _invalid_manifest_migration_plan(
+    target: Path,
+    latest_version: str | None,
+    migration_bundle: dict[str, Any],
+    manual_profile: dict[str, Any],
+    error: Exception,
+) -> dict[str, Any]:
+    diagnostic = f"wrapper manifest is invalid or ambiguous: {error}"
+    try:
+        target_git_state = migration_kernel.target_git_state(target)
+    except ValueError as exc:
+        target_git_state = None
+        git_state_error = str(exc)
+    else:
+        git_state_error = None
+    worktree_status_available = target_git_state is not None
+    worktree_clean = bool(target_git_state and target_git_state["status_clean"])
+    ownership_evidence = {
+        "matched": False,
+        "manifest_identity": {
+            "valid": False,
+            "trusted_for_instruction_surface": False,
+            "path_candidates": [
+                TARGET_WRAPPER_MANIFEST,
+                LEGACY_TARGET_WRAPPER_MANIFEST,
+                OLDEST_TARGET_WRAPPER_MANIFEST,
+            ],
+            "error": diagnostic,
+        },
+        "from_closure_files": [],
+        "manifest_patch_preconditions": [],
+        "trusted_preimages": [],
+        "stable_block": {
+            "block_id": None,
+            "path": None,
+            "expected_sha256_lf": None,
+            "actual_sha256_lf": None,
+            "matched": False,
+        },
+        "blockers": [diagnostic],
+        "authority": "strict wrapper manifest validation",
+    }
+    rollback_contract = {
+        "strategy": "restore_complete_snapshot",
+        "snapshot_required_before_write": True,
+        "snapshot_location": "outside_target_repository",
+        "command": (
+            "python3 scripts/evozeus_wrapper.py harness rollback-migration "
+            f"--target {target} --snapshot <snapshot-path> --approve --json"
+        ),
+    }
+    plan = {
+        "stage": "harness_layout_migration",
+        "status": "manual_migration_required",
+        "target": str(target),
+        "writes": False,
+        "decision": "manual_migration_required",
+        "migration_protocol_version": migration_kernel.MIGRATION_PROTOCOL_VERSION,
+        "migration_contract": migration_bundle["identity"],
+        "source_trust": migration_bundle["source_trust"],
+        "profile": migration_kernel.profile_identity(manual_profile),
+        "compatibility_state": "invalid_manifest",
+        "target_wrapper_from": None,
+        "target_wrapper_to": latest_version,
+        "harness_skill_from": None,
+        "harness_skill_to": None,
+        "ownership_evidence": ownership_evidence,
+        "automatic_profile_authorized": False,
+        "upgrade_axis_evidence": {
+            "matched": False,
+            "reason": diagnostic,
+        },
+        "automatic_profile_candidates": [],
+        "discovery_candidates": [],
+        "discovery_candidates_have_destructive_authority": False,
+        "from_layout": "unknown",
+        "to_layout": "consolidated-v2",
+        "target_wrapper_dir": TARGET_EVOINFRA_DIR,
+        "manifest_path": TARGET_WRAPPER_MANIFEST,
+        "from_manifest_source": "invalid",
+        "current_version": None,
+        "latest_version": latest_version,
+        "migration_required": True,
+        "layout_migration_required": False,
+        "version_refresh_required": False,
+        "instruction_surface_migration_required": False,
+        "manifest_validation_failed": True,
+        "release_lineage_records": [],
+        "migration_records": [],
+        "migration_record": None,
+        "moves": [],
+        "legacy_layout_candidates": [],
+        "write_set": [],
+        "delete_set": [],
+        "move_set": [],
+        "protected_business_surfaces": [],
+        "managed_file_refreshes": [],
+        "codex_hooks_update": None,
+        "instruction_surface": None,
+        "preserved_host_entrypoints": [],
+        "conflicts": [diagnostic],
+        "worktree_clean": worktree_clean,
+        "worktree_status_available": worktree_status_available,
+        "worktree_status_error": git_state_error,
+        "target_git_state": target_git_state,
+        "text_rewrite_candidates": [],
+        "generated_cache_candidates": [],
+        "apply_blockers": [
+            diagnostic,
+            "invalid wrapper manifest has no destructive migration authority",
+        ],
+        "can_apply": False,
+        "validation": {
+            "pre_apply": ["repair the wrapper manifest and recompute the plan"],
+            "post_apply": [],
+        },
+        "rollback": rollback_contract,
+        "post_apply_baseline": None,
+    }
+    plan["plan_sha256"] = f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+    return plan
+
+
 def plan_target_layout_migration(
     target: Path,
     latest_version: str | None = None,
     today: date | None = None,
     *,
     require_clean_git: bool = False,
+    wrapper_root: Path | None = None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
+    _migration_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
-    manifest_status = wrapper_manifest_status(target)
+    migration_bundle = _migration_bundle or migration_kernel.load_migration_contract(
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
+    )
+    expected_source_git_index = migration_bundle.get("source_git_index")
+    source_git_index_before: dict[str, Any] | None = None
+    source_authority_errors: list[str] = []
+    source_root = migration_bundle.get("wrapper_root")
+    try:
+        if not isinstance(source_root, Path) or not isinstance(
+            expected_source_git_index, dict
+        ):
+            raise ValueError("source Git index authority snapshot is missing")
+        source_git_index_before = migration_kernel.git_index_state(source_root)
+        if source_git_index_before != expected_source_git_index:
+            raise ValueError("source Git index changed after authority verification")
+    except (OSError, ValueError) as exc:
+        source_authority_errors.append(str(exc))
+    migration_contract = migration_bundle["contract"]
+    activation_contract = migration_contract["canonical_activation_block"]
+    legacy_profile = migration_kernel.contract_profile(
+        migration_contract,
+        "legacy-scattered-to-canonical-v1.0",
+    )
+    unknown_profile = migration_kernel.contract_profile(
+        migration_contract,
+        "unknown-to-manual-review",
+    )
+    prerelease_profile = migration_kernel.contract_profile(
+        migration_contract,
+        "prerelease-ambiguous-to-manual-review",
+    )
+    try:
+        manifest_status = wrapper_manifest_status(target)
+    except (OSError, ValueError) as exc:
+        return _invalid_manifest_migration_plan(
+            target,
+            latest_version,
+            migration_bundle,
+            unknown_profile,
+            exc,
+        )
     conflicts: list[str] = []
+    discovery_candidates: list[dict[str, Any]] = []
     if manifest_status["conflict"]:
         conflicts.append("legacy wrapper manifests contain different data")
-    git_status = run_command(
-        ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=normal"]
-    )
-    worktree_status_available = git_status["returncode"] == 0
-    worktree_clean = worktree_status_available and not git_status.get("stdout", "").strip()
-    if worktree_status_available and not worktree_clean:
+    target_git_state = None
+    git_state_error = None
+    try:
+        target_git_state = migration_kernel.target_git_state(target)
+    except ValueError as exc:
+        git_state_error = str(exc)
+    worktree_status_available = target_git_state is not None
+    worktree_clean = bool(target_git_state and target_git_state["status_clean"])
+    if require_clean_git and worktree_status_available and not worktree_clean:
         conflicts.append("target git worktree is not clean; commit or stash changes before migration")
     elif require_clean_git and not worktree_status_available:
-        detail = (git_status.get("stderr") or git_status.get("stdout") or "unknown error").strip()
+        detail = git_state_error or "unknown error"
         conflicts.append(f"target git worktree could not be verified: {detail}")
 
     moves: list[dict[str, str]] = []
@@ -2318,7 +5177,7 @@ def plan_target_layout_migration(
                 if _same_file_contents(source, destination):
                     moves.append(
                         {
-                            "action": "remove_duplicate",
+                            "relationship": "content_matches_destination",
                             "source": str(source.relative_to(target)),
                             "destination": destination_rel,
                         }
@@ -2334,7 +5193,7 @@ def plan_target_layout_migration(
 
         moves.append(
             {
-                "action": "move",
+                "relationship": "legacy_source_for_destination",
                 "source": str(primary.relative_to(target)),
                 "destination": destination_rel,
             }
@@ -2343,7 +5202,7 @@ def plan_target_layout_migration(
             if _same_file_contents(duplicate, primary):
                 moves.append(
                     {
-                        "action": "remove_duplicate",
+                        "relationship": "duplicate_legacy_source",
                         "source": str(duplicate.relative_to(target)),
                         "destination": destination_rel,
                     }
@@ -2365,33 +5224,426 @@ def plan_target_layout_migration(
             version_refresh_required = version_key(latest_version) > version_key(current_version)
         except ValueError as exc:
             conflicts.append(str(exc))
-    requires_migration = layout_migration_required or version_refresh_required
     codex_hooks_update = None
     instruction_surface = (
         (current_manifest or {}).get("instruction_surface")
         or detect_target_architecture(target).get("root_entry")
         or "SKILL.md"
     )
-    if requires_migration:
+    instruction_surface_migration_required = _harness_contract_needs_migration(
+        target,
+        current_manifest,
+        instruction_surface,
+        migration_bundle["identity"],
+        activation_contract,
+    )
+    requires_migration = (
+        layout_migration_required
+        or version_refresh_required
+        or instruction_surface_migration_required
+    )
+    requested_wrapper_to = latest_version or current_version
+    supervised_state_candidates = _supervised_legacy_profile_candidates(
+        migration_bundle,
+        current_manifest or {},
+        requested_wrapper_to,
+    )
+    supervised_candidate_evidence: list[
+        tuple[dict[str, Any], dict[str, Any]]
+    ] = []
+    for supervised_candidate in supervised_state_candidates:
         try:
-            _, codex_hooks_update = _merge_codex_hooks_config(target)
-        except ValueError as exc:
-            conflicts.append(str(exc))
-        if not (target / instruction_surface).is_file():
-            conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
-    migration_record = (
-        f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
-        f"{(today or date.today()).isoformat()}-layout-v1-to-v2.md"
-        if layout_migration_required
-        else (
-            f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
-            f"{(today or date.today()).isoformat()}-{current_version}-to-{latest_version}.md"
+            if source_authority_errors:
+                raise ValueError("; ".join(source_authority_errors))
+            supervised_evidence = (
+                migration_kernel.collect_supervised_legacy_evidence(
+                    target,
+                    migration_bundle,
+                    supervised_candidate,
+                    expected_binding=(
+                        target_git_state.get("target_binding")
+                        if isinstance(target_git_state, dict)
+                        else None
+                    ),
+                )
+            )
+        except (OSError, ValueError) as exc:
+            supervised_evidence = {
+                "decision": "manual_migration_required",
+                "proof": {
+                    "writes": False,
+                    "destructive_authority": False,
+                    "reasons": [str(exc)],
+                },
+                "postimage": None,
+                "target_file_states": {},
+                "profile_identity": (
+                    migration_kernel.supervised_legacy_profile_identity(
+                        supervised_candidate
+                    )
+                ),
+            }
+        supervised_candidate_evidence.append(
+            (supervised_candidate, supervised_evidence)
+        )
+    supervised_matches = [
+        (profile, evidence)
+        for profile, evidence in supervised_candidate_evidence
+        if evidence.get("decision") == "supervised_migration_available"
+    ]
+    if len(supervised_matches) == 1:
+        supervised_profile, supervised_evidence = supervised_matches[0]
+    else:
+        supervised_profile = None
+        supervised_evidence = None
+    state_candidates = _automatic_profile_candidates(
+        migration_bundle,
+        current_manifest or {},
+        requested_wrapper_to,
+    )
+    candidate_evidence = [
+        (
+            profile,
+            _canonical_v1_upgrade_evidence(
+                target,
+                current_manifest or {},
+                instruction_surface,
+                profile,
+                activation_contract,
+            ),
+        )
+        for profile in state_candidates
+    ]
+    automatic_candidates = [
+        profile for profile, evidence in candidate_evidence if evidence["matched"]
+    ]
+    canonical_profile = (
+        automatic_candidates[0] if len(automatic_candidates) == 1 else None
+    )
+    if canonical_profile is None:
+        selection_reason = (
+            "no verified automatic profile matches the exact target and current closure"
+            if not automatic_candidates
+            else "multiple verified automatic profiles match the exact target and current closure"
+        )
+        if len(candidate_evidence) == 1:
+            canonical_evidence = candidate_evidence[0][1]
+            canonical_evidence["blockers"] = list(
+                dict.fromkeys([*canonical_evidence["blockers"], selection_reason])
+            )
+        else:
+            canonical_evidence = {
+                "matched": False,
+                "manifest_identity": {},
+                "from_closure_files": [],
+                "manifest_patch_preconditions": [],
+                "trusted_preimages": [],
+                "stable_block": {
+                    "block_id": activation_contract.get("block_id"),
+                    "path": instruction_surface,
+                    "expected_sha256_lf": (
+                        "sha256:" + str(activation_contract.get("sha256_lf"))
+                    ),
+                    "actual_sha256_lf": None,
+                    "matched": False,
+                },
+                "blockers": [selection_reason],
+                "authority": (
+                    "verified current closure + unique exact-from official profile"
+                ),
+            }
+        canonical_release_axis: dict[str, Any] = {}
+    else:
+        canonical_evidence = next(
+            evidence
+            for profile, evidence in candidate_evidence
+            if profile is canonical_profile
+        )
+        canonical_release_axis = canonical_profile.get("release_axis") or {}
+    artifact_source_from = canonical_release_axis.get("artifact_source_from")
+    artifact_source_to = canonical_release_axis.get("artifact_source_to")
+    artifact_source_from_release = (
+        artifact_source_from.get("release")
+        if isinstance(artifact_source_from, dict)
+        else None
+    )
+    artifact_source_from_release_valid = (
+        artifact_source_from_release is None
+        or (
+            isinstance(artifact_source_from_release, str)
+            and re.fullmatch(
+                r"v\d+\.\d+\.\d+",
+                artifact_source_from_release,
+            )
+            is not None
         )
     )
+    upgrade_axis_evidence = {
+        "target_wrapper": {
+            "expected_from": canonical_release_axis.get("target_wrapper_from"),
+            "actual_from": current_version,
+            "expected_to": canonical_release_axis.get("target_wrapper_to"),
+            "requested_to": requested_wrapper_to,
+        },
+        "artifact_source_from": copy.deepcopy(artifact_source_from),
+        "artifact_source_to": copy.deepcopy(artifact_source_to),
+        "bundle_required_release": migration_bundle.get("source_trust", {}).get(
+            "release_tag"
+        ),
+    }
+    upgrade_axis_evidence["matched"] = all(
+        (
+            current_version == canonical_release_axis.get("target_wrapper_from"),
+            requested_wrapper_to == canonical_release_axis.get("target_wrapper_to"),
+            isinstance(artifact_source_from, dict),
+            isinstance(artifact_source_from, dict)
+            and artifact_source_from.get("kind") == "construction_revision",
+            artifact_source_from_release_valid,
+            isinstance(artifact_source_to, dict),
+            isinstance(artifact_source_to, dict)
+            and artifact_source_to.get("kind") == "required_release",
+            isinstance(artifact_source_to, dict)
+            and artifact_source_to.get("binding")
+            == "contract_bundle.source_revision",
+            migration_bundle.get("source_trust", {}).get("release_tag")
+            == (
+                artifact_source_to.get("release")
+                if isinstance(artifact_source_to, dict)
+                else None
+            ),
+        )
+    )
+    if not upgrade_axis_evidence["matched"]:
+        canonical_evidence["matched"] = False
+        canonical_evidence["blockers"].append(
+            "target wrapper/artifact provenance axis does not match the automatic migration profile"
+        )
+    surface_file = None
+    surface_text = None
+    protected_business_surfaces: list[dict[str, Any]] = []
+    if requires_migration:
+        if not isinstance(instruction_surface, str):
+            conflicts.append("migration instruction_surface must be a relative string")
+        else:
+            surface_file = safe_target_relative_file(target, instruction_surface)
+            if surface_file is None:
+                conflicts.append(f"migration instruction surface is missing: {instruction_surface}")
+            else:
+                surface_text = _read_text_preserving_newlines(surface_file)
+                if not _harness_entry_markers_well_formed(surface_text):
+                    conflicts.append(
+                        "instruction surface has an unbalanced canonical Harness entry "
+                        f"or invalid nesting: {instruction_surface}"
+                    )
+                candidate_spans, section_conflicts = _wrapper_owned_section_analysis(
+                    surface_text
+                )
+                for index, (start, end) in enumerate(candidate_spans, start=1):
+                    candidate = surface_text[start:end]
+                    discovery_candidates.append(
+                        {
+                            "candidate_id": f"legacy-instruction-block-{index}",
+                            "kind": "legacy_instruction_block",
+                            "path": instruction_surface,
+                            "start": start,
+                            "end": end,
+                            "sha256": f"sha256:{hashlib.sha256(candidate.encode('utf-8')).hexdigest()}",
+                            "discovered_by": "markdown-structure-plus-read-only-signatures",
+                            "destructive_authority": False,
+                        }
+                    )
+                for conflict in section_conflicts:
+                    discovery_candidates.append(
+                        {
+                            "candidate_id": "ambiguous-legacy-instruction-block",
+                            "kind": "ambiguous_legacy_instruction_block",
+                            "path": instruction_surface,
+                            "diagnostic": conflict,
+                            "discovered_by": "read-only-signatures",
+                            "destructive_authority": False,
+                        }
+                    )
+                protected_business_surfaces.append(
+                    {
+                        "path": instruction_surface,
+                        "rule": "byte_exact",
+                        "preimage_sha256": f"sha256:{file_sha256(surface_file)}",
+                        "planned_write": False,
+                    }
+                )
+                if discovery_candidates and canonical_evidence["matched"]:
+                    canonical_evidence["matched"] = False
+                    canonical_evidence["blockers"].append(
+                        "legacy instruction candidates coexist with the canonical block"
+                    )
+        for index, move in enumerate(moves, start=1):
+            discovery_candidates.append(
+                {
+                    "candidate_id": f"legacy-layout-path-{index}",
+                    "kind": "legacy_layout_path",
+                    **move,
+                    "destructive_authority": False,
+                }
+            )
+
+    verified_current_closure = migration_bundle.get("current_closure", {}).get(
+        "closure",
+        {},
+    )
+    verified_current_state = (
+        verified_current_closure.get("state")
+        if isinstance(verified_current_closure, dict)
+        else {}
+    )
+    verified_current_harness_version = (
+        verified_current_state.get("harness_skill_version")
+        if isinstance(verified_current_state, dict)
+        else None
+    )
+    prerelease_ambiguous = bool(
+        current_manifest
+        and current_manifest.get("harness_skill_version")
+        == verified_current_harness_version
+        and not _manifest_proves_canonical_harness_ownership(
+            current_manifest,
+            migration_bundle["identity"],
+            activation_contract,
+        )
+    )
+    authority_rules = migration_contract.get("authority_rules") or {}
+    canonical_payload = (
+        canonical_profile.get("adapter_payload") or {}
+        if canonical_profile is not None
+        else {}
+    )
+    canonical_profile_authorized = canonical_profile is not None and all(
+        (
+            canonical_profile.get("automatic") is True,
+            canonical_payload.get("type") == "exact-artifact-and-stable-block",
+            authority_rules.get("discovery_candidates_are_authority") is False,
+            authority_rules.get("manifest_managed_flag_is_sufficient") is False,
+            authority_rules.get("exact_preimage_hash_required") is True,
+            authority_rules.get("snapshot_required_before_write") is True,
+            authority_rules.get("post_verify_failure") == "restore_snapshot",
+        )
+    )
+    supervised_execution = (
+        supervised_profile.get("execution")
+        if isinstance(supervised_profile, dict)
+        else {}
+    )
+    supervised_profile_authorized = supervised_profile is not None and all(
+        (
+            supervised_profile.get("automatic") is False,
+            supervised_profile.get("_active_for_current") is True,
+            isinstance(supervised_execution, dict),
+            supervised_execution.get("mode") == "supervised_exact_plan",
+            supervised_execution.get("discovery_authority") is False,
+            supervised_execution.get("adapter_write_authority") is False,
+            supervised_execution.get("approval")
+            == "one_time_exact_operation_sha256",
+            supervised_execution.get("approval_scope")
+            == "one_target_one_preimage_one_postimage",
+            supervised_execution.get("compare_and_swap")
+            == "full_file_preimage",
+            supervised_execution.get("snapshot") == "required_before_any_write",
+            supervised_execution.get("post_verify")
+            == "adapter_proof_and_current_closure",
+            supervised_execution.get("rollback")
+            == "restore_snapshot_on_any_failure",
+            authority_rules.get("discovery_candidates_are_authority") is False,
+            authority_rules.get("exact_preimage_hash_required") is True,
+            authority_rules.get("snapshot_required_before_write") is True,
+            authority_rules.get("post_verify_failure") == "restore_snapshot",
+        )
+    )
+    if not requires_migration:
+        selected_profile = None
+        decision = "no_migration_required"
+    elif layout_migration_required:
+        selected_profile = legacy_profile
+        decision = "manual_migration_required"
+    elif supervised_profile_authorized:
+        selected_profile = supervised_profile
+        decision = "supervised_migration_available"
+    elif prerelease_ambiguous:
+        selected_profile = prerelease_profile
+        decision = "manual_migration_required"
+    elif canonical_evidence["matched"] and canonical_profile_authorized:
+        selected_profile = canonical_profile
+        decision = "automatic_migration_available"
+    elif canonical_evidence["matched"] and canonical_profile is not None:
+        selected_profile = canonical_profile
+        decision = "manual_migration_required"
+    else:
+        selected_profile = unknown_profile
+        decision = "manual_migration_required"
+
+    if requires_migration:
+        harness_identity_fields = {
+            "harness_skill_path",
+            "harness_skill_version",
+            "harness_skill_managed",
+        }
+        present_identity_fields = harness_identity_fields.intersection(current_manifest or {})
+        if present_identity_fields and present_identity_fields != harness_identity_fields:
+            conflicts.append("manifest canonical Harness Skill identity is incomplete")
+        elif present_identity_fields and decision != "automatic_migration_available":
+            harness_path = (current_manifest or {}).get("harness_skill_path")
+            harness_managed = (current_manifest or {}).get("harness_skill_managed")
+            if harness_path != TARGET_HARNESS_SKILL:
+                conflicts.append(
+                    f"manifest harness_skill_path must use canonical path: {TARGET_HARNESS_SKILL}"
+                )
+            if harness_managed is not True:
+                conflicts.append("manifest canonical Harness Skill must remain wrapper managed")
+
+    release_lineage_records: list[str] = []
+    migration_records: list[str] = []
+    migration_record = None
+    if requires_migration:
+        day = (today or date.today()).isoformat()
+        if selected_profile and selected_profile.get("automatic") is True:
+            try:
+                migration_records, migration_record = (
+                    _verified_profile_migration_records(selected_profile)
+                )
+                release_lineage_records = list(migration_records)
+            except ValueError as exc:
+                conflicts.append(str(exc))
+        elif decision == "supervised_migration_available" and isinstance(
+            selected_profile, dict
+        ):
+            try:
+                (
+                    release_lineage_records,
+                    migration_records,
+                    migration_record,
+                ) = _verified_supervised_lineage_records(selected_profile)
+            except ValueError as exc:
+                conflicts.append(str(exc))
+                release_lineage_records = []
+                migration_records = []
+                migration_record = None
+        elif layout_migration_required:
+            migration_record = (
+                f"{TARGET_EVOINFRA_DIR}/docs/migrations/{day}-layout-v1-to-v2.md"
+            )
+            migration_records = [migration_record]
+        else:
+            migration_record = (
+                f"{TARGET_EVOINFRA_DIR}/docs/migrations/"
+                f"{day}-{current_version or 'unknown'}-to-{latest_version or current_version or 'unknown'}.md"
+            )
+            migration_records = [migration_record]
     if requires_migration and not manifest_status["active_manifest_path"]:
         conflicts.append("legacy wrapper manifest is missing; repair or adopt the harness before migration")
-    if requires_migration and (target / migration_record).exists():
-        conflicts.append(f"migration record already exists: {migration_record}")
+    for record in dict.fromkeys(
+        [*release_lineage_records, *migration_records]
+    ):
+        record_path = target / record
+        if record_path.exists() or record_path.is_symlink():
+            conflicts.append(f"migration record already exists: {record}")
 
     text_rewrite_candidates = [
         str(path.relative_to(target)) for path in target_infra_text_files(target)
@@ -2406,52 +5658,211 @@ def plan_target_layout_migration(
         for path in target.glob(pattern)
         if path.is_file()
     ]
-    managed_file_refreshes = [
-        CODEX_HOOKS_CONFIG,
-        TARGET_PREFLIGHT_SCRIPT,
-        TARGET_NOTICE_SCRIPT,
-        CODEX_START_HOOK_SCRIPT,
-        TARGET_ONBOARDING_GUIDE,
-        TARGET_FEEDBACK_POLICY,
-        TARGET_AUDIT_RULE,
-        TARGET_NOTICE_POLICY,
-        ".github/ISSUE_TEMPLATE/config.yml",
-        ".github/workflows/evozeus-wrapper-preflight.yml",
-    ]
-    if requires_migration:
-        write_candidates = {
-            instruction_surface,
-            TARGET_WRAPPER_MANIFEST,
-            migration_record,
-            *managed_file_refreshes,
-            *text_rewrite_candidates,
-            *generated_cache_candidates,
-            *(
-                item.get(key)
-                for item in moves
-                for key in ("source", "destination")
-                if isinstance(item, dict)
-            ),
-        }
-        for relative in sorted(item for item in write_candidates if isinstance(item, str) and item):
-            relative_path = Path(relative)
-            if relative_path.is_absolute() or ".." in relative_path.parts:
-                conflicts.append(f"migration write path escapes target repository: {relative}")
-                continue
-            cursor = target / relative_path
-            while cursor != target:
-                if cursor.is_symlink():
-                    conflicts.append(
-                        "migration write path contains a symlink: "
-                        + str(cursor.relative_to(target))
-                    )
-                    break
-                cursor = cursor.parent
+    write_set: list[dict[str, Any]] = []
+    delete_set: list[dict[str, Any]] = []
+    move_set: list[dict[str, Any]] = []
+    managed_file_refreshes: list[str] = []
+    rollback_contract = {
+        "strategy": "restore_complete_snapshot",
+        "snapshot_required_before_write": True,
+        "snapshot_location": "outside_target_repository",
+        "command": (
+            "python3 scripts/evozeus_wrapper.py harness rollback-migration "
+            f"--target {target} --snapshot <snapshot-path> --approve --json"
+        ),
+    }
+    if decision == "automatic_migration_available" and current_manifest is not None:
+        try:
+            write_set, _ = _official_upgrade_write_plan(
+                target,
+                current_manifest,
+                migration_bundle,
+                selected_profile["profile_id"],
+            )
+        except ValueError as exc:
+            conflicts.append(str(exc))
+            decision = "manual_migration_required"
+            write_set = []
+        managed_file_refreshes.extend(
+            item["path"]
+            for item in write_set
+            if item.get("operation") in {"create_exact", "replace_exact"}
+            and item["path"] not in set(migration_records)
+        )
+    elif (
+        decision == "supervised_migration_available"
+        and isinstance(selected_profile, dict)
+        and isinstance(supervised_evidence, dict)
+    ):
+        try:
+            write_set, _staged, protected_business_surfaces = (
+                _supervised_legacy_write_plan(
+                    migration_bundle,
+                    selected_profile,
+                    supervised_evidence,
+                )
+            )
+        except (OSError, ValueError) as exc:
+            conflicts.append(str(exc))
+            decision = "manual_migration_required"
+            write_set = []
+        managed_file_refreshes.extend(
+            item["path"]
+            for item in write_set
+            if item.get("operation") in {"create_exact", "replace_exact"}
+            and item["path"] not in set(migration_records)
+        )
 
-    return {
+    explicit_paths = {
+        item.get("path") for item in [*write_set, *delete_set] if isinstance(item, dict)
+    }
+    explicit_paths.update(
+        item.get(field)
+        for item in move_set
+        for field in ("source", "destination")
+        if isinstance(item, dict)
+    )
+    for relative in sorted(item for item in explicit_paths if isinstance(item, str) and item):
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts or "\\" in relative:
+            conflicts.append(f"migration write path escapes target repository: {relative}")
+            continue
+        cursor = target
+        for index, part in enumerate(relative_path.parts):
+            cursor /= part
+            if cursor.is_symlink():
+                conflicts.append(
+                    "migration write path contains a symlink: "
+                    + str(cursor.relative_to(target))
+                )
+                break
+            if cursor.exists() and index < len(relative_path.parts) - 1 and not cursor.is_dir():
+                conflicts.append(
+                    "migration write path parent is not a directory: "
+                    + str(cursor.relative_to(target))
+                )
+                break
+            if cursor.exists() and index == len(relative_path.parts) - 1 and not cursor.is_file():
+                conflicts.append(
+                    "migration write path is not a regular file: "
+                    + str(cursor.relative_to(target))
+                )
+                break
+
+    apply_blockers = list(conflicts)
+    writable_decisions = {
+        "automatic_migration_available",
+        "supervised_migration_available",
+    }
+    if decision not in writable_decisions:
+        apply_blockers.append(
+            "no verified migration profile authorizes an exact write plan"
+        )
+    if (
+        decision == "supervised_migration_available"
+        and supervised_execution.get("runtime_apply") != "trusted_kernel_exact_apply"
+    ):
+        apply_blockers.append(
+            "supervised legacy runtime apply is not enabled by the verified profile"
+        )
+    source_trust = migration_bundle["source_trust"]
+    if decision in writable_decisions and source_trust["status"] != "trusted_release":
+        apply_blockers.append(
+            "migration source is not an immutable trusted release: "
+            + source_trust["status"]
+        )
+    if decision in writable_decisions and not worktree_status_available:
+        apply_blockers.append("target Git worktree status is unavailable")
+    elif decision in writable_decisions and not worktree_clean:
+        apply_blockers.append("target Git worktree is not clean")
+    can_apply = requires_migration and not apply_blockers
+    profile = (
+        (
+            migration_kernel.supervised_legacy_profile_identity(selected_profile)
+            if selected_profile.get("schema_version")
+            == "evozeus.coevolve.supervised-legacy-profile.v1"
+            else migration_kernel.profile_identity(selected_profile)
+        )
+        if isinstance(selected_profile, dict)
+        else None
+    )
+    selected_is_supervised = bool(
+        isinstance(selected_profile, dict)
+        and selected_profile.get("schema_version")
+        == "evozeus.coevolve.supervised-legacy-profile.v1"
+    )
+    supervised_proof = (
+        copy.deepcopy(supervised_evidence.get("proof"))
+        if selected_is_supervised and isinstance(supervised_evidence, dict)
+        else None
+    )
+    plan = {
         "stage": "harness_layout_migration",
         "target": str(target),
         "writes": False,
+        "decision": decision,
+        "migration_protocol_version": migration_kernel.MIGRATION_PROTOCOL_VERSION,
+        "migration_contract": migration_bundle["identity"],
+        "source_trust": source_trust,
+        "profile": profile,
+        "compatibility_state": (
+            "reviewed_legacy"
+            if selected_is_supervised
+            else "prerelease_ambiguous" if prerelease_ambiguous else "versioned"
+        ),
+        "target_wrapper_from": current_version,
+        "target_wrapper_to": latest_version or current_version,
+        "harness_skill_from": (
+            None
+            if selected_is_supervised
+            else (selected_profile or {}).get("from", {}).get("harness_skill_version")
+            if selected_profile is not None
+            else current_manifest.get("harness_skill_version") if current_manifest else None
+        ),
+        "harness_skill_to": (
+            verified_current_harness_version
+            if selected_is_supervised
+            else (selected_profile or {}).get("to", {}).get("harness_skill_version")
+            if isinstance((selected_profile or {}).get("to"), dict)
+            else None
+        ),
+        "ownership_evidence": (
+            supervised_proof if selected_is_supervised else canonical_evidence
+        ),
+        "automatic_profile_authorized": canonical_profile_authorized,
+        "supervised_profile_authorized": supervised_profile_authorized,
+        "supervised_runtime_apply": (
+            supervised_execution.get("runtime_apply")
+            if selected_is_supervised
+            else None
+        ),
+        "supervised_adapter_proof": supervised_proof,
+        "upgrade_axis_evidence": upgrade_axis_evidence,
+        "automatic_profile_candidates": [
+            migration_kernel.profile_identity(item)
+            for item in automatic_candidates
+        ],
+        "supervised_profile_candidates": [
+            migration_kernel.supervised_legacy_profile_identity(item)
+            for item, _evidence in supervised_candidate_evidence
+        ],
+        "supervised_profile_matches": [
+            migration_kernel.supervised_legacy_profile_identity(item)
+            for item, evidence in supervised_candidate_evidence
+            if evidence.get("decision") == "supervised_migration_available"
+        ],
+        "supervised_candidate_evidence": [
+            {
+                "profile": (
+                    migration_kernel.supervised_legacy_profile_identity(item)
+                ),
+                "decision": evidence.get("decision"),
+                "proof": copy.deepcopy(evidence.get("proof")),
+            }
+            for item, evidence in supervised_candidate_evidence
+        ],
+        "discovery_candidates": discovery_candidates,
+        "discovery_candidates_have_destructive_authority": False,
         "from_layout": "scattered-v1" if layout_migration_required else "consolidated-v2",
         "to_layout": "consolidated-v2",
         "target_wrapper_dir": TARGET_EVOINFRA_DIR,
@@ -2462,8 +5873,20 @@ def plan_target_layout_migration(
         "migration_required": requires_migration,
         "layout_migration_required": layout_migration_required,
         "version_refresh_required": version_refresh_required,
+        "instruction_surface_migration_required": instruction_surface_migration_required,
+        "release_lineage_records": (
+            release_lineage_records if requires_migration else []
+        ),
+        "migration_records": migration_records if requires_migration else [],
         "migration_record": migration_record if requires_migration else None,
-        "moves": moves,
+        "moves": [],
+        "legacy_layout_candidates": [
+            {**item, "destructive_authority": False} for item in moves
+        ],
+        "write_set": write_set,
+        "delete_set": delete_set,
+        "move_set": move_set,
+        "protected_business_surfaces": protected_business_surfaces,
         "managed_file_refreshes": managed_file_refreshes,
         "codex_hooks_update": codex_hooks_update,
         "instruction_surface": instruction_surface,
@@ -2479,112 +5902,964 @@ def plan_target_layout_migration(
         "worktree_status_error": (
             None
             if worktree_status_available
-            else (git_status.get("stderr") or git_status.get("stdout") or "unknown error").strip()
+            else git_state_error or "unknown error"
         ),
+        "target_git_state": target_git_state,
         "text_rewrite_candidates": text_rewrite_candidates,
         "generated_cache_candidates": generated_cache_candidates,
-        "can_apply": requires_migration and not conflicts,
-        "rollback": "revert the migration commit; migration must run in a clean target worktree",
+        "apply_blockers": list(dict.fromkeys(apply_blockers)),
+        "can_apply": can_apply,
+        "validation": {
+            "pre_apply": [
+                "recompute plan digest",
+                "verify official immutable source release",
+                "verify every write/delete/move preimage hash",
+                "verify target Git worktree is clean",
+            ],
+            "post_apply": [
+                "immutable-bytes structure validation from verified closure",
+                "verify protected business surface bytes",
+            ],
+        },
+        "rollback": rollback_contract,
+    }
+    plan["post_apply_baseline"] = (
+        migration_kernel.capture_post_apply_baseline(target, plan)
+        if target_git_state is not None
+        else None
+    )
+    final_authority_errors = list(source_authority_errors)
+    try:
+        if not isinstance(source_root, Path) or source_git_index_before is None:
+            raise ValueError("source Git index planning snapshot is unavailable")
+        if migration_kernel.git_index_state(source_root) != source_git_index_before:
+            raise ValueError("source Git index changed during zero-write planning")
+        if target_git_state is not None and (
+            migration_kernel.target_git_state(target) != target_git_state
+        ):
+            raise ValueError("target Git index/tree changed during zero-write planning")
+        if selected_is_supervised and isinstance(selected_profile, dict):
+            final_assets = migration_kernel.verify_supervised_legacy_source_assets(
+                migration_bundle,
+                selected_profile,
+            )
+            if final_assets != (
+                migration_kernel.supervised_legacy_profile_identity(
+                    selected_profile
+                ).get("trusted_source_assets")
+            ):
+                raise ValueError(
+                    "supervised trusted source assets changed during planning"
+                )
+    except (OSError, ValueError) as exc:
+        final_authority_errors.append(str(exc))
+    if final_authority_errors:
+        diagnostic = "; ".join(dict.fromkeys(final_authority_errors))
+        plan["decision"] = "manual_migration_required"
+        plan["write_set"] = []
+        plan["managed_file_refreshes"] = []
+        plan["post_apply_baseline"] = None
+        plan["can_apply"] = False
+        plan["conflicts"] = list(dict.fromkeys([*plan["conflicts"], diagnostic]))
+        plan["apply_blockers"] = list(
+            dict.fromkeys(
+                [
+                    *plan["apply_blockers"],
+                    diagnostic,
+                    "no verified migration profile authorizes an exact write plan",
+                ]
+            )
+        )
+        instruction_path = target / instruction_surface
+        if instruction_path.is_file() and not instruction_path.is_symlink():
+            plan["protected_business_surfaces"] = [
+                {
+                    "path": instruction_surface,
+                    "rule": "byte_exact",
+                    "preimage_sha256": (
+                        f"sha256:{file_sha256(instruction_path)}"
+                    ),
+                    "planned_write": False,
+                }
+            ]
+    plan["zero_write_git_indexes"] = {
+        "source": source_git_index_before,
+        "target": (
+            target_git_state.get("git_index_file")
+            if isinstance(target_git_state, dict)
+            else None
+        ),
+    }
+    if plan.get("decision") == "supervised_migration_available":
+        plan["write_authorization"] = _supervised_exact_plan_authorization(plan)
+        operation_sha256 = (
+            f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+        )
+        plan["operation_sha256"] = operation_sha256
+        plan["plan_sha256"] = operation_sha256
+    else:
+        plan["plan_sha256"] = (
+            f"sha256:{migration_kernel.migration_plan_digest(plan)}"
+        )
+    return plan
+
+
+def _canonical_v1_upgrade_manifest(
+    target: Path,
+    plan: dict[str, Any],
+    today: date | None,
+    migration_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    manifest_path = target / TARGET_WRAPPER_MANIFEST
+    manifest = _read_manifest_json(manifest_path)
+    refreshed = build_wrapper_manifest(
+        repo=manifest.get("canonical_repo") or "OWNER/REPO",
+        wrapper_version=plan.get("latest_version") or manifest.get("wrapper_version"),
+        managed_files=list(
+            dict.fromkeys(
+                [
+                    *(manifest.get("managed_files") or []),
+                    TARGET_HARNESS_SKILL,
+                    TARGET_PREFLIGHT_SCRIPT,
+                    TARGET_MIGRATION_CONTRACT,
+                ]
+            )
+        ),
+        install_links=manifest.get("install_links") or [],
+        instruction_surface=manifest.get("instruction_surface") or "SKILL.md",
+        integration=manifest.get("integration"),
+        onboarding=manifest.get("onboarding"),
+        dashboard=manifest.get("dashboard"),
+        migration_bundle=migration_bundle,
+    )
+    manifest.update(
+        {
+            "wrapper_repo": refreshed["wrapper_repo"],
+            "wrapper_version": refreshed["wrapper_version"],
+            "applied_at": (today or date.today()).isoformat(),
+            "layout_version": 2,
+            "target_wrapper_dir": TARGET_EVOINFRA_DIR,
+            "target_infra_dir": TARGET_EVOINFRA_DIR,
+            "harness_skill_path": refreshed["harness_skill_path"],
+            "harness_skill_version": refreshed["harness_skill_version"],
+            "harness_skill_managed": refreshed["harness_skill_managed"],
+            "migration_contract": refreshed["migration_contract"],
+            "managed_blocks": refreshed["managed_blocks"],
+            "managed_files": refreshed["managed_files"],
+        }
+    )
+    return manifest
+
+
+def _canonical_v1_migration_record(
+    plan: dict[str, Any],
+    today: date | None,
+) -> str:
+    profile = plan["profile"]
+    migration_contract = plan["migration_contract"]
+    lines = [
+        "# EvoZeus-CoEvolve Harness Skill Migration: "
+        f"{plan['harness_skill_from']} -> {plan['harness_skill_to']}",
+        "",
+        f"- 日期：{(today or date.today()).isoformat()}",
+        f"- Migration protocol：`{plan['migration_protocol_version']}`",
+        "- Migration contract："
+        f"`{migration_contract['contract_id']}@{migration_contract['contract_version']}`",
+        f"- Migration contract SHA-256：`{migration_contract['sha256']}`",
+        f"- Profile：`{profile['profile_id']}@{profile['profile_version']}`",
+        f"- Profile from state：`{json.dumps(profile['from_state'], ensure_ascii=False, sort_keys=True)}`",
+        f"- Profile to state：`{json.dumps(profile['to_state'], ensure_ascii=False, sort_keys=True)}`",
+        f"- Adapter：`{profile['adapter_id']}@{profile['adapter_version']}`",
+        f"- Adapter SHA-256：`{profile['adapter_sha256']}`",
+        f"- Target wrapper：`{plan['target_wrapper_from']} -> {plan['target_wrapper_to']}`",
+        f"- Harness Skill：`{plan['harness_skill_from']} -> {plan['harness_skill_to']}`",
+        "- Snapshot：apply 前在目标 Repo 外创建；实际路径以 apply report 为准。",
+        "",
+        "## Write set",
+        "",
+        *[
+            f"- `{item['operation']}` `{item['path']}` from `{item['preimage_sha256'] or 'absent'}`"
+            for item in plan["write_set"]
+        ],
+        "",
+        "## Delete / move set",
+        "",
+        "- Delete set：empty",
+        "- Move set：empty",
+        "",
+        "## Protected business surfaces",
+        "",
+        *[
+            f"- `{item['path']}`：`{item['rule']}`，preimage `{item['preimage_sha256']}`"
+            for item in plan["protected_business_surfaces"]
+        ],
+        "",
+        "## Validation",
+        "",
+        f"- `python3 {TARGET_PREFLIGHT_SCRIPT} structure --target .`",
+        "- Protected instruction surface SHA-256 unchanged.",
+        "",
+        "## Rollback",
+        "",
+        f"- `{plan['rollback']['command']}`",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _supervised_activation_has_unique_commonmark_ast(
+    block: bytes,
+    legacy_adapter: Any,
+) -> bool:
+    try:
+        text = block.decode("utf-8", errors="strict").replace("\r\n", "\n")
+        tokens = legacy_adapter._commonmark_parser().parse(text)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if [token.type for token in tokens] != [
+        "html_block",
+        "paragraph_open",
+        "inline",
+        "paragraph_close",
+        "html_block",
+    ]:
+        return False
+    if tokens[0].content.strip() != migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+        "begin_marker"
+    ] or tokens[-1].content.strip() != migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+        "end_marker"
+    ]:
+        return False
+    inline = tokens[2]
+    children = list(inline.children or [])
+    child_types = [child.type for child in children]
+    if child_types != [
+        "text",
+        "strong_open",
+        "text",
+        "softbreak",
+        "link_open",
+        "text",
+        "link_close",
+        "text",
+        "strong_close",
+        "text",
+    ]:
+        return False
+    link = children[4]
+    return (
+        link.attrs.get("href") == TARGET_HARNESS_SKILL
+        and children[5].content == TARGET_HARNESS_SKILL
+    )
+
+
+def _verify_supervised_legacy_postconditions(
+    target: Path,
+    plan: dict[str, Any],
+    migration_bundle: dict[str, Any],
+    profile: dict[str, Any],
+    preimage_surface: bytes,
+    staged: dict[str, bytes],
+    legacy_adapter: Any,
+) -> dict[str, Any]:
+    migration_kernel.validate_supervised_authorization(plan)
+    if (
+        plan.get("release_lineage_records")
+        != profile.get("release_lineage_records")
+        or plan.get("migration_records") != profile.get("migration_records")
+        or plan.get("migration_record")
+        != profile.get("current_migration_record")
+    ):
+        raise ValueError("supervised lineage plan differs from verified profile")
+    proof = plan["supervised_adapter_proof"]
+    transform = proof.get("instruction_surface_transform")
+    instruction_path = plan.get("instruction_surface")
+    if (
+        not isinstance(transform, dict)
+        or instruction_path != "SKILL.md"
+        or transform.get("path") != instruction_path
+    ):
+        raise ValueError("supervised adapter postcondition proof is incomplete")
+    instruction_write = next(
+        (
+            item
+            for item in plan["write_set"]
+            if item.get("path") == instruction_path
+        ),
+        None,
+    )
+    if not isinstance(instruction_write, dict):
+        raise ValueError("supervised instruction write postcondition is missing")
+    expected_binding = plan["target_git_state"]["target_binding"]
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=expected_binding,
+    ) as secure_target:
+        state = secure_target.file_state(instruction_path)
+        if (
+            state.get("kind") != "file"
+            or state.get("sha256") != instruction_write.get("postimage_sha256")
+            or state.get("mode") != instruction_write.get("postimage_mode")
+        ):
+            raise ValueError("supervised instruction postimage changed")
+        postimage_surface = secure_target.read_exact(
+            instruction_path,
+            instruction_write["postimage_sha256"],
+        )
+
+        current_closure = (migration_bundle.get("current_closure") or {}).get(
+            "closure"
+        )
+        if (
+            not isinstance(current_closure, dict)
+            or current_closure != profile.get("_verified_target_closure")
+        ):
+            raise ValueError("supervised current closure binding changed")
+        closure_entries = current_closure.get("files")
+        if not isinstance(closure_entries, list):
+            raise ValueError("supervised current closure files are missing")
+        for entry in closure_entries:
+            if not isinstance(entry, dict):
+                raise ValueError("supervised current closure file is invalid")
+            if entry.get("kind") != "exact":
+                continue
+            current = secure_target.file_state(entry.get("target_path"))
+            if (
+                current.get("kind") != "file"
+                or current.get("sha256")
+                != "sha256:" + str(entry.get("sha256"))
+                or current.get("mode")
+                != _official_exact_file_mode(entry.get("mode"))
+            ):
+                raise ValueError(
+                    "supervised current closure exact file changed: "
+                    f"{entry.get('target_path')}"
+                )
+        manifest_postimage = staged.get(TARGET_WRAPPER_MANIFEST)
+        if not isinstance(manifest_postimage, bytes) or secure_target.read_exact(
+            TARGET_WRAPPER_MANIFEST,
+            "sha256:" + hashlib.sha256(manifest_postimage).hexdigest(),
+        ) != manifest_postimage:
+            raise ValueError("supervised manifest differs from the closure postimage")
+        ledger_path = plan.get("migration_record")
+        ledger_postimage = staged.get(ledger_path)
+        if (
+            not isinstance(ledger_path, str)
+            or not isinstance(ledger_postimage, bytes)
+            or secure_target.read_exact(
+                ledger_path,
+                "sha256:" + hashlib.sha256(ledger_postimage).hexdigest(),
+            )
+            != ledger_postimage
+        ):
+            raise ValueError(
+                "supervised applied migration lineage differs from the profile"
+            )
+
+    if (
+        "sha256:" + hashlib.sha256(preimage_surface).hexdigest()
+        != transform.get("preimage_sha256")
+        or "sha256:" + hashlib.sha256(postimage_surface).hexdigest()
+        != transform.get("postimage_sha256")
+        or staged.get(instruction_path) != postimage_surface
+    ):
+        raise ValueError("supervised adapter full-file proof changed")
+
+    deleted_spans = transform.get("deleted_spans")
+    retained = transform.get("retained_target_bytes")
+    retained_segments = (
+        retained.get("segments") if isinstance(retained, dict) else None
+    )
+    if (
+        not isinstance(deleted_spans, list)
+        or not deleted_spans
+        or not isinstance(retained_segments, list)
+    ):
+        raise ValueError("supervised adapter complement proof is incomplete")
+    cursor = 0
+    expected_retained_bounds: list[tuple[int, int]] = []
+    for span in deleted_spans:
+        if not isinstance(span, dict):
+            raise ValueError("supervised deleted span proof is invalid")
+        start = span.get("start_byte")
+        end = span.get("end_byte")
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < cursor
+            or end <= start
+            or end > len(preimage_surface)
+        ):
+            raise ValueError("supervised deleted span boundaries are invalid")
+        expected_retained_bounds.append((cursor, start))
+        deleted = preimage_surface[start:end]
+        if (
+            len(deleted) != span.get("byte_length")
+            or "sha256:" + hashlib.sha256(deleted).hexdigest()
+            != span.get("sha256")
+            or postimage_surface.count(deleted) != 0
+        ):
+            raise ValueError("supervised deleted span remains in the postimage")
+        cursor = end
+    expected_retained_bounds.append((cursor, len(preimage_surface)))
+    actual_retained_bounds = [
+        (item.get("start_byte"), item.get("end_byte"))
+        for item in retained_segments
+        if isinstance(item, dict)
+    ]
+    if actual_retained_bounds != expected_retained_bounds:
+        raise ValueError("supervised retained complement boundaries changed")
+    retained_bytes = b""
+    for item in retained_segments:
+        start = item["start_byte"]
+        end = item["end_byte"]
+        segment = preimage_surface[start:end]
+        if (
+            len(segment) != item.get("byte_length")
+            or "sha256:" + hashlib.sha256(segment).hexdigest()
+            != item.get("sha256")
+        ):
+            raise ValueError("supervised retained business segment changed")
+        retained_bytes += segment
+    if (
+        len(retained_bytes) != retained.get("byte_length")
+        or "sha256:" + hashlib.sha256(retained_bytes).hexdigest()
+        != retained.get("concatenated_sha256")
+    ):
+        raise ValueError("supervised retained business complement changed")
+
+    inserted = transform.get("inserted_envelope")
+    if not isinstance(inserted, dict):
+        raise ValueError("supervised activation proof is missing")
+    inserted_start = inserted.get("start_byte")
+    inserted_end = inserted.get("end_byte")
+    if (
+        not isinstance(inserted_start, int)
+        or not isinstance(inserted_end, int)
+        or inserted_start < 0
+        or inserted_end <= inserted_start
+        or inserted_end > len(postimage_surface)
+    ):
+        raise ValueError("supervised activation boundaries are invalid")
+    inserted_bytes = postimage_surface[inserted_start:inserted_end]
+    if (
+        len(inserted_bytes) != inserted.get("byte_length")
+        or "sha256:" + hashlib.sha256(inserted_bytes).hexdigest()
+        != inserted.get("sha256")
+        or postimage_surface[:inserted_start] + postimage_surface[inserted_end:]
+        != retained_bytes
+    ):
+        raise ValueError("supervised postimage projection changed")
+    canonical_activation = inserted_bytes.rstrip(b"\r\n")
+    canonical_activation_lf = canonical_activation.replace(b"\r\n", b"\n")
+    if (
+        "sha256:" + hashlib.sha256(canonical_activation).hexdigest()
+        != inserted.get("activation_sha256")
+        or "sha256:" + hashlib.sha256(canonical_activation_lf).hexdigest()
+        != inserted.get("activation_sha256_lf")
+        or canonical_activation_lf
+        != build_harness_activation_block().encode("utf-8")
+        or postimage_surface.count(
+            migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+                "begin_marker"
+            ].encode("utf-8")
+        )
+        != 1
+        or postimage_surface.count(
+            migration_kernel.CANONICAL_ACTIVATION_CONTRACT[
+                "end_marker"
+            ].encode("utf-8")
+        )
+        != 1
+        or not _supervised_activation_has_unique_commonmark_ast(
+            inserted_bytes,
+            legacy_adapter,
+        )
+    ):
+        raise ValueError("supervised canonical activation AST is not unique")
+    return {
+        "adapter_proof": "passed",
+        "business_retained_complement": "byte_exact",
+        "current_closure": "passed",
+        "deleted_spans_remaining": 0,
+        "activation_block": "unique_commonmark_ast",
+        "manifest": "closure_exact",
+        "release_lineage": "closure_exact",
+        "migration_ledger": "profile_exact_applied_lineage",
     }
 
 
-def _remove_empty_legacy_dirs(target: Path) -> list[str]:
-    candidates = [
-        ".codex/hooks/__pycache__",
-        ".codex/hooks",
-        "scripts/__pycache__",
-        "docs/designs",
-        "docs/wrapper-migrations",
-        "docs",
-        "scripts",
-        LEGACY_TARGET_EVOINFRA_DIR,
-        OLDEST_TARGET_EVOINFRA_DIR,
-    ]
-    removed: list[str] = []
-    for rel in candidates:
-        path = target / rel
-        if not path.is_dir():
-            continue
-        try:
-            path.rmdir()
-        except OSError:
-            continue
-        removed.append(rel)
-    return removed
-
-
-def _remove_legacy_wrapper_caches(target: Path) -> list[str]:
-    patterns = [
-        ".codex/hooks/__pycache__/evozeus_wrapper_start_check.*.pyc",
-        "scripts/__pycache__/evozeus_wrapper_preflight.*.pyc",
-        f"{TARGET_EVOINFRA_DIR}/scripts/__pycache__/evozeus_notice.*.pyc",
-    ]
-    removed: list[str] = []
-    for pattern in patterns:
-        for path in target.glob(pattern):
-            if path.is_file():
-                path.unlink()
-                removed.append(str(path.relative_to(target)))
-    return removed
-
-
-def _refresh_migrated_managed_files(
+def _rebuild_supervised_apply_material(
     target: Path,
-    wrapper_version: str | None,
-    wrapper_root: Path | None = None,
-) -> list[str]:
-    wrapper_root = (
-        Path(__file__).resolve().parents[1]
-        if wrapper_root is None
-        else wrapper_root.expanduser().resolve()
+    approved_plan: dict[str, Any],
+    *,
+    latest_version: str | None,
+    today: date | None,
+    wrapper_root: Path | None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, bytes],
+]:
+    migration_bundle = migration_kernel.load_migration_contract(
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
     )
-    refresh_map = [
-        (
-            wrapper_root / "scripts" / "evozeus_wrapper_preflight.py",
-            target / TARGET_PREFLIGHT_SCRIPT,
-        ),
-        (
-            wrapper_root / "scripts" / "evozeus_notice.py",
-            target / TARGET_NOTICE_SCRIPT,
-        ),
-        (
-            wrapper_root / "templates" / "target" / ".codex" / "hooks" / "evozeus_wrapper_start_check.py",
-            target / CODEX_START_HOOK_SCRIPT,
-        ),
-        (
-            wrapper_root / "templates" / "target" / ".github" / "workflows" / "evozeus-wrapper-preflight.yml",
-            target / ".github" / "workflows" / "evozeus-wrapper-preflight.yml",
-        ),
-        (
-            wrapper_root / "templates" / "target" / "docs" / "onboarding.md",
-            target / TARGET_ONBOARDING_GUIDE,
-        ),
-        (
-            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "feedback-policy.json",
-            target / TARGET_FEEDBACK_POLICY,
-        ),
-        (
-            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "audit-rule.md",
-            target / TARGET_AUDIT_RULE,
-        ),
-        (
-            wrapper_root / "templates" / "target" / ".evozeus_evoinfra" / "notice-policy.json",
-            target / TARGET_NOTICE_POLICY,
-        ),
-    ]
-    refreshed: list[str] = []
-    for source, destination in refresh_map:
-        if not source.is_file():
-            raise ValueError(f"wrapper migration source is missing: {source}")
-        text = source.read_text(encoding="utf-8")
-        if source.name == "evozeus_wrapper_start_check.py":
-            text = text.replace("{{WRAPPER_VERSION}}", wrapper_version or "")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(text, encoding="utf-8")
-        if destination.suffix == ".py":
-            destination.chmod(0o755)
-        refreshed.append(str(destination.relative_to(target)))
-    return refreshed
+    fresh_plan = plan_target_layout_migration(
+        target,
+        latest_version,
+        today,
+        require_clean_git=True,
+        wrapper_root=wrapper_root,
+        _migration_bundle=migration_bundle,
+    )
+    if (
+        fresh_plan.get("decision") != "supervised_migration_available"
+        or fresh_plan.get("can_apply") is not True
+        or fresh_plan.get("operation_sha256")
+        != approved_plan.get("operation_sha256")
+        or migration_kernel.migration_plan_payload(fresh_plan)
+        != migration_kernel.migration_plan_payload(approved_plan)
+    ):
+        raise ValueError(
+            "supervised migration operation changed during pre-apply revalidation"
+        )
+    profile = _approved_supervised_legacy_profile(
+        migration_bundle,
+        fresh_plan.get("profile"),
+    )
+    expected_binding = fresh_plan["target_git_state"]["target_binding"]
+    evidence = migration_kernel.collect_supervised_legacy_evidence(
+        target,
+        migration_bundle,
+        profile,
+        expected_binding=expected_binding,
+    )
+    write_set, staged, protected = _supervised_legacy_write_plan(
+        migration_bundle,
+        profile,
+        evidence,
+    )
+    if (
+        evidence.get("proof") != fresh_plan.get("supervised_adapter_proof")
+        or write_set != fresh_plan.get("write_set")
+        or protected != fresh_plan.get("protected_business_surfaces")
+        or set(staged) != {item["path"] for item in write_set}
+    ):
+        raise ValueError("supervised migration proof or exact write material changed")
+    for item in write_set:
+        data = staged.get(item["path"])
+        if (
+            not isinstance(data, bytes)
+            or "sha256:" + hashlib.sha256(data).hexdigest()
+            != item.get("postimage_sha256")
+            or not isinstance(item.get("postimage_mode"), int)
+        ):
+            raise ValueError(
+                f"supervised staged postimage changed: {item.get('path')}"
+            )
+    source_root = migration_bundle.get("wrapper_root")
+    expected_source_index = fresh_plan.get("zero_write_git_indexes", {}).get(
+        "source"
+    )
+    if (
+        not isinstance(source_root, Path)
+        or not isinstance(expected_source_index, dict)
+        or migration_bundle.get("source_git_index") != expected_source_index
+        or migration_kernel.git_index_state(source_root) != expected_source_index
+        or migration_kernel.verify_supervised_legacy_source_assets(
+            migration_bundle,
+            profile,
+        )
+        != fresh_plan["profile"].get("trusted_source_assets")
+    ):
+        raise ValueError("supervised trusted source changed before snapshot")
+    migration_kernel.verify_plan_preimages(target, fresh_plan)
+    fresh_plan["approval"] = copy.deepcopy(approved_plan.get("approval"))
+    return fresh_plan, migration_bundle, profile, evidence, staged
+
+
+def _apply_supervised_legacy_upgrade(
+    target: Path,
+    approved_plan: dict[str, Any],
+    latest_version: str | None,
+    today: date | None,
+    wrapper_root: Path | None,
+    snapshot_root: Path | None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None,
+) -> dict[str, Any]:
+    plan, migration_bundle, profile, evidence, staged = (
+        _rebuild_supervised_apply_material(
+            target,
+            approved_plan,
+            latest_version=latest_version,
+            today=today,
+            wrapper_root=wrapper_root,
+            remote_tag_resolver=remote_tag_resolver,
+        )
+    )
+    approved_target_binding = plan["target_git_state"]["target_binding"]
+    migration_kernel.verify_target_binding(target, approved_target_binding)
+    trusted_structure = _trusted_structure_preflight(
+        migration_bundle,
+        profile,
+        target,
+    )
+    try:
+        snapshot = migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=snapshot_root,
+        )
+    except BaseException:
+        trusted_structure.cleanup()
+        raise
+    changed_files: list[str] = []
+    migration_kernel.mark_migration_transaction(
+        snapshot,
+        state="in_progress",
+        changed_paths=[],
+    )
+    try:
+        source_root = migration_bundle["wrapper_root"]
+        if (
+            migration_kernel.git_index_state(source_root)
+            != plan["zero_write_git_indexes"]["source"]
+            or migration_kernel.verify_supervised_legacy_source_assets(
+                migration_bundle,
+                profile,
+            )
+            != plan["profile"]["trusted_source_assets"]
+        ):
+            raise ValueError("supervised trusted source changed after snapshot")
+        migration_kernel.verify_plan_preimages(target, plan)
+        write_items = {item["path"]: item for item in plan["write_set"]}
+        with migration_kernel.SecureTargetFS(
+            target,
+            expected_binding=approved_target_binding,
+            retirement_root=snapshot / "quarantine",
+        ) as secure_target:
+            secure_target.prepare_mutation_batch(sorted(staged))
+            for relative in sorted(staged):
+                item = write_items[relative]
+                identity = item.get("preimage_identity")
+                expected_identity = (
+                    (identity["st_dev"], identity["st_ino"])
+                    if isinstance(identity, dict)
+                    else None
+                )
+                changed_files.append(relative)
+                migration_kernel.mark_migration_transaction(
+                    snapshot,
+                    state="in_progress",
+                    changed_paths=changed_files,
+                )
+                secure_target.write_exact(
+                    relative,
+                    staged[relative],
+                    expected_preimage=item.get("preimage_sha256"),
+                    expected_mode=item.get("preimage_mode"),
+                    expected_identity=expected_identity,
+                    mode=item["postimage_mode"],
+                )
+                actual = secure_target.file_state(relative)
+                if (
+                    actual.get("kind") != "file"
+                    or actual.get("sha256") != item["postimage_sha256"]
+                    or actual.get("mode") != item["postimage_mode"]
+                ):
+                    raise ValueError(
+                        f"supervised staged operation postimage failed: {relative}"
+                    )
+
+        validation = _verify_supervised_legacy_postconditions(
+            target,
+            plan,
+            migration_bundle,
+            profile,
+            evidence["_surface_bytes"],
+            staged,
+            evidence["_verified_adapter_module"],
+        )
+        migration_kernel.verify_post_apply_target_state(target, plan)
+        structure = _run_harness_structure_check(
+            target,
+            trusted_preflight=trusted_structure,
+        )
+        if structure["returncode"] != 0:
+            detail = (structure["stderr"] or structure["stdout"]).strip()
+            raise ValueError(
+                f"supervised migration structure validation failed: {detail}"
+            )
+        validation.update(
+            {
+                "structure": "passed",
+                "command": "immutable-bytes",
+                "preflight_sha256": trusted_structure.preflight_sha256,
+                "notice_sha256": trusted_structure.notice_sha256,
+            }
+        )
+        migration_kernel.verify_post_apply_target_state(target, plan)
+        migration_kernel.mark_migration_transaction(
+            snapshot,
+            state="applied",
+            changed_paths=changed_files,
+        )
+    except Exception as exc:
+        try:
+            rollback = migration_kernel.rollback_migration_snapshot(
+                target,
+                snapshot,
+                trusted_snapshot_root=snapshot_root,
+            )
+        except Exception as rollback_exc:
+            migration_kernel.mark_migration_transaction(
+                snapshot,
+                state="rollback_failed",
+                changed_paths=changed_files,
+                error=f"apply={exc}; rollback={rollback_exc}",
+            )
+            return {
+                **plan,
+                "status": "rollback_failed",
+                "writes": True,
+                "rollback_verified": False,
+                "snapshot": str(snapshot),
+                "changed_files": changed_files,
+                "error": str(exc),
+                "rollback_error": str(rollback_exc),
+            }
+        raise ValueError(
+            f"supervised migration failed and snapshot rollback passed: {exc}; "
+            f"snapshot={rollback['snapshot']}"
+        ) from exc
+    finally:
+        trusted_structure.cleanup()
+
+    return {
+        **plan,
+        "status": "applied",
+        "writes": True,
+        "migration_required": False,
+        "can_apply": False,
+        "snapshot": str(snapshot),
+        "changed_files": changed_files,
+        "approved_operation_sha256": plan["operation_sha256"],
+        "validation": validation,
+    }
+
+
+def _apply_canonical_v1_upgrade(
+    target: Path,
+    plan: dict[str, Any],
+    today: date | None,
+    migration_bundle: dict[str, Any],
+    snapshot_root: Path | None,
+) -> dict[str, Any]:
+    approved_target_binding = (plan.get("target_git_state") or {}).get(
+        "target_binding"
+    )
+    migration_kernel.verify_target_binding(target, approved_target_binding)
+    allowed_paths = {item["path"] for item in plan["write_set"]}
+    approved_profile = _approved_automatic_profile(
+        migration_bundle,
+        plan.get("profile"),
+    )
+    profile_id = approved_profile["profile_id"]
+    official_profile = _official_upgrade_profile(migration_bundle, profile_id)
+    expected_paths = {
+        item.get("target_path")
+        for item in official_profile.get("operations", [])
+        if isinstance(item, dict) and isinstance(item.get("target_path"), str)
+    }
+    if allowed_paths != expected_paths or plan["delete_set"] or plan["move_set"]:
+        raise ValueError("canonical migration plan write set is not the contract-defined set")
+
+    manifest = _read_manifest_json(target / TARGET_WRAPPER_MANIFEST)
+    regenerated_write_set, staged = _official_upgrade_write_plan(
+        target,
+        manifest,
+        migration_bundle,
+        profile_id,
+    )
+    regenerated_by_path = {item["path"]: item for item in regenerated_write_set}
+    for item in plan["write_set"]:
+        regenerated = regenerated_by_path.get(item["path"])
+        if regenerated is None or any(
+            regenerated.get(field) != item.get(field)
+            for field in (
+                "operation",
+                "preimage_sha256",
+                "preimage_mode",
+                "postimage_sha256",
+                "postimage_mode",
+                "source_sha256",
+                "source_path",
+                "authority",
+                "operation_sha256",
+                "manifest_preconditions",
+                "manifest_patch",
+            )
+        ):
+            raise ValueError(
+                f"migration operation differs from verified profile: {item['path']}"
+            )
+        data = staged.get(item["path"])
+        if data is None:
+            raise ValueError(f"migration staged bytes are missing: {item['path']}")
+        actual_postimage = f"sha256:{hashlib.sha256(data).hexdigest()}"
+        if actual_postimage != item.get("postimage_sha256"):
+            raise ValueError(
+                f"migration staged postimage differs from approved plan: {item['path']}"
+            )
+
+    trusted_structure = _trusted_structure_preflight(
+        migration_bundle,
+        official_profile,
+        target,
+    )
+    try:
+        snapshot = migration_kernel.create_migration_snapshot(
+            target,
+            plan,
+            snapshot_root=snapshot_root,
+        )
+    except BaseException:
+        trusted_structure.cleanup()
+        raise
+    protected_before: dict[str, bytes] = {}
+    with migration_kernel.SecureTargetFS(
+        target,
+        expected_binding=approved_target_binding,
+    ) as secure_target:
+        for item in plan["protected_business_surfaces"]:
+            protected_before[item["path"]] = secure_target.read_exact(
+                item["path"],
+                item["preimage_sha256"],
+            )
+    changed_files: list[str] = []
+    migration_kernel.mark_migration_transaction(
+        snapshot,
+        state="in_progress",
+        changed_paths=[],
+    )
+    try:
+        migration_kernel.verify_plan_preimages(target, plan)
+        write_items = {item["path"]: item for item in plan["write_set"]}
+        with migration_kernel.SecureTargetFS(
+            target,
+            expected_binding=approved_target_binding,
+            retirement_root=snapshot / "quarantine",
+        ) as secure_target:
+            secure_target.prepare_mutation_batch(sorted(staged))
+            for relative in sorted(staged):
+                item = write_items[relative]
+                changed_files.append(relative)
+                migration_kernel.mark_migration_transaction(
+                    snapshot,
+                    state="in_progress",
+                    changed_paths=changed_files,
+                )
+                secure_target.write_exact(
+                    relative,
+                    staged[relative],
+                    expected_preimage=item.get("preimage_sha256"),
+                    expected_mode=item.get("preimage_mode"),
+                    mode=item["postimage_mode"],
+                )
+
+            for item in plan["write_set"]:
+                actual = secure_target.file_state(item["path"])
+                if (
+                    actual.get("sha256") != item["postimage_sha256"]
+                    or actual.get("mode") != item["postimage_mode"]
+                ):
+                    raise ValueError(
+                        f"migration postimage verification failed: {item['path']}"
+                    )
+
+            for relative, expected in protected_before.items():
+                expected_sha256 = f"sha256:{hashlib.sha256(expected).hexdigest()}"
+                if secure_target.file_state(relative).get("sha256") != expected_sha256:
+                    raise ValueError(
+                        f"protected business surface changed outside the plan: {relative}"
+                    )
+        structure = _run_harness_structure_check(
+            target,
+            trusted_preflight=trusted_structure,
+        )
+        if structure["returncode"] != 0:
+            detail = (structure["stderr"] or structure["stdout"]).strip()
+            raise ValueError(f"migration post-validation failed: {detail}")
+        migration_kernel.verify_post_apply_target_state(target, plan)
+        migration_kernel.mark_migration_transaction(
+            snapshot,
+            state="applied",
+            changed_paths=changed_files,
+        )
+    except Exception as exc:
+        try:
+            rollback = migration_kernel.rollback_migration_snapshot(
+                target,
+                snapshot,
+                trusted_snapshot_root=snapshot_root,
+            )
+        except Exception as rollback_exc:
+            migration_kernel.mark_migration_transaction(
+                snapshot,
+                state="rollback_failed",
+                changed_paths=changed_files,
+                error=f"apply={exc}; rollback={rollback_exc}",
+            )
+            return {
+                **plan,
+                "status": "rollback_failed",
+                "writes": True,
+                "rollback_verified": False,
+                "snapshot": str(snapshot),
+                "changed_files": changed_files,
+                "error": str(exc),
+                "rollback_error": str(rollback_exc),
+            }
+        raise ValueError(
+            f"migration failed and snapshot rollback passed: {exc}; "
+            f"snapshot={rollback['snapshot']}"
+        ) from exc
+    finally:
+        trusted_structure.cleanup()
+
+    return {
+        **plan,
+        "status": "applied",
+        "writes": True,
+        "migration_required": False,
+        "can_apply": False,
+        "snapshot": str(snapshot),
+        "changed_files": changed_files,
+        "validation": {
+            "structure": "passed",
+            "protected_business_surfaces": "byte_exact",
+            "command": "immutable-bytes",
+            "preflight_sha256": trusted_structure.preflight_sha256,
+            "notice_sha256": trusted_structure.notice_sha256,
+        },
+    }
+
+
+def rollback_target_layout_migration(
+    target: Path,
+    snapshot: Path,
+    *,
+    trusted_snapshot_root: Path | None = None,
+) -> dict[str, Any]:
+    return migration_kernel.rollback_migration_snapshot(
+        target,
+        snapshot,
+        trusted_snapshot_root=trusted_snapshot_root,
+    )
 
 
 def migrate_target_layout(
@@ -2594,179 +6869,124 @@ def migrate_target_layout(
     *,
     wrapper_root: Path | None = None,
     require_clean_git: bool = False,
+    snapshot_root: Path | None = None,
+    approved_plan_sha256: str | None = None,
+    remote_tag_resolver: migration_kernel.OfficialTagResolver | None = None,
 ) -> dict[str, Any]:
     target = target.expanduser().resolve()
+    migration_bundle = migration_kernel.load_migration_contract(
+        wrapper_root,
+        remote_tag_resolver=remote_tag_resolver,
+    )
     plan = plan_target_layout_migration(
         target,
         latest_version,
         today,
         require_clean_git=require_clean_git,
+        wrapper_root=wrapper_root,
+        _migration_bundle=migration_bundle,
     )
-    if plan["conflicts"]:
-        raise ValueError("cannot migrate wrapper layout:\n- " + "\n- ".join(plan["conflicts"]))
     if not plan["migration_required"]:
         return {**plan, "writes": False, "actions": [], "changed_files": []}
-
-    actions: list[str] = []
-    changed_files: list[str] = []
-    for move in plan["moves"]:
-        source = target / move["source"]
-        destination = target / move["destination"]
-        if move["action"] == "move":
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(destination)
-            actions.append(f"move {move['source']} -> {move['destination']}")
-            changed_files.append(move["destination"])
-        else:
-            source.unlink()
-            actions.append(f"remove duplicate {move['source']}")
-
-    for path in target_infra_text_files(target):
-        if rewrite_target_infra_text_file(path):
-            changed_files.append(str(path.relative_to(target)))
-    if rewrite_dashboard_contact_link(target):
-        changed_files.append(".github/ISSUE_TEMPLATE/config.yml")
-
-    refreshed_files = _refresh_migrated_managed_files(
-        target,
-        latest_version or plan["current_version"],
-        wrapper_root,
+    if plan["decision"] == "manual_migration_required":
+        return {
+            **plan,
+            "status": "manual_migration_required",
+            "writes": False,
+            "actions": [],
+            "changed_files": [],
+        }
+    if not plan["can_apply"]:
+        return {
+            **plan,
+            "status": "blocked",
+            "writes": False,
+            "actions": [],
+            "changed_files": [],
+        }
+    supervised_apply = plan.get("decision") == "supervised_migration_available"
+    expected_approval_sha256 = (
+        plan.get("operation_sha256")
+        if supervised_apply
+        else plan.get("plan_sha256")
     )
-    changed_files.extend(refreshed_files)
-    actions.extend(f"refresh managed file {path}" for path in refreshed_files)
-
-    merged_hooks, hooks_action = _merge_codex_hooks_config(target)
-    hooks_path = target / CODEX_HOOKS_CONFIG
-    hooks_path.parent.mkdir(parents=True, exist_ok=True)
-    if hooks_action != "already_registered":
-        hooks_path.write_text(json.dumps(merged_hooks, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        changed_files.append(CODEX_HOOKS_CONFIG)
-    actions.append(f"{hooks_action} Codex SessionStart registration in {CODEX_HOOKS_CONFIG}")
-
-    manifest_path = wrapper_manifest_path(target)
-    if not manifest_path.is_file():
-        raise ValueError(f"migration did not produce {TARGET_WRAPPER_MANIFEST}")
-    manifest = _read_manifest_json(manifest_path)
-    manifest = rewrite_target_infra_json(manifest)
-    installed_version = latest_version or manifest.get("wrapper_version")
-    if not installed_version:
-        raise ValueError("migration requires a valid wrapper version")
-    instruction_surface, surface_changed = _refresh_migration_instruction_surface(
-        target,
-        manifest,
-        plan["current_version"],
-        installed_version,
-        from_layout=plan["from_layout"],
-        to_layout=plan["to_layout"],
-        layout_migration_required=plan["layout_migration_required"],
-    )
-    if surface_changed:
-        changed_files.append(instruction_surface)
-        actions.append(f"refresh wrapper status and append refresh note in {instruction_surface}")
-    refreshed_contract = build_wrapper_manifest(
-        repo=manifest.get("canonical_repo") or "OWNER/REPO",
-        wrapper_version=installed_version,
-        managed_files=WRAPPER_MANAGED_FILES,
-        install_links=manifest.get("install_links") or [],
-        instruction_surface=instruction_surface,
-        integration=detect_target_architecture(target)["integration"],
-        onboarding=manifest.get("onboarding"),
-        dashboard=manifest.get("dashboard"),
-    )
-    manifest["wrapper_repo"] = refreshed_contract["wrapper_repo"]
-    manifest["wrapper_version"] = installed_version
-    manifest["applied_at"] = (today or date.today()).isoformat()
-    manifest["layout_version"] = 2
-    manifest["target_wrapper_dir"] = TARGET_EVOINFRA_DIR
-    manifest["target_infra_dir"] = TARGET_EVOINFRA_DIR
-    if plan["layout_migration_required"]:
-        manifest["migrated_from_layout"] = "scattered-v1"
-    manifest["legacy_layout_dirs"] = [LEGACY_TARGET_EVOINFRA_DIR, OLDEST_TARGET_EVOINFRA_DIR]
-    manifest["managed_files"] = WRAPPER_MANAGED_FILES
-    manifest["hook_registration"] = refreshed_contract["hook_registration"]
-    manifest["integration"] = refreshed_contract["integration"]
-    manifest["onboarding"] = refreshed_contract["onboarding"]
-    manifest["dashboard"] = refreshed_contract["dashboard"]
-    manifest["instruction_surface"] = instruction_surface
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    changed_files.append(TARGET_WRAPPER_MANIFEST)
-
-    migration_record = target / plan["migration_record"]
-    migration_record.parent.mkdir(parents=True, exist_ok=True)
-    migration_record.write_text(
-        "\n".join(
-            [
+    if approved_plan_sha256 is None:
+        approval = {
+            "required": True,
+            "expected_plan_sha256": plan["plan_sha256"],
+        }
+        if supervised_apply:
+            approval["expected_operation_sha256"] = expected_approval_sha256
+        return {
+            **plan,
+            "status": "approval_required",
+            "writes": False,
+            "approval": approval,
+        }
+    if approved_plan_sha256 != expected_approval_sha256:
+        approval = {
+            "required": True,
+            "approved_plan_sha256": approved_plan_sha256,
+            "expected_plan_sha256": plan["plan_sha256"],
+            "matched": False,
+        }
+        if supervised_apply:
+            approval["expected_operation_sha256"] = expected_approval_sha256
+        return {
+            **plan,
+            "status": "blocked",
+            "writes": False,
+            "approval": approval,
+            "apply_blockers": [
+                *plan["apply_blockers"],
                 (
-                    "# EvoZeus-CoEvolve 布局迁移：v1 -> v2"
-                    if plan["layout_migration_required"]
-                    else f"# EvoZeus-CoEvolve Harness Refresh：{plan['current_version']} -> {plan['latest_version']}"
+                    "approved operation digest does not match the current "
+                    "supervised plan"
+                    if supervised_apply
+                    else "approved plan digest does not match the current plan"
                 ),
-                "",
-                f"- 日期：{(today or date.today()).isoformat()}",
-                f"- Wrapper 版本：{plan['current_version'] or 'unknown'} -> {plan['latest_version'] or 'unknown'}",
-                f"- 新事实源：`{TARGET_WRAPPER_MANIFEST}`",
-                (
-                    "- 目标：把 wrapper 产物归拢到 `.evozeus-wrapper/`。"
-                    if plan["layout_migration_required"]
-                    else "- 目标：修复 consolidated-v2 harness 并刷新 wrapper-managed contract。"
-                ),
-                "",
-                "## 移动记录",
-                "",
-                *(
-                    [f"- `{item['source']}` -> `{item['destination']}`" for item in plan["moves"]]
-                    or ["- 无文件移动；刷新 consolidated-v2 managed files。"]
-                ),
-                "",
-                "## 保留的宿主接点",
-                "",
-                *[f"- `{item}`" for item in plan["preserved_host_entrypoints"]],
-                "",
-                "## 验证",
-                "",
-                f"- `python3 {TARGET_PREFLIGHT_SCRIPT} structure`",
-                f"- `python3 {TARGET_PREFLIGHT_SCRIPT} runtime`",
-                "",
-                "## 回滚",
-                "",
-                "- 回滚包含本次迁移的 Git commit。",
-                "",
-            ]
+            ],
+        }
+    plan["approval"] = {
+        "approved_plan_sha256": approved_plan_sha256,
+        "approved_operation_sha256": (
+            approved_plan_sha256 if supervised_apply else None
         ),
-        encoding="utf-8",
-    )
-    changed_files.append(plan["migration_record"])
-
-    removed_caches = _remove_legacy_wrapper_caches(target)
-    actions.extend(f"remove generated cache {path}" for path in removed_caches)
-    removed_dirs = _remove_empty_legacy_dirs(target)
-    actions.extend(f"remove empty directory {path}/" for path in removed_dirs)
-    after = wrapper_manifest_status(target)
-    if after["migration_required"] or after["legacy_manifest_detected"]:
-        raise ValueError("migration left a legacy wrapper manifest behind")
-
-    structure = run_command(
-        [sys.executable, str(target / TARGET_PREFLIGHT_SCRIPT), "structure", "--target", str(target)]
-    )
-    if structure["returncode"] != 0:
-        detail = (structure["stderr"] or structure["stdout"]).strip()
-        raise ValueError(f"migration post-validation failed: {detail}")
-
-    return {
-        **plan,
-        "writes": True,
-        "migration_required": False,
-        "can_apply": False,
-        "actions": actions,
-        "changed_files": list(dict.fromkeys(changed_files)),
-        "removed_empty_dirs": removed_dirs,
-        "removed_generated_caches": removed_caches,
-        "manifest_source": after["manifest_source"],
-        "validation": {
-            "structure": "passed",
-            "command": f"python3 {TARGET_PREFLIGHT_SCRIPT} structure --target {target}",
-        },
+        "matched": True,
     }
+    if supervised_apply:
+        return _apply_supervised_legacy_upgrade(
+            target,
+            plan,
+            latest_version,
+            today,
+            wrapper_root,
+            snapshot_root,
+            remote_tag_resolver,
+        )
+    approved_profile = _approved_automatic_profile(
+        migration_bundle,
+        plan.get("profile"),
+    )
+    approved_payload = approved_profile.get("adapter_payload") or {}
+    authority_rules = migration_bundle["contract"].get("authority_rules") or {}
+    if (
+        approved_profile.get("automatic") is not True
+        or approved_payload.get("type") != "exact-artifact-and-stable-block"
+        or authority_rules.get("discovery_candidates_are_authority") is not False
+        or authority_rules.get("manifest_managed_flag_is_sufficient") is not False
+        or authority_rules.get("exact_preimage_hash_required") is not True
+        or authority_rules.get("snapshot_required_before_write") is not True
+        or authority_rules.get("post_verify_failure") != "restore_snapshot"
+    ):
+        raise ValueError("migration apply is blocked: profile authority is incomplete")
+    return _apply_canonical_v1_upgrade(
+        target,
+        plan,
+        today,
+        migration_bundle,
+        snapshot_root,
+    )
 
 
 def migrate_target_infra_dir(
@@ -3050,12 +7270,7 @@ def plan_harness_upgrade(
     architecture = detect_target_architecture(target)
     manifest_surface = manifest.get("instruction_surface") if manifest else None
     instruction_surface = instruction_surface or manifest_surface or architecture["root_entry"] or "SKILL.md"
-    if instruction_surface == "SKILL.md":
-        root_status_section = SKILL_STATUS_SECTION
-        root_wrapper_section = SKILL_WRAPPER_SECTION
-    else:
-        root_status_section = f"{instruction_surface} EvoZeus-CoEvolve status check section (instruction surface prelude)"
-        root_wrapper_section = f"{instruction_surface} EvoZeus-CoEvolve section or migration note (append only)"
+    root_harness_entry = f"{instruction_surface} canonical Harness Skill activation block"
     current = manifest.get("wrapper_version") if manifest else None
     latest_resolution = resolve_latest_wrapper_release(latest_version)
     latest = latest_resolution["version"]
@@ -3070,13 +7285,14 @@ def plan_harness_upgrade(
     migration_doc = wrapper_migration_doc_path(current, latest, today)
     needs_upgrade = status in {"auto_pr", "needs_merge_review", "requires_confirmation"}
     needs_repair = status in {"missing_manifest", "latest_unknown"}
+    layout_migration = plan_target_layout_migration(target, latest, today)
 
     planned_files: list[str] = []
-    if needs_upgrade or needs_repair:
+    if needs_upgrade or needs_repair or layout_migration["migration_required"]:
         planned_files.extend(
             [
-                root_status_section,
-                root_wrapper_section,
+                root_harness_entry,
+                TARGET_HARNESS_SKILL,
                 TARGET_WRAPPER_MANIFEST,
                 WRAPPER_MIGRATION_README,
             ]
@@ -3090,18 +7306,16 @@ def plan_harness_upgrade(
         if path not in deduped_planned_files:
             deduped_planned_files.append(path)
 
-    layout_migration = plan_target_layout_migration(target, latest, today)
-
-    if layout_migration["migration_required"]:
+    if status == "missing_manifest":
+        recommended_action = "repair_or_adopt_before_upgrade"
+    elif status == "latest_unknown":
+        recommended_action = "provide_latest_wrapper_version"
+    elif layout_migration["migration_required"]:
         recommended_action = "migrate_layout"
     elif status == "up_to_date":
         recommended_action = "none"
     elif status == "local_ahead":
         recommended_action = "do_not_downgrade"
-    elif status == "missing_manifest":
-        recommended_action = "repair_or_adopt_before_upgrade"
-    elif status == "latest_unknown":
-        recommended_action = "provide_latest_wrapper_version"
     elif status == "needs_merge_review":
         recommended_action = "review_managed_file_diffs_before_upgrade"
     elif status == "requires_confirmation":
@@ -3131,7 +7345,9 @@ def plan_harness_upgrade(
         "oldest_infra_dir": OLDEST_TARGET_EVOINFRA_DIR,
         "manifest_path": TARGET_WRAPPER_MANIFEST,
         "legacy_manifest_detected": manifest_status["legacy_manifest_detected"],
-        "migration_required": manifest_status["migration_required"],
+        "migration_required": (
+            manifest_status["migration_required"] or layout_migration["migration_required"]
+        ),
         "manifest_source": manifest_status["manifest_source"],
         "current_version": current,
         "latest_version": latest,
@@ -3144,16 +7360,17 @@ def plan_harness_upgrade(
         "recommended_action": recommended_action,
         "requires_confirmation": status in {"missing_manifest", "latest_unknown", "needs_merge_review", "requires_confirmation"},
         "status_check_first": True,
-        "append_only": True,
+        "append_only": False,
         "evolution_surface_policy": (
-            f"add or refresh the wrapper-owned status prelude in {instruction_surface} before the main chain, then append "
-            "the EvoZeus-CoEvolve section or a migration note; never rewrite target business rules"
+            f"keep one compact canonical Harness Skill activation block in {instruction_surface}; "
+            f"store the full wrapper contract in {TARGET_HARNESS_SKILL}; preserve target business bytes"
         ),
         "integration": integration,
         "integration_policy": (
             "repo_maintenance_hook covers only the canonical repository; global_session_dispatcher checks all "
             "registered wrapped Skills at SessionStart; skill_entry_preflight is prompt-compliance fallback; "
-            "none is a native per-Skill invocation hook without a SkillInvoke event"
+            "none is a native per-Skill invocation hook without a SkillInvoke event; the contributor branch "
+            "contract remains tracked by #36 and is consumed after that contract lands"
         ),
         "skill_md_policy": (
             "single Skill targets use SKILL.md; AGENTS.md-root targets use AGENTS.md; hook-controlled bundles use the hook-loaded control Skill"
@@ -3168,14 +7385,12 @@ def plan_harness_upgrade(
         "layout_migration": layout_migration,
         "planned_files": deduped_planned_files,
         "migration_steps": [
-            f"Read {TARGET_WRAPPER_MANIFEST} and confirm canonical_repo before touching runtime installs.",
-            f"If {LEGACY_TARGET_WRAPPER_MANIFEST} or {OLDEST_TARGET_WRAPPER_MANIFEST} exists, run the one-time layout migration.",
-            "Diff wrapper-managed files; if they contain local edits, stop for merge review.",
-            "Copy or merge wrapper-managed files only.",
-            f"Add the EvoZeus-CoEvolve status check in {instruction_surface} before the target main chain if missing.",
-            f"Append the EvoZeus-CoEvolve section in {instruction_surface} if missing; otherwise append a migration note instead of editing old text.",
-            f"Write a migration record under {TARGET_EVOINFRA_DIR}/docs/migrations/ with from/to wrapper versions, validation, and rollback.",
-            f"Update {TARGET_WRAPPER_MANIFEST} wrapper_version after validation passes.",
+            "Inspect the versioned migration contract and select one exact profile.",
+            "Treat scattered legacy paths and instruction signatures as read-only discovery candidates; require manual migration with zero writes.",
+            "Allow automatic apply only for release-bound exact preimages, one exact stable activation block, and a clean target Git worktree.",
+            "Approve the exact plan SHA-256 after reviewing the explicit write, delete, move, and protected-surface sets.",
+            "Create and validate a complete snapshot outside the target repository before the first write.",
+            "Verify every postimage, protected business byte, structure check, and rollback receipt before reporting success.",
         ],
         "validation": validation,
     }

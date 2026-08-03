@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MetaInFLow/EvoZeus-CoEvolve/contracts/v1/migrations/schemas/legacy-source-envelope-v1.schema.json",
+  "title": "EvoZeus reviewed legacy source envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "envelope_id",
+    "envelope_version",
+    "source_evidence",
+    "frozen_preflight_artifact",
+    "state",
+    "manifest_projection",
+    "instruction_surface",
+    "files",
+    "host_entrypoints_must_match"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evozeus.coevolve.legacy-source-envelope.v1"
+    },
+    "envelope_id": { "const": "legacy-wrapper-v0.14-three-section" },
+    "envelope_version": {
+      "type": "string",
+      "const": "v1.0.0",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "source_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "repository_url",
+        "commit",
+        "tree",
+        "instruction_surface_path",
+        "instruction_surface_sha256",
+        "instruction_surface_line_count_lf",
+        "manifest_sha256",
+        "legacy_preflight_sha256",
+        "captured_at",
+        "purpose"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^(?!\\.{1,2}/)(?![^/]+/\\.{1,2}$)[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "repository_url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": { "$ref": "#/$defs/gitOid" },
+        "tree": { "$ref": "#/$defs/gitOid" },
+        "instruction_surface_path": { "$ref": "#/$defs/relativePath" },
+        "instruction_surface_sha256": { "$ref": "#/$defs/sha256" },
+        "instruction_surface_line_count_lf": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "legacy_preflight_sha256": { "$ref": "#/$defs/sha256" },
+        "captured_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    },
+    "frozen_preflight_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_path",
+        "artifact_path",
+        "sha256",
+        "mode",
+        "encoding",
+        "newline_style",
+        "normalization",
+        "source"
+      ],
+      "properties": {
+        "target_path": {
+          "const": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py"
+        },
+        "artifact_path": {
+          "const": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/artifacts/scripts/evozeus_wrapper_preflight.py"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "mode": {
+          "const": "100755"
+        },
+        "encoding": {
+          "const": "strict-utf-8"
+        },
+        "newline_style": {
+          "const": "lf"
+        },
+        "normalization": {
+          "const": "forbidden_byte_exact"
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "commit",
+            "tree",
+            "path",
+            "blob",
+            "mode"
+          ],
+          "properties": {
+            "repository": {
+              "const": "MetaInFLow/EvoZeus-CoEvolve"
+            },
+            "commit": {
+              "$ref": "#/$defs/gitOid"
+            },
+            "tree": {
+              "$ref": "#/$defs/gitOid"
+            },
+            "path": {
+              "const": "scripts/evozeus_wrapper_preflight.py"
+            },
+            "blob": {
+              "$ref": "#/$defs/gitOid"
+            },
+            "mode": {
+              "const": "100755"
+            }
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layout",
+        "target_wrapper_version",
+        "instruction_surface",
+        "harness_skill_state"
+      ],
+      "properties": {
+        "layout": { "const": "consolidated-v2" },
+        "target_wrapper_version": { "const": "v0.14.0" },
+        "instruction_surface": { "const": "SKILL.md" },
+        "harness_skill_state": { "const": "absent" }
+      }
+    },
+    "manifest_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "mode",
+        "template_path",
+        "template_sha256",
+        "template_placeholders",
+        "required_absent_fields",
+        "top_level_keys_exact",
+        "managed_files_exact"
+      ],
+      "properties": {
+        "path": { "const": ".evozeus-wrapper/wrapper.json" },
+        "mode": { "const": "100644" },
+        "template_path": { "$ref": "#/$defs/relativePath" },
+        "template_sha256": { "$ref": "#/$defs/sha256" },
+        "template_placeholders": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "APPLIED_AT" },
+            { "const": "REPO_NAME" },
+            { "const": "SKILL_NAME" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "required_absent_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "top_level_keys_exact": { "const": true },
+        "managed_files_exact": { "const": true }
+      }
+    },
+    "instruction_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "mode",
+        "encoding",
+        "newline_styles",
+        "mixed_newline_decision",
+        "required_owned_sections",
+        "required_owned_section_count",
+        "canonical_marker_precondition",
+        "preservation"
+      ],
+      "properties": {
+        "path": { "const": "SKILL.md" },
+        "mode": { "const": "100644" },
+        "encoding": { "const": "strict-utf-8" },
+        "newline_styles": {
+          "type": "array",
+          "prefixItems": [{ "const": "lf" }, { "const": "crlf" }],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "mixed_newline_decision": {
+          "const": "manual_migration_required_zero_write"
+        },
+        "required_owned_sections": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "status" },
+            { "const": "evolution" },
+            { "const": "wrapper" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "required_owned_section_count": { "const": 3 },
+        "canonical_marker_precondition": { "const": "absent" },
+        "preservation": { "const": "complement_bytes_exact" }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "source"],
+        "properties": {
+          "path": { "$ref": "#/$defs/relativePath" },
+          "kind": { "enum": ["exact", "absent", "rendered_preserve"] },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "mode": { "enum": ["100644", "100755"] },
+          "source": { "type": "string", "minLength": 1 }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "exact" } } },
+            "then": { "required": ["sha256", "mode"] }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "rendered_preserve" } } },
+            "then": {
+              "required": ["mode"],
+              "not": { "required": ["sha256"] }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "absent" } } },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["sha256"] },
+                  { "required": ["mode"] }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "host_entrypoints_must_match": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relativePath" }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\).+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

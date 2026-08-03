@@ -163,9 +163,11 @@ python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
 python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
-python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
-python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.15.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.15.0 --approve-plan 'sha256:<operation_sha256-or-plan_sha256>' --json
+python3 scripts/evozeus_wrapper.py harness rollback-migration --target /absolute/path/to/skill --snapshot /absolute/path/to/trusted-snapshot --approve --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.15.0 --dry-run --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.15.0 --approve --approve-plan 'sha256:<exact-batch-plan-digest>' --json
 ```
 
 `loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
@@ -176,21 +178,33 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 
 - Skill release 描述目标 Skill 行为版本。
 - Wrapper harness version 描述 EvoZeus-CoEvolve 注入的模板、脚本和治理逻辑版本。
-- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities` 和 `onboarding`。
+- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities`、`onboarding`、`instruction_surface`、`harness_skill_path`、`harness_skill_version` 和 `harness_skill_managed=true`。
 - `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及子 Skill 继承 Repo 根 Harness后的独立运行验证。
 - `dashboard.deployment_mode=opt_in_github_pages`；workflow validation 不依赖 Pages，部署由 `EVOZEUS_PAGES_ENABLED=true` 显式开启。
 - 最新 wrapper 版本默认取 GitHub latest release；来源不可用时必须返回 `latest_unknown` 和查询证据，不能回退为当前版本。
 - wrapper major upgrade 必须用户确认。
-- consolidated layout 的版本刷新只改 harness-managed files，不改目标 Skill 业务规则。
-- legacy layout migration 可以更新 target-owned 文档或脚本中的旧 wrapper 路径引用；计划必须列出并备份完整 write set，且不得改变业务语义。
+- consolidated layout 的版本刷新只改 profile 明确授权且具备 exact preimage hash 的 harness-managed files，不改目标 Skill 业务规则。
+- legacy layout、heading、frontmatter、terminal signature、regex 与旧路径只产生 read-only discovery candidates；它们自身没有写入权。`legacy-scattered-to-canonical-v1.0`、`prerelease-ambiguous-to-manual-review` 和 unknown profile 固定返回 `writes=false`。其中 prerelease profile 覆盖缺少 exact migration contract / managed-block receipt 的 v1.1 目标。
+- `legacy-v0.14-three-section-to-canonical-v1.1@v1.0.0` 是独立的 supervised Skill migration profile。只有冻结 v0.14 envelope 的完整 file/hash/mode/absence/manifest 事实、受信 source/tag、固定 CommonMark parser、唯一三段 AST、完整 `SKILL.md` preimage 与 retained-byte complement 同时成立，计划才返回 `supervised_migration_available`。七个操作由一个全文件 `SKILL.md` postimage、五个 verified current-closure 操作和一个 profile-bound applied-lineage record 组成。
 - `migrate-layout` 和 `upgrade-all` 都必须拒绝绝对路径、`..` 越界和任何包含 symlink component 的 write path；manifest-selected instruction surface 同样必须是 target 内部的普通文件。
-- wrapper upgrade 必须生成迁移方案，列出每个 source/destination、冲突、保留的宿主接点、验证命令和回滚方案；有冲突时不得写入。
-- layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新状态段和 manifest integration，追加 migration note，并通过 post-migration structure validation 后才返回成功。
+- wrapper upgrade 必须生成带 `migration_protocol_version`、profile/adapter 独立身份、from/to、write/delete/move set、每个 preimage/postimage、受保护业务面、验证、回滚和 self-excluding digest 的迁移方案；supervised 还必须生成 `operation_sha256` 与固定 authorization envelope。有冲突时不得写入。
+- 历史账本分两层：`release_lineage_records` 描述当前 Harness release 的公共发布谱系，fresh attach、automatic 与 supervised 到达同一 v1.1 closure 时共享 `harness-skill-v1.0.0-to-v1.1.0.md`；`migration_records/current_migration_record` 描述本次实际到达路径。reviewed v0.14 supervised 只把独立的 `reviewed-legacy-v0.14.0-to-harness-skill-v1.1.0.md` 作为 applied lineage，fresh attach 不物化它，automatic profile 不引用它。任一字段缺失、矛盾或与 verified operations 不一致时 runtime fail closed；全部实际 write records 进入存在性、路径安全、batch preflight 与 rollback 校验。
+- apply 必须接收 `--approve-plan sha256:<digest>` 并与重算计划完全一致：supervised legacy 使用 `operation_sha256`，automatic 使用 `plan_sha256`。`one_time` 只覆盖当前 CLI invocation，授权不写入配置或可复用授权存储；成功 apply 后 preimage 改变，旧 digest 无法对 applied state 重放。显式 rollback 后再次手工提交同 digest 属于一次新的显式 invocation。GitHub `ADMIN` 只证明 Repo 权限，不替代计划批准。批量升级同时要求 `--approve` 与 exact `batch_plan_sha256`，并保存每个 target 的适用 digest 逐目标传入；任何 batch/target replan digest 变化都会阻断写入。
+- automatic migration 当前覆盖 `canonical-v1.0-to-v1.1@v1.0.0` exact artifact profile。该 profile 保持 compact entry 与完整 instruction surface 字节不变，只刷新合同列出的 Harness Skill、preflight、migration contract、manifest 和 migration record。reviewed v0.14 使用上述 supervised profile，不共享 automatic authority class。
+- apply 前必须验证官方 origin、clean source worktree、`HEAD==release tag commit==official remote tag commit`、tagged manifest/contract 与所有实际 postimage source bytes。未发布 source 允许 plan，apply 固定 `source_unreleased`、`writes=false`。
+- trusted verifier、migration consumer、protocol、schema 或仓库治理文件发生变更时，固定采用两 PR：先合并 protected source rotation，取得 main 可达的 canonical Commit；再创建只包含新 closure、profiles、artifacts、current pointers 与 contract manifest 的 data-only migration PR。该要求适用于全部 merge strategy。
+- candidate construction source allowlist 由 trusted protocol 完整声明并由 trusted verifier 精确校验；只接受 `templates/target/` 与协议逐项列出的 source scripts。仓库 workflow/治理文件、普通 docs、未知 scripts 和全部未声明路径即使被 candidate closure 引用也会拒绝。
+- official PR workflow 从 trusted base 读取完整 diff 并输出三态：普通 PR 为 `not_applicable`；authority/consumer 变更为 `rotation_required`，候选代码不执行；data-only migration 进入 exact candidate verification。workflow 对所有 PR 触发。当前仓库检查到 `main` 没有可验证的 ruleset/branch-protection/environment/immutable-release 门禁，因此 apply 必须等待 v0.15 official release，publish 必须等待外部治理配置完成并被复核；仓库内 workflow 不能被表述为已经生效的 merge gate。
+- 每个 immutable closure 的 `construction_revision` 必须是最终 stacked landing 与 Release Commit 的可达祖先；每个 construction-bound source 的冻结 bytes 与 Git mode 必须等于该 revision。main/UAT CI 与 Release 显式执行历史门禁。merge Commit 或 source-first 后续 data-only Commit 可保留 ancestry；squash、rebase、未合并旁支对象或丢失 ancestry 的 stacked landing 会被阻断。
+- 未发布的 v0.15 开发线可以在发布前补全 v1.1 closure/profile/contract 的 supervised apply 能力；v0.15 一旦发布，这些文件进入 append-only 历史。当前 supervised v1 schema/verifier 只授权 exact v0.14→v1.1，不能靠新增 candidate data 直接表达 v1.2。支持 v1.2 supervised 前必须先走 protected source rotation，发布新 schema/verifier/consumer authority；随后 data-only PR 才能新增 closure/profile/artifacts 并原子轮换 current pointers。已发布哈希不得回写。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
-- 目标 `SKILL.md` 的 frontmatter 后必须先出现 `EvoZeus-CoEvolve 状态检查`，列出当前 Skill release、wrapper harness version、source contract 检查和对应解决方法；如果当前只是 runtime-only install，不能把安装副本当作事实源，应回 canonical repo 处理维护问题。
-- 目标 Harness 必须安装并校验 Notice policy 与 CLI；目标 Skill 状态段必须声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
-- 目标 `SKILL.md` 中的 `EvoZeus-CoEvolve` 区域只能追加或补缺；如果已经存在，升级时追加 migration note，不改写旧业务段落。
-- `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
+- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.1.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
+- `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。迁移 apply 的最终 structure 校验只执行 trusted-release closure 中验过 hash/mode 的 preflight 与 notice 源码，禁止执行 target-owned Python；structure 返回后再复验完整 target postcondition。
+- destructive authority 只能来自 verified versioned profile 的完整证据链。automatic profile 使用 manifest/stable block/full closure；reviewed legacy profile 使用 frozen envelope、CommonMark AST、adapter proof、full-file hash/mode/inode CAS 与 retained-byte complement。历史候选缺少任一环节时进入 manual review，任何目标字节保持原样。
+- 每次 apply 在目标 Repo 外创建 receipt-bound snapshot。rollback 在首个恢复写入前完成 schema、transaction、plan digest、descriptor digest、backup-set digest、全部备份 hash、路径类型与目标当前状态校验；手工 rollback 必须传 `--approve`。
+- 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
+- `.evozeus-wrapper/docs/migrations/` 同时保存公共 release lineage 与按到达路径生成的 applied migration lineage，两类记录必须用 plan 字段和文件身份明确区分；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 
 ## Case: GitHub-backed Skill already exists
 

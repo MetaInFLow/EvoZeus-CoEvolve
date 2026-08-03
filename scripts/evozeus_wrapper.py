@@ -1,13 +1,183 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+import sys
+
+
+def _bootstrap_trusted_sources() -> dict:
+    trusted_loader = globals().get("_EVOZEUS_TRUSTED_SOURCE_LOADER")
+    if trusted_loader is not None:
+        if trusted_loader not in sys.meta_path:
+            raise RuntimeError("trusted source loader is not authoritative")
+        trusted_loader.verify_directory()
+        sys.meta_path.remove(trusted_loader)
+        sys.meta_path.insert(0, trusted_loader)
+        scripts_dir = trusted_loader.scripts_dir
+        return {
+            "scripts_dir": scripts_dir,
+            "repository_root": scripts_dir.rsplit("/", 1)[0],
+            "pycache_prefix": sys.pycache_prefix,
+            "loader": trusted_loader,
+        }
+    posix = __import__("posix")
+    cwd = posix.getcwd()
+    original_sys_path = tuple(sys.path)
+
+    def lexical_absolute(raw: str) -> str:
+        value = raw if raw.startswith("/") else cwd + "/" + raw
+        parts: list[str] = []
+        for part in value.split("/"):
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        return "/" + "/".join(parts)
+
+    script = lexical_absolute(__file__)
+    scripts_dir = script.rsplit("/", 1)[0]
+    nofollow = getattr(posix, "O_NOFOLLOW", 0)
+    directory_flag = getattr(posix, "O_DIRECTORY", 0)
+    close_on_exec = getattr(posix, "O_CLOEXEC", 0)
+    if nofollow == 0 or directory_flag == 0:
+        raise RuntimeError("trusted source bootstrap requires no-follow directory traversal")
+
+    entrypoint_parent = posix.open(
+        "/",
+        posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+    )
+    try:
+        for component in script.split("/")[1:-1]:
+            next_parent = posix.open(
+                component,
+                posix.O_RDONLY | directory_flag | nofollow | close_on_exec,
+                dir_fd=entrypoint_parent,
+            )
+            posix.close(entrypoint_parent)
+            entrypoint_parent = next_parent
+        entrypoint_descriptor = posix.open(
+            script.rsplit("/", 1)[1],
+            posix.O_RDONLY | nofollow | close_on_exec,
+            dir_fd=entrypoint_parent,
+        )
+        try:
+            entrypoint_metadata = posix.fstat(entrypoint_descriptor)
+            named_entrypoint = posix.stat(
+                script.rsplit("/", 1)[1],
+                dir_fd=entrypoint_parent,
+                follow_symlinks=False,
+            )
+            if (
+                entrypoint_metadata.st_mode & 0o170000 != 0o100000
+                or entrypoint_metadata.st_nlink != 1
+                or (
+                    entrypoint_metadata.st_dev,
+                    entrypoint_metadata.st_ino,
+                    entrypoint_metadata.st_mode,
+                )
+                != (
+                    named_entrypoint.st_dev,
+                    named_entrypoint.st_ino,
+                    named_entrypoint.st_mode,
+                )
+            ):
+                raise RuntimeError(
+                    "trusted source entrypoint must be one canonical regular file"
+                )
+        finally:
+            posix.close(entrypoint_descriptor)
+    except OSError as exc:
+        posix.close(entrypoint_parent)
+        raise RuntimeError(
+            "trusted source entrypoint path contains a symlink or alias"
+        ) from exc
+    except BaseException:
+        posix.close(entrypoint_parent)
+        raise
+    system_roots = {
+        lexical_absolute(sys.base_prefix),
+        lexical_absolute(sys.prefix),
+    }
+    sys.path[:] = [
+        item
+        for item in original_sys_path
+        if any(
+            lexical_absolute(item or cwd) == root
+            or lexical_absolute(item or cwd).startswith(root + "/")
+            for root in system_roots
+        )
+    ]
+    guard_path = scripts_dir + "/evozeus_source_guard.py"
+    flags = posix.O_RDONLY | close_on_exec
+    descriptor = posix.open(
+        "evozeus_source_guard.py",
+        flags | nofollow,
+        dir_fd=entrypoint_parent,
+    )
+    try:
+        metadata = posix.fstat(descriptor)
+        if metadata.st_mode & 0o170000 != 0o100000:
+            raise RuntimeError("trusted source bootstrap is not a regular file")
+        source = b""
+        while len(source) < metadata.st_size:
+            chunk = posix.read(descriptor, metadata.st_size - len(source))
+            if not chunk:
+                raise RuntimeError("trusted source bootstrap changed while reading")
+            source += chunk
+        if posix.read(descriptor, 1):
+            raise RuntimeError("trusted source bootstrap grew while reading")
+        final_metadata = posix.fstat(descriptor)
+        if (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        ) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_mode,
+            final_metadata.st_size,
+            final_metadata.st_mtime_ns,
+            final_metadata.st_ctime_ns,
+        ):
+            raise RuntimeError("trusted source bootstrap changed while reading")
+        trusted_scripts_metadata = posix.fstat(entrypoint_parent)
+        trusted_scripts_descriptor = posix.dup(entrypoint_parent)
+    finally:
+        posix.close(descriptor)
+        posix.close(entrypoint_parent)
+    try:
+        namespace = {"__file__": guard_path, "__name__": "_evozeus_source_guard"}
+        exec(compile(source, guard_path, "exec", dont_inherit=True), namespace)
+        return namespace["bootstrap"](
+            __file__,
+            original_sys_path,
+            scripts_dir_fd=trusted_scripts_descriptor,
+            scripts_dir_identity=(
+                trusted_scripts_metadata.st_dev,
+                trusted_scripts_metadata.st_ino,
+            ),
+            scripts_dir_path=scripts_dir,
+        )
+    finally:
+        posix.close(trusted_scripts_descriptor)
+
+
+_TRUSTED_SOURCE_RUNTIME = _bootstrap_trusted_sources()
+
 import argparse
 import json
-import sys
 from pathlib import Path
 
-from evozeus_wrapper_lifecycle import (
+from scripts.evozeus_wrapper_lifecycle import (
     REQUIRED_WRAPPER_FILES,
+    TARGET_HARNESS_SKILL,
     apply_reinstall,
     detect_target_architecture,
     diagnose_environment,
@@ -15,6 +185,7 @@ from evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_harness_upgrade,
     migrate_target_layout,
+    rollback_target_layout_migration,
     plan_target_layout_migration,
     plan_feedback_audit,
     classify_pr_permission,
@@ -23,7 +194,7 @@ from evozeus_wrapper_lifecycle import (
     run_command,
     stage_label,
 )
-from evozeus_wrapper_global_hook import (
+from scripts.evozeus_wrapper_global_hook import (
     apply_upgrade_all,
     apply_global_hook_install,
     apply_global_hook_uninstall,
@@ -40,6 +211,20 @@ def print_report(report: dict, as_json: bool, stage: str) -> None:
         return
     print(stage_label(stage))
     print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+def single_target_harness_exit_code(report: dict, *, dry_run: bool) -> int:
+    if dry_run:
+        return 0
+    if report.get("status") in {"applied", "up_to_date"}:
+        return 0
+    if (
+        report.get("status") is None
+        and report.get("migration_required") is False
+        and report.get("writes") is False
+    ):
+        return 0
+    return 1
 
 
 def repository_target(path: str) -> tuple[Path, dict] | tuple[None, dict]:
@@ -160,7 +345,7 @@ def main() -> int:
     harness_sub = harness.add_subparsers(dest="command", required=True)
     upgrade_check = harness_sub.add_parser("upgrade-check", help="Check target wrapper harness version.")
     upgrade_check.add_argument("--target", required=True)
-    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.14.0.")
+    upgrade_check.add_argument("--latest-version", help="Explicit latest wrapper version override, such as v0.15.0.")
     upgrade_check.add_argument("--managed-dirty", action="store_true")
     upgrade_check.add_argument("--json", action="store_true")
     upgrade = harness_sub.add_parser("upgrade", help="Plan wrapper harness upgrade.")
@@ -168,6 +353,13 @@ def main() -> int:
     upgrade.add_argument("--latest-version", required=True)
     upgrade.add_argument("--managed-dirty", action="store_true")
     upgrade.add_argument("--dry-run", action="store_true")
+    upgrade.add_argument(
+        "--approve-plan",
+        help=(
+            "Approve the exact operation_sha256 (supervised) or plan_sha256 "
+            "(automatic) emitted for this target; valid for this invocation only."
+        ),
+    )
     upgrade.add_argument("--json", action="store_true")
     migrate_layout = harness_sub.add_parser(
         "migrate-layout",
@@ -176,7 +368,26 @@ def main() -> int:
     migrate_layout.add_argument("--target", required=True)
     migrate_layout.add_argument("--latest-version", required=True)
     migrate_layout.add_argument("--dry-run", action="store_true")
+    migrate_layout.add_argument(
+        "--approve-plan",
+        help=(
+            "Approve the exact operation_sha256 (supervised) or plan_sha256 "
+            "(automatic) emitted for this target; valid for this invocation only."
+        ),
+    )
     migrate_layout.add_argument("--json", action="store_true")
+    rollback_migration = harness_sub.add_parser(
+        "rollback-migration",
+        help="Restore a complete Harness migration snapshot and verify every preimage.",
+    )
+    rollback_migration.add_argument("--target", required=True)
+    rollback_migration.add_argument("--snapshot", required=True)
+    rollback_migration.add_argument(
+        "--approve",
+        action="store_true",
+        help="Explicitly approve restoration from the validated snapshot.",
+    )
+    rollback_migration.add_argument("--json", action="store_true")
     upgrade_all = harness_sub.add_parser(
         "upgrade-all",
         help="Plan or apply upgrades for every outdated registered wrapped harness.",
@@ -189,6 +400,10 @@ def main() -> int:
     )
     upgrade_all.add_argument("--dry-run", action="store_true")
     upgrade_all.add_argument("--approve", action="store_true")
+    upgrade_all.add_argument(
+        "--approve-plan",
+        help="Approve one exact sha256:<digest> batch plan in addition to --approve.",
+    )
     upgrade_all.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
@@ -248,11 +463,10 @@ def main() -> int:
         surface_planned_files = []
         if instruction_surface:
             surface_planned_files = [
-                f"{instruction_surface} EvoZeus-CoEvolve status check section",
-                f"{instruction_surface} self-evolution section",
-                f"{instruction_surface} EvoZeus-CoEvolve section",
+                f"{instruction_surface} canonical Harness Skill activation block",
+                TARGET_HARNESS_SKILL,
             ]
-        planned_files = REQUIRED_WRAPPER_FILES + surface_planned_files
+        planned_files = list(dict.fromkeys(REQUIRED_WRAPPER_FILES + surface_planned_files))
         report = {
             "stage": "target_skill_transform",
             "mode": args.mode,
@@ -386,6 +600,7 @@ def main() -> int:
                 report = migrate_target_layout(
                     target=target,
                     latest_version=args.latest_version,
+                    approved_plan_sha256=args.approve_plan,
                 )
                 report["administrator_authority"] = authority
             except ValueError as exc:
@@ -393,7 +608,7 @@ def main() -> int:
                 return 1
         report["repository_boundary"] = boundary
         print_report(report, args.json, "loop")
-        return 0
+        return single_target_harness_exit_code(report, dry_run=args.dry_run)
     if args.group == "harness" and args.command == "migrate-layout":
         target, boundary = repository_target(args.target)
         if target is None:
@@ -410,12 +625,42 @@ def main() -> int:
                 report = migrate_target_layout(
                     target=target,
                     latest_version=args.latest_version,
+                    approved_plan_sha256=args.approve_plan,
                 )
                 report["administrator_authority"] = authority
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
         report["repository_boundary"] = boundary
+        print_report(report, args.json, "loop")
+        return single_target_harness_exit_code(report, dry_run=args.dry_run)
+    if args.group == "harness" and args.command == "rollback-migration":
+        target, boundary = repository_target(args.target)
+        if target is None:
+            print_report(boundary, args.json, "loop")
+            return 1
+        if not args.approve:
+            report = {
+                "stage": "harness_migration_rollback",
+                "status": "approval_required",
+                "writes": False,
+                "target": str(target),
+                "snapshot": str(Path(args.snapshot).expanduser()),
+                "repository_boundary": boundary,
+            }
+            print_report(report, args.json, "loop")
+            return 1
+        try:
+            authority = require_repo_admin(target)
+            report = rollback_target_layout_migration(
+                target,
+                Path(args.snapshot),
+            )
+            report["administrator_authority"] = authority
+            report["repository_boundary"] = boundary
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print_report(report, args.json, "loop")
         return 0
     if args.group == "harness" and args.command == "upgrade-all":
@@ -431,9 +676,15 @@ def main() -> int:
                 Path(args.wrapper_root),
                 args.latest_version,
                 approve=args.approve,
+                approved_plan_sha256=args.approve_plan,
             )
         print_report(report, args.json, "loop")
-        return 0 if report.get("status") not in {"blocked", "approval_required", "rolled_back"} else 1
+        return 0 if report.get("status") not in {
+            "blocked",
+            "approval_required",
+            "rolled_back",
+            "rollback_failed",
+        } else 1
 
     parser.error("unsupported command")
     return 2
