@@ -876,6 +876,169 @@ def test_secure_replace_mode_cas_preserves_a_changed_preimage(tmp_path: Path) ->
     assert stat.S_IMODE(managed.stat().st_mode) == 0o644
 
 
+@pytest.mark.parametrize("failure_point", ["write", "fchmod"])
+def test_secure_replace_prepare_failure_preserves_preimage_and_allows_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_point: str,
+) -> None:
+    target = _prepare_secure_target(tmp_path, f"secure-replace-{failure_point}")
+    plan = _secure_synthetic_plan(target)
+    trusted_base = tmp_path / f"secure-replace-{failure_point}-base"
+    snapshot = migration_kernel.create_migration_snapshot(
+        target,
+        plan,
+        snapshot_root=trusted_base,
+    )
+    item = next(entry for entry in plan["write_set"] if entry["path"] == "owned.txt")
+    original_write = os.write
+    write_calls = 0
+
+    def fail_during_write(descriptor: int, value: object) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            view = memoryview(value)
+            return original_write(descriptor, view[: max(1, len(view) // 2)])
+        raise OSError("simulated staged write failure")
+
+    def fail_fchmod(_descriptor: int, _mode: int) -> None:
+        raise OSError("simulated staged fchmod failure")
+
+    with monkeypatch.context() as failure_patch:
+        if failure_point == "write":
+            failure_patch.setattr(os, "write", fail_during_write)
+        else:
+            failure_patch.setattr(os, "fchmod", fail_fchmod)
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            with pytest.raises(OSError, match="simulated staged"):
+                secure_target.write_exact(
+                    "owned.txt",
+                    b"OWNED-POSTIMAGE\n",
+                    expected_preimage=item["preimage_sha256"],
+                    expected_mode=item["preimage_mode"],
+                    mode=item["postimage_mode"],
+                )
+
+    assert target.joinpath("owned.txt").read_bytes() == b"OWNED-PREIMAGE\n"
+    assert stat.S_IMODE(target.joinpath("owned.txt").stat().st_mode) == 0o644
+    assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
+    result = migration_kernel.rollback_migration_snapshot(
+        target,
+        snapshot,
+        trusted_snapshot_root=trusted_base,
+    )
+    assert result["status"] == "rolled_back"
+
+
+@pytest.mark.parametrize("failure_point", ["write", "fchmod"])
+def test_secure_create_prepare_failure_leaves_no_file_directory_or_temp_residue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_point: str,
+) -> None:
+    target = tmp_path / f"secure-create-{failure_point}"
+    target.mkdir()
+    if failure_point == "fchmod":
+        target.joinpath("generated/nested").mkdir(parents=True)
+    original_write = os.write
+    write_calls = 0
+
+    def fail_during_write(descriptor: int, value: object) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            view = memoryview(value)
+            return original_write(descriptor, view[: max(1, len(view) // 2)])
+        raise OSError("simulated staged write failure")
+
+    def fail_fchmod(_descriptor: int, _mode: int) -> None:
+        raise OSError("simulated staged fchmod failure")
+
+    with monkeypatch.context() as failure_patch:
+        if failure_point == "write":
+            failure_patch.setattr(os, "write", fail_during_write)
+        else:
+            failure_patch.setattr(os, "fchmod", fail_fchmod)
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            with pytest.raises(OSError, match="simulated staged"):
+                secure_target.write_exact(
+                    "generated/nested/new.txt",
+                    b"CREATED-POSTIMAGE\n",
+                    expected_preimage=None,
+                    mode=0o644,
+                )
+
+    assert not target.joinpath("generated/nested/new.txt").exists()
+    assert not any(
+        path.name.startswith(".evozeus-tmp-") for path in target.rglob("*")
+    )
+    if failure_point == "write":
+        assert list(target.rglob("*")) == []
+    else:
+        assert {
+            path.relative_to(target).as_posix() for path in target.rglob("*")
+        } == {"generated", "generated/nested"}
+
+
+def test_secure_replace_breaks_external_hardlink_without_mutating_approved_inode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "secure-hardlink"
+    target.mkdir()
+    managed = target / "managed.txt"
+    managed.write_bytes(b"PREIMAGE\n")
+    outside = tmp_path / "external-hardlink.txt"
+    os.link(managed, outside)
+    expected = "sha256:" + hashlib.sha256(b"PREIMAGE\n").hexdigest()
+
+    with migration_kernel.SecureTargetFS(target) as secure_target:
+        secure_target.write_exact(
+            "managed.txt",
+            b"POSTIMAGE\n",
+            expected_preimage=expected,
+            expected_mode=0o644,
+            mode=0o644,
+        )
+
+    assert managed.read_bytes() == b"POSTIMAGE\n"
+    assert outside.read_bytes() == b"PREIMAGE\n"
+    assert managed.stat().st_ino != outside.stat().st_ino
+
+    failed = target / "failed.txt"
+    failed.write_bytes(b"PREIMAGE\n")
+    outside_failed = tmp_path / "external-hardlink-failed.txt"
+    os.link(failed, outside_failed)
+    original_write = os.write
+    write_calls = 0
+
+    def fail_during_write(descriptor: int, value: object) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            view = memoryview(value)
+            return original_write(descriptor, view[: max(1, len(view) // 2)])
+        raise OSError("simulated staged write failure")
+
+    with monkeypatch.context() as failure_patch:
+        failure_patch.setattr(os, "write", fail_during_write)
+        with migration_kernel.SecureTargetFS(target) as secure_target:
+            with pytest.raises(OSError, match="simulated staged"):
+                secure_target.write_exact(
+                    "failed.txt",
+                    b"POSTIMAGE\n",
+                    expected_preimage=expected,
+                    expected_mode=0o644,
+                    mode=0o644,
+                )
+
+    assert failed.read_bytes() == b"PREIMAGE\n"
+    assert outside_failed.read_bytes() == b"PREIMAGE\n"
+    assert failed.stat().st_ino == outside_failed.stat().st_ino
+    assert not any(path.name.startswith(".evozeus-tmp-") for path in target.iterdir())
+
+
 @pytest.mark.parametrize("swap", ["leaf", "parent"])
 def test_secure_apply_swap_never_writes_outside_the_target(
     monkeypatch: pytest.MonkeyPatch,

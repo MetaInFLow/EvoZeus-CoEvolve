@@ -1489,8 +1489,12 @@ class SecureTargetFS:
                         | getattr(os, "O_CLOEXEC", 0),
                         dir_fd=descriptors[-1],
                     )
-                    os.fchmod(descriptor, self._directory_mode)
-                    os.fsync(descriptor)
+                    try:
+                        os.fchmod(descriptor, self._directory_mode)
+                        os.fsync(descriptor)
+                    except BaseException:
+                        os.close(descriptor)
+                        raise
                 except OSError as exc:
                     raise ValueError(
                         f"secure target parent is unsafe: {current_rel.as_posix()}: {exc}"
@@ -1544,6 +1548,120 @@ class SecureTargetFS:
                 break
             chunks.append(chunk)
         return b"".join(chunks)
+
+    @staticmethod
+    def _named_identity(parent_fd: int, name: str) -> tuple[int, int]:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("secure target staging path is not a regular file")
+        return metadata.st_dev, metadata.st_ino
+
+    @staticmethod
+    def _open_unique_staging_file(parent_fd: int) -> tuple[str, int, tuple[int, int]]:
+        for _attempt in range(32):
+            name = f".evozeus-tmp-{uuid.uuid4().hex}"
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                continue
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                os.close(descriptor)
+                raise ValueError("secure target staging path is not a regular file")
+            return name, descriptor, (metadata.st_dev, metadata.st_ino)
+        raise ValueError("secure target could not allocate a unique staging path")
+
+    def _verified_replace_preimage(
+        self,
+        parent_fd: int,
+        name: str,
+        relative: Path,
+        *,
+        expected_preimage: str,
+        expected_mode: int | None,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> tuple[int, int]:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            raise ValueError(
+                f"secure target replace CAS cannot open: {relative.as_posix()}: {exc}"
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(
+                    f"secure target replace path is not regular: {relative.as_posix()}"
+                )
+            identity = metadata.st_dev, metadata.st_ino
+            if expected_identity is not None and identity != expected_identity:
+                raise ValueError(
+                    f"secure target replace identity CAS changed: {relative.as_posix()}"
+                )
+            current = self._read_descriptor(descriptor)
+            if f"sha256:{sha256_bytes(current)}" != expected_preimage:
+                raise ValueError(
+                    f"secure target replace CAS changed: {relative.as_posix()}"
+                )
+            if (
+                expected_mode is not None
+                and stat.S_IMODE(metadata.st_mode) != expected_mode
+            ):
+                raise ValueError(
+                    f"secure target replace mode CAS changed: {relative.as_posix()}"
+                )
+            return identity
+        finally:
+            os.close(descriptor)
+
+    def _cleanup_created_directory_paths(self, paths: list[str]) -> None:
+        removed: set[str] = set()
+        for relative_text in sorted(
+            set(paths),
+            key=lambda value: len(Path(value).parts),
+            reverse=True,
+        ):
+            relative = _safe_relative_path(relative_text, "created target directory")
+            try:
+                descriptors, name, _ = self._open_parent(
+                    relative.as_posix(),
+                    create_parents=False,
+                    missing_is_absent=True,
+                )
+            except ValueError:
+                continue
+            if not descriptors:
+                removed.add(relative_text)
+                continue
+            try:
+                try:
+                    os.rmdir(name, dir_fd=descriptors[-1])
+                except FileNotFoundError:
+                    removed.add(relative_text)
+                except OSError:
+                    pass
+                else:
+                    os.fsync(descriptors[-1])
+                    removed.add(relative_text)
+            finally:
+                self._close_descriptors(descriptors)
+        if removed:
+            self.created_directories = [
+                path for path in self.created_directories if path not in removed
+            ]
 
     def file_state(self, raw: object) -> dict[str, Any]:
         descriptors, name, relative = self._open_parent(
@@ -1628,95 +1746,115 @@ class SecureTargetFS:
         expected_mode: int | None = None,
         mode: int,
     ) -> None:
-        descriptors, name, relative = self._open_parent(raw, create_parents=True)
-        parent_fd = descriptors[-1]
-        descriptor = -1
-        created = False
-        opened_identity: tuple[int, int] | None = None
+        created_directory_start = len(self.created_directories)
+        descriptors: list[int] = []
+        parent_fd = -1
+        staging_descriptor = -1
+        staging_name: str | None = None
+        staging_identity: tuple[int, int] | None = None
         try:
+            descriptors, name, relative = self._open_parent(
+                raw,
+                create_parents=True,
+            )
+            parent_fd = descriptors[-1]
             self._verify_parent_binding(relative, parent_fd)
-            if expected_preimage is None:
-                try:
-                    descriptor = os.open(
-                        name,
-                        os.O_RDWR
-                        | os.O_CREAT
-                        | os.O_EXCL
-                        | os.O_NOFOLLOW
-                        | getattr(os, "O_CLOEXEC", 0),
-                        mode,
-                        dir_fd=parent_fd,
-                    )
-                    created = True
-                except FileExistsError as exc:
-                    raise ValueError(
-                        f"secure target create CAS changed: {relative.as_posix()}"
-                    ) from exc
-            else:
-                try:
-                    descriptor = os.open(
-                        name,
-                        os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-                        dir_fd=parent_fd,
-                    )
-                except OSError as exc:
-                    raise ValueError(
-                        f"secure target replace CAS cannot open: {relative.as_posix()}: {exc}"
-                    ) from exc
-                metadata = os.fstat(descriptor)
-                if not stat.S_ISREG(metadata.st_mode):
-                    raise ValueError(
-                        f"secure target replace path is not regular: {relative.as_posix()}"
-                    )
-                current = self._read_descriptor(descriptor)
-                if f"sha256:{sha256_bytes(current)}" != expected_preimage:
-                    raise ValueError(
-                        f"secure target replace CAS changed: {relative.as_posix()}"
-                    )
-                if (
-                    expected_mode is not None
-                    and stat.S_IMODE(metadata.st_mode) != expected_mode
-                ):
-                    raise ValueError(
-                        f"secure target replace mode CAS changed: {relative.as_posix()}"
-                    )
-                os.lseek(descriptor, 0, os.SEEK_SET)
-            metadata = os.fstat(descriptor)
-            opened_identity = (metadata.st_dev, metadata.st_ino)
-            os.ftruncate(descriptor, 0)
-            os.lseek(descriptor, 0, os.SEEK_SET)
+            replace_identity = None
+            if expected_preimage is not None:
+                replace_identity = self._verified_replace_preimage(
+                    parent_fd,
+                    name,
+                    relative,
+                    expected_preimage=expected_preimage,
+                    expected_mode=expected_mode,
+                )
+
+            staging_name, staging_descriptor, staging_identity = (
+                self._open_unique_staging_file(parent_fd)
+            )
             view = memoryview(data)
             while view:
-                written = os.write(descriptor, view)
+                written = os.write(staging_descriptor, view)
+                if written <= 0:
+                    raise OSError("secure target staging write made no progress")
                 view = view[written:]
-            os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            actual = self._read_descriptor(descriptor)
+            os.fchmod(staging_descriptor, mode)
+            os.fsync(staging_descriptor)
+            os.lseek(staging_descriptor, 0, os.SEEK_SET)
+            actual = self._read_descriptor(staging_descriptor)
             if actual != data:
                 raise ValueError(
                     f"secure target postimage verification failed: {relative.as_posix()}"
                 )
-            if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+            if stat.S_IMODE(os.fstat(staging_descriptor).st_mode) != mode:
                 raise ValueError(
                     f"secure target postimage mode verification failed: {relative.as_posix()}"
                 )
+
             self._verify_parent_binding(relative, parent_fd)
-            os.fsync(parent_fd)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if created and opened_identity is not None:
+            if self._named_identity(parent_fd, staging_name) != staging_identity:
+                raise ValueError(
+                    f"secure target staging identity changed: {relative.as_posix()}"
+                )
+            if expected_preimage is None:
                 try:
-                    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) == opened_identity and (
-                        f"sha256:{sha256_bytes(data)}"
-                        != self.file_state(relative.as_posix()).get("sha256")
-                    ):
-                        os.unlink(name, dir_fd=parent_fd)
-                except (FileNotFoundError, ValueError):
+                    os.link(
+                        staging_name,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError as exc:
+                    raise ValueError(
+                        f"secure target create CAS changed: {relative.as_posix()}"
+                    ) from exc
+                os.unlink(staging_name, dir_fd=parent_fd)
+            else:
+                self._verified_replace_preimage(
+                    parent_fd,
+                    name,
+                    relative,
+                    expected_preimage=expected_preimage,
+                    expected_mode=expected_mode,
+                    expected_identity=replace_identity,
+                )
+                self._verify_parent_binding(relative, parent_fd)
+                os.replace(
+                    staging_name,
+                    name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+            staging_name = None
+            os.fsync(parent_fd)
+        except BaseException:
+            if staging_descriptor >= 0:
+                os.close(staging_descriptor)
+                staging_descriptor = -1
+            if (
+                parent_fd >= 0
+                and staging_name is not None
+                and staging_identity is not None
+            ):
+                try:
+                    if self._named_identity(parent_fd, staging_name) == staging_identity:
+                        os.unlink(staging_name, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
+                except FileNotFoundError:
                     pass
-            self._close_descriptors(descriptors)
+            if descriptors:
+                self._close_descriptors(descriptors)
+                descriptors = []
+            self._cleanup_created_directory_paths(
+                self.created_directories[created_directory_start:]
+            )
+            raise
+        finally:
+            if staging_descriptor >= 0:
+                os.close(staging_descriptor)
+            if descriptors:
+                self._close_descriptors(descriptors)
 
     def remove_exact(
         self,
@@ -1741,23 +1879,7 @@ class SecureTargetFS:
             self._close_descriptors(descriptors)
 
     def cleanup_created_directories(self) -> None:
-        for relative_text in sorted(
-            set(self.created_directories),
-            key=lambda value: len(Path(value).parts),
-            reverse=True,
-        ):
-            relative = _safe_relative_path(relative_text, "created target directory")
-            descriptors, name, _ = self._open_parent(
-                relative.as_posix(),
-                create_parents=False,
-            )
-            try:
-                try:
-                    os.rmdir(name, dir_fd=descriptors[-1])
-                except OSError:
-                    pass
-            finally:
-                self._close_descriptors(descriptors)
+        self._cleanup_created_directory_paths(self.created_directories)
 
     def directory_state(self, raw: object) -> dict[str, Any]:
         relative = _safe_relative_path(raw, "secure directory")
