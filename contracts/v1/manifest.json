@@ -61,7 +61,7 @@
     },
     {
       "path": "migrations/history/harness-skill/current.json",
-      "sha256": "5af8412c0f67a2b8fb7eb39e654714c2ddf1acc29bbbd9777da4c6ff6fea3a71",
+      "sha256": "126365559574d2c6af5eede4c929bf8e93312d1a0f2da76d5c664749d6c124df",
       "mode": "100644",
       "role": "current-target-closure-pointer"
     },
@@ -211,7 +211,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/artifacts/scripts/evozeus_wrapper_preflight.py",
-      "sha256": "654daad991e70463e383144b516a9a0d461b7647d94a0b7cd3eec1a86d17ac56",
+      "sha256": "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
       "mode": "100755",
       "role": "immutable-target-closure-artifact"
     },
@@ -325,7 +325,7 @@
     },
     {
       "path": "migrations/history/harness-skill/v1.1.0/closure.json",
-      "sha256": "f743d3e45a122c69922e70a2510c8875a89890ef252017a325d73e68d8eb1d22",
+      "sha256": "1a0c5ffbcf91a43487e6cdcbf2158c1255e95690d1cd33ba999ee3fd2757ba22",
       "mode": "100644",
       "role": "immutable-target-closure"
     },
@@ -355,19 +355,19 @@
     },
     {
       "path": "migrations/profiles/canonical-v1.0-to-v1.1-v1.json",
-      "sha256": "4bd1421e938ee828ce3a17ed9820da2c65890a3b83334432f398430a5047d014",
+      "sha256": "c2bc019bd387a0493df536c2255eb8edf651c1b393a3c8111951f1f53e9822a6",
       "mode": "100644",
       "role": "official-upgrade-profile"
     },
     {
       "path": "migrations/profiles/current.json",
-      "sha256": "6d6f9fe06d4b260e74fe7a9044c41a48ce4c45ab0bbee07936403739fa3cb653",
+      "sha256": "b432a9c2346733e76401f57febc720b00f6c14e99a00fb7a20dcfd7ae9dcc8d0",
       "mode": "100644",
       "role": "current-official-upgrade-profile-pointer"
     },
     {
       "path": "migrations/profiles/legacy-v0.14-three-section-to-canonical-v1.1-v1.json",
-      "sha256": "01c459e53e33d5c659383851263ddd131c8fcc15b0556262a4e37784936ded77",
+      "sha256": "e4abfadcf6691c2646c65bf93c9a9cc7f4d995fff999ea771b6e7a721f830427",
       "mode": "100644",
       "role": "supervised-legacy-profile"
     },
@@ -427,7 +427,7 @@
     },
     {
       "path": "target-template-inventory.json",
-      "sha256": "75b1d3892af8e15253700273966824b025ecb1e673baa229b3b265eee1d7b5ec",
+      "sha256": "ca9e577544ff17debc1e246866456a9c03376ce68452c80e2b805c24917e0417",
       "mode": "100644",
       "role": "target-template-inventory"
     },
