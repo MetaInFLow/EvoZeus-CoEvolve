@@ -1339,6 +1339,7 @@ def load_migration_contract(
     roots = contract_source.get("path_roots")
     if roots != {
         "artifact_path": MIGRATION_CONTRACT_BUNDLE_ROOT,
+        "repository_path": "repository_root",
         "target_path": "target_repository_root",
     }:
         raise ValueError("migration contract path_roots are missing or ambiguous")
