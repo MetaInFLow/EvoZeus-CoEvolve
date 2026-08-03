@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -230,16 +231,22 @@ def _candidate_star(
             item["sha256"] = _sha256(data)
             skill_after = item
             changes[skill_source] = _candidate_blob(skill_source, data)
+        artifact_mode = (
+            "100644"
+            if item.get("materialization", {}).get("mode_policy")
+            == "set_declared_executable"
+            else item["mode"]
+        )
         changes[new_artifact] = _candidate_blob(
             new_artifact,
             data,
             status="added",
-            mode=item["mode"],
+            mode=artifact_mode,
         )
         source_path = item.get("source_path")
         if source_path is not None and item.get("source_binding") == "construction_revision":
             source_data = data if source_path == skill_source else (root / source_path).read_bytes()
-            source_mode = item["mode"]
+            source_mode = artifact_mode
             base_mode = (
                 "100755" if (root / source_path).stat().st_mode & 0o100 else "100644"
             )
@@ -2020,18 +2027,21 @@ def test_candidate_construction_sources_are_protocol_allowlisted(
         )
 
 
-def test_candidate_construction_source_mode_must_equal_closure_mode(
+def test_candidate_construction_source_mode_must_equal_closure_artifact_mode(
     tmp_path: Path,
 ) -> None:
     root = _protocol_v1_base(tmp_path)
     changes, valid_resolver, head_sha = _candidate_star(root)
-    source_path = "scripts/evozeus_notice.py"
+    source_path = (
+        "templates/target/.evozeus_evoinfra/skills/"
+        "using-evozeus-harness/SKILL.md"
+    )
     source = changes[source_path]
     assert source.loader is not None
     changes[source_path] = _candidate_blob(
         source_path,
         source.loader(),
-        mode="100644",
+        mode="100755",
     )
 
     def mismatched_mode_resolver(
@@ -2045,7 +2055,7 @@ def test_candidate_construction_source_mode_must_equal_closure_mode(
         historical = files[source_path]
         files[source_path] = verifier.ConstructionBlob(
             path=source_path,
-            mode="100644",
+            mode="100755",
             data=historical.data,
         )
         return verifier.ConstructionRevisionEvidence(
@@ -2549,3 +2559,234 @@ def test_protocol_v1_rejects_rendered_surface_changes() -> None:
 
     with pytest.raises(verifier.VerificationError, match="cannot change a rendered surface"):
         verifier.closure_diff({"rendered.md": before}, {"rendered.md": after})
+
+
+def _manifest_without_v100_closure(root: Path) -> bytes:
+    manifest = json.loads((root / CONTRACT_MANIFEST_REL).read_text(encoding="utf-8"))
+    manifest["files"] = [
+        item
+        for item in manifest["files"]
+        if item["path"]
+        != "migrations/history/harness-skill/v1.0.0/closure.json"
+    ]
+    return _json_bytes(manifest)
+
+
+def test_history_gate_enumerates_closures_from_disk_not_only_manifest() -> None:
+    changes = {
+        CONTRACT_MANIFEST_REL: _candidate_blob(
+            CONTRACT_MANIFEST_REL,
+            _manifest_without_v100_closure(ROOT),
+        )
+    }
+    candidate = verifier.CandidateStore(_base_store(), changes)
+
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("closure set mismatch must fail before history resolution")
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="immutable closure set disagrees with canonical history files",
+    ):
+        verifier.verify_repository_history(
+            candidate,
+            head_sha="6" * 40,
+            construction_resolver=must_not_resolve,
+        )
+
+
+def test_manifest_only_history_removal_is_strict_candidate_data() -> None:
+    changes = {
+        CONTRACT_MANIFEST_REL: _candidate_blob(
+            CONTRACT_MANIFEST_REL,
+            _manifest_without_v100_closure(ROOT),
+        )
+    }
+    protocol = verifier.load_protocol(_base_store())
+
+    def must_not_resolve(*_args: object) -> verifier.ConstructionRevisionEvidence:
+        raise AssertionError("invalid manifest must fail before history resolution")
+
+    assert verifier.classify_candidate_changes(protocol, changes) == "data_candidate"
+    with pytest.raises(
+        verifier.VerificationError,
+        match="manifest does not exactly enumerate|immutable closure set disagrees",
+    ):
+        verifier.verify_classified_pull_request(
+            _base_store(),
+            changes,
+            head_sha="7" * 40,
+            repository="MetaInFLow/EvoZeus-CoEvolve",
+            construction_resolver=must_not_resolve,
+        )
+
+
+def test_verify_base_rejects_manifest_hidden_history(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _protocol_v1_base(tmp_path)
+    (root / CONTRACT_MANIFEST_REL).write_bytes(_manifest_without_v100_closure(root))
+    subprocess.run(["git", "-C", str(root), "init", "-b", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "EvoZeus Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "user.email",
+            "evozeus-test@example.invalid",
+        ],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "test fixture"],
+        check=True,
+        capture_output=True,
+    )
+
+    assert verifier.main(["verify-base", "--repo-root", str(root)]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert "immutable closure set disagrees with canonical history files" in output["error"]
+
+
+@pytest.mark.parametrize(
+    "mode_policy,error",
+    [
+        (None, "mode differs from artifact mode"),
+        ("set_declared_executable", "mode transformation is unauthorized"),
+    ],
+)
+def test_skill_cannot_reuse_notice_executable_mode_exception(
+    mode_policy: str | None,
+    error: str,
+) -> None:
+    closure_path = (
+        "contracts/v1/migrations/history/harness-skill/v1.0.0/closure.json"
+    )
+    closure = json.loads((ROOT / closure_path).read_text(encoding="utf-8"))
+    skill = next(
+        item
+        for item in closure["files"]
+        if item["target_path"]
+        == ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+    )
+    skill["mode"] = "100755"
+    if mode_policy is not None:
+        skill["materialization"]["mode_policy"] = mode_policy
+    store = verifier.CandidateStore(
+        _base_store(),
+        {closure_path: _candidate_blob(closure_path, _json_bytes(closure))},
+    )
+
+    with pytest.raises(verifier.VerificationError, match=error):
+        verifier.load_closure(store, closure_path)
+
+
+def _release_test_repo(tmp_path: Path) -> tuple[Path, Callable[..., str]]:
+    repo = tmp_path / "release-history"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "EvoZeus Test")
+    git("config", "user.email", "evozeus-test@example.invalid")
+    (repo / "state.txt").write_text("base\n", encoding="utf-8")
+    git("add", "state.txt")
+    git("commit", "-m", "base")
+    return repo, git
+
+
+def test_release_git_gate_binds_tag_manifest_head_and_trusted_main(
+    tmp_path: Path,
+) -> None:
+    repo, git = _release_test_repo(tmp_path)
+    tag_commit = git("rev-parse", "HEAD")
+    git("tag", "v0.15.0")
+    git("update-ref", "refs/remotes/origin/main", tag_commit)
+
+    report = verifier._verify_release_git_state(
+        repo,
+        tag="v0.15.0",
+        manifest_source_revision="v0.15.0",
+        main_ref="refs/remotes/origin/main",
+    )
+
+    assert report["tag_commit"] == tag_commit
+    assert report["trusted_main_commit"] == tag_commit
+
+
+def test_release_git_gate_rejects_manifest_tag_mismatch(tmp_path: Path) -> None:
+    repo, _git = _release_test_repo(tmp_path)
+
+    with pytest.raises(verifier.VerificationError, match="source_revision"):
+        verifier._verify_release_git_state(
+            repo,
+            tag="v0.15.0",
+            manifest_source_revision="v0.16.0",
+            main_ref="refs/remotes/origin/main",
+        )
+
+
+def test_release_git_gate_rejects_checkout_after_tag(tmp_path: Path) -> None:
+    repo, git = _release_test_repo(tmp_path)
+    git("tag", "v0.15.0")
+    (repo / "state.txt").write_text("after tag\n", encoding="utf-8")
+    git("add", "state.txt")
+    git("commit", "-m", "after tag")
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"))
+
+    with pytest.raises(verifier.VerificationError, match="HEAD does not equal"):
+        verifier._verify_release_git_state(
+            repo,
+            tag="v0.15.0",
+            manifest_source_revision="v0.15.0",
+            main_ref="refs/remotes/origin/main",
+        )
+
+
+def test_release_git_gate_rejects_tag_outside_trusted_main(tmp_path: Path) -> None:
+    repo, git = _release_test_repo(tmp_path)
+    git("switch", "-c", "release-side")
+    (repo / "state.txt").write_text("side\n", encoding="utf-8")
+    git("add", "state.txt")
+    git("commit", "-m", "side release")
+    git("tag", "v0.15.0")
+    git("switch", "main")
+    (repo / "state.txt").write_text("main\n", encoding="utf-8")
+    git("add", "state.txt")
+    git("commit", "-m", "trusted main")
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"))
+    git("switch", "--detach", "v0.15.0")
+
+    with pytest.raises(verifier.VerificationError, match="not an ancestor"):
+        verifier._verify_release_git_state(
+            repo,
+            tag="v0.15.0",
+            manifest_source_revision="v0.15.0",
+            main_ref="refs/remotes/origin/main",
+        )
+
+
+def test_release_workflow_runs_gate_before_writes_and_discloses_pending_ruleset() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    verify_index = workflow.index("verify-release")
+    assert verify_index < workflow.index("git archive")
+    assert verify_index < workflow.index("gh release")
+    assert "refs/remotes/origin/main" in workflow
+    assert "ruleset enforcement is pending explicit" in workflow
+    assert "does not claim that it is configured" in workflow

@@ -88,6 +88,10 @@ DATA_CANDIDATE_PREFIXES = (
     "contracts/v1/migrations/",
 )
 DATA_CANDIDATE_PATHS = (MIGRATION_CONTRACT_REL,)
+HARNESS_HISTORY_ROOT = "contracts/v1/migrations/history/harness-skill"
+NOTICE_TARGET_PATH = ".evozeus-wrapper/scripts/evozeus_notice.py"
+NOTICE_SOURCE_PATH = "scripts/evozeus_notice.py"
+DECLARED_EXECUTABLE_MODE_POLICY = "set_declared_executable"
 ALLOWED_OPERATION_TYPES = {
     "create_exact",
     "replace_exact",
@@ -98,6 +102,10 @@ ALLOWED_BLOB_MODES = {"100644", "100755"}
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OID_PATTERN = re.compile(r"[0-9a-f]{40}")
 SEMVER_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+HARNESS_CLOSURE_PATTERN = re.compile(
+    r"contracts/v1/migrations/history/harness-skill/"
+    r"(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))/closure\.json"
+)
 LEDGER_TARGET_PATTERN = re.compile(
     r"\.evozeus-wrapper/docs/migrations/harness-skill-"
     r"(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-to-"
@@ -118,6 +126,8 @@ class BlobStore(Protocol):
     def exists(self, relative: str) -> bool: ...
 
     def mode(self, relative: str) -> str | None: ...
+
+    def canonical_harness_closure_paths(self) -> set[str]: ...
 
 
 def _safe_relative(raw: object, label: str) -> str:
@@ -255,6 +265,50 @@ class FilesystemStore:
             return None
         return "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
 
+    def canonical_harness_closure_paths(self) -> set[str]:
+        cursor = self.root
+        for part in PurePosixPath(HARNESS_HISTORY_ROOT).parts:
+            cursor /= part
+            try:
+                metadata = cursor.lstat()
+            except FileNotFoundError as exc:
+                raise VerificationError(
+                    f"canonical Harness history root is missing: {HARNESS_HISTORY_ROOT}"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                raise VerificationError(
+                    f"canonical Harness history root traverses a symlink: {HARNESS_HISTORY_ROOT}"
+                )
+        if not cursor.is_dir():
+            raise VerificationError(
+                f"canonical Harness history root is not a directory: {HARNESS_HISTORY_ROOT}"
+            )
+        paths: set[str] = set()
+        for version_path in cursor.iterdir():
+            if not version_path.name.startswith("v"):
+                continue
+            metadata = version_path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not version_path.is_dir():
+                raise VerificationError(
+                    f"canonical Harness history version is unsafe: {version_path.name}"
+                )
+            closure_path = version_path / "closure.json"
+            try:
+                closure_metadata = closure_path.lstat()
+            except FileNotFoundError:
+                continue
+            relative = closure_path.relative_to(self.root).as_posix()
+            if HARNESS_CLOSURE_PATTERN.fullmatch(relative) is None:
+                raise VerificationError(
+                    f"Harness history closure path is not canonical: {relative}"
+                )
+            if stat.S_ISLNK(closure_metadata.st_mode) or not closure_path.is_file():
+                raise VerificationError(
+                    f"Harness history closure is not a regular file: {relative}"
+                )
+            paths.add(relative)
+        return paths
+
 
 @dataclass(frozen=True)
 class CandidateBlob:
@@ -332,6 +386,17 @@ class CandidateStore:
         relative = _safe_relative(relative, "candidate repository file")
         blob = self.changes.get(relative)
         return blob.mode if blob is not None and blob.status != "deleted" else self.base.mode(relative)
+
+    def canonical_harness_closure_paths(self) -> set[str]:
+        paths = self.base.canonical_harness_closure_paths()
+        for path, blob in self.changes.items():
+            if HARNESS_CLOSURE_PATTERN.fullmatch(path) is None:
+                continue
+            if blob.status == "deleted":
+                paths.discard(path)
+            else:
+                paths.add(path)
+        return paths
 
 
 def _json_file(store: BlobStore, relative: str, label: str) -> dict[str, Any]:
@@ -465,7 +530,8 @@ def classify_candidate_changes(
         # never candidate data. Every other migration path fails into the strict
         # data verifier, including paths unknown to the current protocol.
         is_data = not is_authority and (
-            path in DATA_CANDIDATE_PATHS
+            path == CONTRACT_MANIFEST_REL
+            or path in DATA_CANDIDATE_PATHS
             or path.startswith(DATA_CANDIDATE_PREFIXES)
         )
         has_data = has_data or is_data
@@ -508,6 +574,44 @@ def load_pointer(store: BlobStore, relative: str, pointer_id: str) -> list[dict[
         paths.add(path)
         entries.append({"id": identity, "version": raw["version"], "path": path, "sha256": digest})
     return entries
+
+
+def _verify_materialized_file_modes(
+    store: BlobStore,
+    *,
+    target_path: str,
+    kind: str,
+    target_mode: str,
+    artifact_path: str,
+    materialization: dict[str, Any],
+    source_path: object,
+    source_binding: object,
+) -> str:
+    artifact_mode = store.mode(artifact_path)
+    if artifact_mode not in ALLOWED_BLOB_MODES:
+        raise VerificationError(
+            f"target closure artifact mode is unsafe: {artifact_path}"
+        )
+    mode_policy = materialization.get("mode_policy")
+    if mode_policy is None:
+        if target_mode != artifact_mode:
+            raise VerificationError(
+                "target closure mode differs from artifact mode without an explicit "
+                f"policy: {target_path}"
+            )
+    elif not (
+        mode_policy == DECLARED_EXECUTABLE_MODE_POLICY
+        and kind == "exact"
+        and target_path == NOTICE_TARGET_PATH
+        and source_path == NOTICE_SOURCE_PATH
+        and source_binding == "construction_revision"
+        and artifact_mode == "100644"
+        and target_mode == "100755"
+    ):
+        raise VerificationError(
+            f"target closure mode transformation is unauthorized: {target_path}"
+        )
+    return artifact_mode
 
 
 def load_closure(
@@ -611,6 +715,18 @@ def load_closure(
                     f"target closure artifact digest mismatch: {target_path}: "
                     f"expected={expected}; actual={actual}"
                 )
+            source_path = item.get("source_path")
+            source_binding = item.get("source_binding")
+            artifact_mode = _verify_materialized_file_modes(
+                store,
+                target_path=target_path,
+                kind=kind,
+                target_mode=mode,
+                artifact_path=artifact_path,
+                materialization=materialization,
+                source_path=source_path,
+                source_binding=source_binding,
+            )
             if kind == "exact" and materialization.get("policy") != "copy_exact":
                 raise VerificationError(f"exact closure path lacks copy_exact policy: {target_path}")
             if kind == "rendered_template" and (
@@ -622,13 +738,18 @@ def load_closure(
                 raise VerificationError(
                     f"rendered closure path lacks explicit no-auto-upgrade policy: {target_path}"
                 )
-            source_path = item.get("source_path")
-            source_binding = item.get("source_binding")
             if source_path is not None:
                 _safe_relative(source_path, "target closure source path")
                 if source_binding not in {"construction_revision", "required_release"}:
                     raise VerificationError(
                         f"closure source binding is invalid: {target_path}"
+                    )
+                if (
+                    source_binding == "required_release"
+                    and store.mode(source_path) != artifact_mode
+                ):
+                    raise VerificationError(
+                        f"release-bound source mode differs from artifact mode: {source_path}"
                     )
             elif materialization.get("generated_release_artifact") is not True:
                 raise VerificationError(f"closure artifact lacks source or generated identity: {target_path}")
@@ -2185,11 +2306,20 @@ def verify_repository_history(
         repository_files,
         "repository history manifest",
     )
-    closure_paths = sorted(
+    manifest_closure_paths = {
         BUNDLE_PREFIX + relative
         for relative, item in manifest_files.items()
         if item.get("role") == "immutable-target-closure"
-    )
+    }
+    canonical_closure_paths = store.canonical_harness_closure_paths()
+    if manifest_closure_paths != canonical_closure_paths:
+        missing = sorted(canonical_closure_paths - manifest_closure_paths)
+        extra = sorted(manifest_closure_paths - canonical_closure_paths)
+        raise VerificationError(
+            "repository history manifest immutable closure set disagrees with "
+            f"canonical history files: missing={missing}; extra={extra}"
+        )
+    closure_paths = sorted(canonical_closure_paths)
     if not closure_paths:
         raise VerificationError("repository history contains no immutable closures")
     verified_revisions: list[str] = []
@@ -2774,9 +2904,10 @@ def verify_candidate(
             raise VerificationError(
                 f"candidate closure artifact differs from reviewed source: {target_path}"
             )
-        if candidate.mode(artifact_path) != item.get("mode"):
+        artifact_mode = candidate.mode(artifact_path)
+        if artifact_mode not in ALLOWED_BLOB_MODES:
             raise VerificationError(
-                f"candidate closure artifact mode differs from target mode: {target_path}"
+                f"candidate closure artifact mode is unsafe: {target_path}"
             )
         bound_sources.add(source_path)
         if source_path in changes:
@@ -2796,7 +2927,7 @@ def verify_candidate(
                     "target-closure-source",
                 )
         if source_binding == "construction_revision":
-            expected_mode = item["mode"]
+            expected_mode = artifact_mode
             prior_mode = construction_source_modes.get(source_path)
             if prior_mode is not None and prior_mode != expected_mode:
                 raise VerificationError(
@@ -2856,7 +2987,8 @@ def verify_candidate(
             )
         if historical.mode != construction_source_modes[source_path]:
             raise VerificationError(
-                f"candidate construction source mode differs from target closure: {source_path}"
+                "candidate construction source mode differs from target closure artifact: "
+                f"{source_path}"
             )
         total_construction_bytes += len(historical.data)
         if len(historical.data) > MAX_BLOB_BYTES or total_construction_bytes > MAX_TOTAL_BLOB_BYTES:
@@ -3115,11 +3247,109 @@ def candidate_from_pull_request(
     return changes, head_sha, head_repo
 
 
+def _resolve_git_commit(repo_root: Path, revision: str, label: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{revision}^{{commit}}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    commit = result.stdout.strip()
+    if result.returncode != 0 or GIT_OID_PATTERN.fullmatch(commit) is None:
+        raise VerificationError(f"{label} cannot be resolved to a Git commit")
+    return commit
+
+
+def _verify_release_git_state(
+    repo_root: Path,
+    *,
+    tag: str,
+    manifest_source_revision: str,
+    main_ref: str,
+) -> dict[str, str]:
+    _semver(tag, "release tag")
+    if tag != manifest_source_revision:
+        raise VerificationError(
+            "release tag disagrees with contract manifest source_revision: "
+            f"tag={tag}; source_revision={manifest_source_revision}"
+        )
+    if main_ref != "refs/remotes/origin/main":
+        raise VerificationError("release main ref is not the canonical trusted main ref")
+    head_commit = _resolve_git_commit(repo_root, "HEAD", "release checkout HEAD")
+    tag_commit = _resolve_git_commit(
+        repo_root,
+        f"refs/tags/{tag}",
+        "release tag",
+    )
+    main_commit = _resolve_git_commit(repo_root, main_ref, "trusted main ref")
+    if head_commit != tag_commit:
+        raise VerificationError("release checkout HEAD does not equal the release tag commit")
+    ancestry = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "merge-base",
+            "--is-ancestor",
+            tag_commit,
+            main_commit,
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if ancestry.returncode not in {0, 1}:
+        raise VerificationError("release tag ancestry against trusted main cannot be verified")
+    if ancestry.returncode != 0:
+        raise VerificationError("release tag commit is not an ancestor of trusted main")
+    return {
+        "tag": tag,
+        "tag_commit": tag_commit,
+        "trusted_main_commit": main_commit,
+    }
+
+
+def verify_release(
+    repo_root: Path,
+    *,
+    tag: str,
+    main_ref: str,
+) -> dict[str, Any]:
+    store = FilesystemStore(repo_root)
+    manifest = _contract_manifest_document(store, "release contract manifest")
+    git_state = _verify_release_git_state(
+        store.root,
+        tag=tag,
+        manifest_source_revision=manifest["source_revision"],
+        main_ref=main_ref,
+    )
+    report = verify_catalog(store)
+    history = verify_repository_history(
+        store,
+        head_sha=git_state["tag_commit"],
+        construction_resolver=_local_construction_revision_resolver(store.root),
+    )
+    report.update(
+        {
+            "status": "verified_release",
+            "release": git_state,
+            "repository_history": history,
+        }
+    )
+    return report
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     verify_base = subparsers.add_parser("verify-base")
     verify_base.add_argument("--repo-root", type=Path, default=Path.cwd())
+    verify_release_parser = subparsers.add_parser("verify-release")
+    verify_release_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    verify_release_parser.add_argument("--tag", required=True)
+    verify_release_parser.add_argument(
+        "--main-ref",
+        default="refs/remotes/origin/main",
+    )
     verify_pr = subparsers.add_parser("verify-pull-request")
     verify_pr.add_argument("--repo-root", type=Path, default=Path.cwd())
     verify_pr.add_argument("--event", type=Path, required=True)
@@ -3149,6 +3379,12 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
             report["repository_history"] = history
+        elif args.command == "verify-release":
+            report = verify_release(
+                args.repo_root,
+                tag=args.tag,
+                main_ref=args.main_ref,
+            )
         else:
             token = os.environ.get("GITHUB_TOKEN", "")
             if not token:

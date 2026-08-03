@@ -17,6 +17,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Required external main-branch ruleset enforcement is pending explicit
+      # user authorization; this workflow does not claim that it is configured.
+      - name: Verify release trust boundary
+        run: |
+          python scripts/evozeus_official_upgrade_verify.py verify-release \
+            --repo-root . \
+            --tag "${GITHUB_REF_NAME}" \
+            --main-ref refs/remotes/origin/main
       - name: Verify tag
         run: test "$(git describe --tags --exact-match)" = "${GITHUB_REF_NAME}"
       - name: Verify release notes
