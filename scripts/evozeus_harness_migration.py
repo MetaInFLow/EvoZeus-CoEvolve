@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import errno
 import hashlib
 import json
@@ -9,6 +10,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +59,89 @@ OFFICIAL_UPGRADE_CLOSURE_POINTER_REL = "migrations/history/harness-skill/current
 OFFICIAL_UPGRADE_PROFILE_POINTER_REL = "migrations/profiles/current.json"
 OFFICIAL_UPGRADE_PROFILE_SCHEMA_REL = "migrations/schemas/official-upgrade-profile-v1.schema.json"
 OFFICIAL_UPGRADE_CLOSURE_SCHEMA_REL = "migrations/schemas/target-closure-v1.schema.json"
+
+
+def _atomic_rename_same_directory(
+    parent_fd: int,
+    source: str,
+    destination: str,
+    *,
+    exchange: bool,
+) -> None:
+    """Use a kernel atomic rename primitive or reject the mutation."""
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "linux":
+        function = getattr(library, "renameat2", None)
+        flag = 0x2 if exchange else 0x1  # RENAME_EXCHANGE / RENAME_NOREPLACE
+    elif sys.platform == "darwin":
+        function = getattr(library, "renameatx_np", None)
+        flag = (0x2 if exchange else 0x4) | 0x10  # SWAP / EXCL + NOFOLLOW_ANY
+    else:
+        function = None
+        flag = 0
+    if function is None:
+        raise ValueError(
+            "secure target mutation requires atomic rename exchange/no-replace support"
+        )
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = function(
+        parent_fd,
+        os.fsencode(source),
+        parent_fd,
+        os.fsencode(destination),
+        flag,
+    )
+    if result == 0:
+        return
+    error = ctypes.get_errno() or errno.EIO
+    if error in {
+        errno.ENOSYS,
+        errno.EINVAL,
+        getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+        errno.EOPNOTSUPP,
+    }:
+        raise ValueError(
+            "secure target filesystem lacks the required atomic rename primitive"
+        )
+    raise OSError(
+        error,
+        os.strerror(error),
+        f"{source} -> {destination}",
+    )
+
+
+def _atomic_exchange_same_directory(
+    parent_fd: int,
+    source: str,
+    destination: str,
+) -> None:
+    _atomic_rename_same_directory(
+        parent_fd,
+        source,
+        destination,
+        exchange=True,
+    )
+
+
+def _atomic_rename_noreplace_same_directory(
+    parent_fd: int,
+    source: str,
+    destination: str,
+) -> None:
+    _atomic_rename_same_directory(
+        parent_fd,
+        source,
+        destination,
+        exchange=False,
+    )
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -871,6 +956,16 @@ def _official_upgrade_profile_compatibility(
         )
         if field in manifest_state
     }
+    migration_records = raw_profile.get("migration_records")
+    current_migration_record = raw_profile.get("current_migration_record")
+    if (
+        not isinstance(migration_records, list)
+        or not migration_records
+        or any(not isinstance(item, str) for item in migration_records)
+        or not isinstance(current_migration_record, str)
+        or current_migration_record not in migration_records
+    ):
+        raise ValueError("official upgrade profile migration records were not verified")
     payload = {
         "type": "exact-artifact-and-stable-block",
         "authority_source": "external-hash-bound-official-upgrade-profile",
@@ -884,6 +979,8 @@ def _official_upgrade_profile_compatibility(
             "to_closure": raw_profile.get("to_closure"),
         },
         "operations": copy.deepcopy(raw_profile.get("operations", [])),
+        "migration_records": copy.deepcopy(migration_records),
+        "current_migration_record": current_migration_record,
         "from_closure_files": copy.deepcopy(from_closure.get("files", [])),
         "write_sources": write_sources,
         "trusted_preimages": trusted_preimages,
@@ -1550,11 +1647,37 @@ class SecureTargetFS:
         return b"".join(chunks)
 
     @staticmethod
-    def _named_identity(parent_fd: int, name: str) -> tuple[int, int]:
+    def _named_entry_identity(parent_fd: int, name: str) -> tuple[int, int, int]:
         metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode):
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+    @classmethod
+    def _named_identity(cls, parent_fd: int, name: str) -> tuple[int, int]:
+        device, inode, mode = cls._named_entry_identity(parent_fd, name)
+        if not stat.S_ISREG(mode):
             raise ValueError("secure target staging path is not a regular file")
-        return metadata.st_dev, metadata.st_ino
+        return device, inode
+
+    @classmethod
+    def _unlink_named_identity(
+        cls,
+        parent_fd: int,
+        name: str,
+        expected_identity: tuple[int, int],
+    ) -> None:
+        if cls._named_identity(parent_fd, name) != expected_identity:
+            raise ValueError("secure target cleanup identity changed")
+        os.unlink(name, dir_fd=parent_fd)
+
+    @staticmethod
+    def _unique_quarantine_name(parent_fd: int) -> str:
+        for _attempt in range(32):
+            name = f".evozeus-quarantine-{uuid.uuid4().hex}"
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return name
+        raise ValueError("secure target could not allocate a quarantine path")
 
     @staticmethod
     def _open_unique_staging_file(parent_fd: int) -> tuple[str, int, tuple[int, int]]:
@@ -1626,6 +1749,71 @@ class SecureTargetFS:
             return identity
         finally:
             os.close(descriptor)
+
+    def _recover_atomic_exchange(
+        self,
+        parent_fd: int,
+        name: str,
+        staging_name: str,
+        relative: Path,
+        *,
+        staging_identity: tuple[int, int],
+        displaced_identity: tuple[int, int, int] | None,
+    ) -> tuple[bool, str]:
+        """Put the displaced destination back without deleting either inode."""
+        try:
+            if self._named_identity(parent_fd, name) != staging_identity:
+                return False, "published destination identity changed before recovery"
+            if displaced_identity is None:
+                displaced_identity = self._named_entry_identity(
+                    parent_fd,
+                    staging_name,
+                )
+            if self._named_entry_identity(parent_fd, staging_name) != displaced_identity:
+                return False, "displaced destination changed before recovery"
+            self._verify_parent_binding(relative, parent_fd)
+            _atomic_exchange_same_directory(parent_fd, staging_name, name)
+            self._verify_parent_binding(relative, parent_fd)
+            restored = self._named_entry_identity(parent_fd, name)
+            recovered_staging = self._named_identity(parent_fd, staging_name)
+            if restored != displaced_identity or recovered_staging != staging_identity:
+                return False, "atomic exchange recovery identity verification failed"
+            os.fsync(parent_fd)
+            return True, "displaced destination restored"
+        except (OSError, ValueError) as exc:
+            return False, f"atomic exchange recovery failed: {exc}"
+
+    def _restore_quarantined_entry(
+        self,
+        parent_fd: int,
+        name: str,
+        quarantine_name: str,
+        relative: Path,
+        *,
+        quarantined_identity: tuple[int, int, int] | None,
+    ) -> tuple[bool, str]:
+        """Restore a quarantined entry only when the destination remains absent."""
+        try:
+            if quarantined_identity is None:
+                quarantined_identity = self._named_entry_identity(
+                    parent_fd,
+                    quarantine_name,
+                )
+            if self._named_entry_identity(parent_fd, quarantine_name) != quarantined_identity:
+                return False, "quarantined destination changed before recovery"
+            self._verify_parent_binding(relative, parent_fd)
+            _atomic_rename_noreplace_same_directory(
+                parent_fd,
+                quarantine_name,
+                name,
+            )
+            self._verify_parent_binding(relative, parent_fd)
+            if self._named_entry_identity(parent_fd, name) != quarantined_identity:
+                return False, "quarantine recovery identity verification failed"
+            os.fsync(parent_fd)
+            return True, "quarantined destination restored"
+        except (OSError, ValueError) as exc:
+            return False, f"quarantine recovery failed: {exc}"
 
     def _verify_published_postimage(
         self,
@@ -1799,6 +1987,7 @@ class SecureTargetFS:
         staging_descriptor = -1
         staging_name: str | None = None
         staging_identity: tuple[int, int] | None = None
+        staging_was_exchanged = False
         try:
             descriptors, name, relative = self._open_parent(
                 raw,
@@ -1876,20 +2065,49 @@ class SecureTargetFS:
                     expected_identity=replace_identity,
                 )
                 self._verify_parent_binding(relative, parent_fd)
-                os.replace(
-                    staging_name,
-                    name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                self._verify_parent_binding(relative, parent_fd)
-                self._verify_published_postimage(
+                _atomic_exchange_same_directory(parent_fd, staging_name, name)
+                staging_was_exchanged = True
+                displaced_identity: tuple[int, int, int] | None = None
+                try:
+                    displaced_identity = self._named_entry_identity(
+                        parent_fd,
+                        staging_name,
+                    )
+                    self._verify_parent_binding(relative, parent_fd)
+                    self._verify_published_postimage(
+                        parent_fd,
+                        name,
+                        relative,
+                        expected_identity=staging_identity,
+                        expected_data=data,
+                        expected_mode=mode,
+                    )
+                    self._verified_replace_preimage(
+                        parent_fd,
+                        staging_name,
+                        relative,
+                        expected_preimage=expected_preimage,
+                        expected_mode=expected_mode,
+                        expected_identity=replace_identity,
+                    )
+                except BaseException as exc:
+                    recovered, recovery = self._recover_atomic_exchange(
+                        parent_fd,
+                        name,
+                        staging_name,
+                        relative,
+                        staging_identity=staging_identity,
+                        displaced_identity=displaced_identity,
+                    )
+                    state = "restored" if recovered else "quarantined"
+                    raise ValueError(
+                        "secure target replace CAS changed during atomic exchange: "
+                        f"{relative.as_posix()}; state={state}; recovery={recovery}"
+                    ) from exc
+                self._unlink_named_identity(
                     parent_fd,
-                    name,
-                    relative,
-                    expected_identity=staging_identity,
-                    expected_data=data,
-                    expected_mode=mode,
+                    staging_name,
+                    replace_identity,
                 )
             staging_name = None
             os.fsync(parent_fd)
@@ -1903,10 +2121,24 @@ class SecureTargetFS:
                 and staging_identity is not None
             ):
                 try:
-                    if self._named_identity(parent_fd, staging_name) == staging_identity:
-                        os.unlink(staging_name, dir_fd=parent_fd)
-                        os.fsync(parent_fd)
-                except FileNotFoundError:
+                    if staging_was_exchanged:
+                        self._verify_published_postimage(
+                            parent_fd,
+                            staging_name,
+                            relative,
+                            expected_identity=staging_identity,
+                            expected_data=data,
+                            expected_mode=mode,
+                        )
+                    self._unlink_named_identity(
+                        parent_fd,
+                        staging_name,
+                        staging_identity,
+                    )
+                    staging_name = None
+                    os.fsync(parent_fd)
+                except (OSError, ValueError):
+                    # Unknown concurrent bytes remain quarantined for manual recovery.
                     pass
             if descriptors:
                 self._close_descriptors(descriptors)
@@ -1929,16 +2161,83 @@ class SecureTargetFS:
         expected_mode: int | None = None,
     ) -> None:
         descriptors, name, relative = self._open_parent(raw, create_parents=False)
+        quarantine_name: str | None = None
+        quarantined_identity: tuple[int, int, int] | None = None
         try:
-            self.read_exact(relative.as_posix(), expected_sha256)
-            if expected_mode is not None:
-                state = self.file_state(relative.as_posix())
-                if state.get("mode") != expected_mode:
-                    raise ValueError(
-                        f"secure target remove mode CAS changed: {relative.as_posix()}"
-                    )
+            expected_identity = self._verified_replace_preimage(
+                descriptors[-1],
+                name,
+                relative,
+                expected_preimage=expected_sha256,
+                expected_mode=expected_mode,
+            )
             self._verify_parent_binding(relative, descriptors[-1])
-            os.unlink(name, dir_fd=descriptors[-1])
+            for _attempt in range(32):
+                quarantine_name = self._unique_quarantine_name(descriptors[-1])
+                try:
+                    _atomic_rename_noreplace_same_directory(
+                        descriptors[-1],
+                        name,
+                        quarantine_name,
+                    )
+                except FileExistsError:
+                    quarantine_name = None
+                    continue
+                break
+            else:
+                raise ValueError(
+                    "secure target could not atomically allocate a quarantine path"
+                )
+            try:
+                quarantined_identity = self._named_entry_identity(
+                    descriptors[-1],
+                    quarantine_name,
+                )
+                self._verified_replace_preimage(
+                    descriptors[-1],
+                    quarantine_name,
+                    relative,
+                    expected_preimage=expected_sha256,
+                    expected_mode=expected_mode,
+                    expected_identity=expected_identity,
+                )
+            except BaseException as exc:
+                recovered, recovery = self._restore_quarantined_entry(
+                    descriptors[-1],
+                    name,
+                    quarantine_name,
+                    relative,
+                    quarantined_identity=quarantined_identity,
+                )
+                if recovered:
+                    quarantine_name = None
+                state = "restored" if recovered else "quarantined"
+                raise ValueError(
+                    "secure target remove CAS changed during atomic quarantine: "
+                    f"{relative.as_posix()}; state={state}; recovery={recovery}"
+                ) from exc
+            try:
+                self._unlink_named_identity(
+                    descriptors[-1],
+                    quarantine_name,
+                    expected_identity,
+                )
+            except BaseException as exc:
+                recovered, recovery = self._restore_quarantined_entry(
+                    descriptors[-1],
+                    name,
+                    quarantine_name,
+                    relative,
+                    quarantined_identity=quarantined_identity,
+                )
+                if recovered:
+                    quarantine_name = None
+                state = "restored" if recovered else "quarantined"
+                raise ValueError(
+                    "secure target remove cleanup failed after quarantine: "
+                    f"{relative.as_posix()}; state={state}; recovery={recovery}"
+                ) from exc
+            quarantine_name = None
             os.fsync(descriptors[-1])
         finally:
             self._close_descriptors(descriptors)
@@ -2826,6 +3125,19 @@ def rollback_migration_snapshot(
                 or current.get("mode") != item.get("mode")
             ):
                 raise ValueError(f"rollback verification failed: {item.get('path')}")
+    quarantine_residue = [
+        item["path"]
+        for item in _target_inventory(target)
+        if any(
+            part.startswith((".evozeus-tmp-", ".evozeus-quarantine-"))
+            for part in Path(item["path"]).parts
+        )
+    ]
+    if quarantine_residue:
+        raise ValueError(
+            "rollback preserved concurrent quarantine content: "
+            + ", ".join(quarantine_residue)
+        )
     mark_migration_transaction(
         snapshot_root,
         state="rolled_back",
