@@ -316,6 +316,7 @@ def check_integration_contract(target: Path, manifest: dict | None) -> None:
     capabilities = integration.get("capabilities") or {}
     repo_hook = capabilities.get("repo_maintenance_hook") or {}
     global_dispatcher = capabilities.get("global_session_dispatcher") or {}
+    prompt_watcher = capabilities.get("global_prompt_lesson_watcher") or {}
     skill_entry = capabilities.get("skill_entry_preflight") or {}
     invocation_hook = capabilities.get("skill_invocation_hook") or {}
 
@@ -327,6 +328,14 @@ def check_integration_contract(target: Path, manifest: dict | None) -> None:
         fail("portable manifest cannot persist user-level global dispatcher installation state")
     if global_dispatcher.get("trust_status") not in {None, "not_installed"}:
         fail("portable manifest cannot persist user-level global dispatcher trust state")
+    if prompt_watcher.get("covers_skill_invocation"):
+        fail("global_prompt_lesson_watcher cannot claim per-Skill invocation coverage")
+    if prompt_watcher.get("installed") or prompt_watcher.get("native_enforced"):
+        fail("portable manifest cannot persist user-level prompt watcher installation state")
+    if prompt_watcher.get("trust_status") not in {None, "not_installed"}:
+        fail("portable manifest cannot persist user-level prompt watcher trust state")
+    if prompt_watcher and prompt_watcher.get("event") != "UserPromptSubmit":
+        fail("global_prompt_lesson_watcher event must be UserPromptSubmit")
     if skill_entry.get("native_enforced"):
         fail("skill_entry_preflight is prompt-compliance based, not native enforcement")
     if skill_entry.get("installed"):
