@@ -46,8 +46,8 @@ jobs:
           # GET /apps/github-actions; bind required checks to their real producer.
           EXPECTED_GITHUB_ACTIONS_APP_ID: "15368"
           RELEASE_ENVIRONMENT: release
-          REQUIRED_CI_CONTEXT: CI / test
-          REQUIRED_OFFICIAL_CONTEXT: EvoZeus Official Upgrade Profile / classify-and-verify
+          REQUIRED_CI_CONTEXT: test
+          REQUIRED_OFFICIAL_CONTEXT: classify-and-verify
         run: |
           set -euo pipefail
           test -n "${GH_TOKEN}"

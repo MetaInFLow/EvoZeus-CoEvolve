@@ -3785,6 +3785,10 @@ class UpgradeAllHarnessTest(unittest.TestCase):
     def latest_v014():
         return {"version": "v0.14.0", "source": "test", "error": None}
 
+    @staticmethod
+    def latest_v015():
+        return {"version": "v0.15.0", "source": "test", "error": None}
+
     def apply_approved_upgrade_all(
         self,
         home: Path,
@@ -3980,6 +3984,31 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertEqual(report["status"], "blocked")
             self.assertTrue(any("source is missing" in error for error in report["errors"]))
 
+    def test_upgrade_all_blocks_source_version_mismatch_before_target_planning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root, version="v0.10.0")
+            self.create_upgrade_target(home, "source-version-mismatch")
+
+            with patch(
+                "scripts.evozeus_wrapper_lifecycle.plan_target_layout_migration"
+            ) as planner:
+                report = plan_upgrade_all(
+                    home,
+                    wrapper_root,
+                    "v0.11.4",
+                    latest_resolver=self.latest_v0114,
+                )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["writes"])
+            self.assertEqual(report["targets"], [])
+            self.assertTrue(
+                any("wrapper source must be updated" in error for error in report["errors"])
+            )
+            planner.assert_not_called()
+
     def test_upgrade_all_rejects_overflowed_registered_manifest_before_planning(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4100,13 +4129,14 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = self.apply_approved_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.14.0",
-                latest_resolver=self.latest_v014,
+                "v0.15.0",
+                latest_resolver=self.latest_v015,
                 admin_resolver=self.admin,
             )
 
             self.assertEqual(report["status"], "blocked")
             self.assertFalse(report["writes"])
+            self.assertEqual(len(report["targets"]), 1)
             migration = report["targets"][0]["migration"]
             self.assertEqual(migration["decision"], "manual_migration_required")
             self.assertFalse(migration["can_apply"])
@@ -4175,14 +4205,15 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             report = self.apply_approved_upgrade_all(
                 home,
                 Path.cwd(),
-                "v0.14.0",
-                latest_resolver=self.latest_v014,
+                "v0.15.0",
+                latest_resolver=self.latest_v015,
                 admin_resolver=self.admin,
             )
             updated = skill.read_text(encoding="utf-8")
 
             self.assertEqual(report["status"], "blocked")
             self.assertFalse(report["writes"])
+            self.assertEqual(len(report["targets"]), 1)
             self.assertIn(business_block, updated)
             self.assertEqual(skill.read_bytes(), original_skill)
             self.assertNotIn("Version Refresh Note", updated)

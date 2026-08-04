@@ -3835,9 +3835,9 @@ def _assert_release_security_invariants(workflow: dict[str, object]) -> None:
         if "gh release create" in step.get("run", "")
     )
     assert publish["steps"][create_index - 1] == governance_gate
-    assert governance_gate["env"]["REQUIRED_CI_CONTEXT"] == "CI / test"
+    assert governance_gate["env"]["REQUIRED_CI_CONTEXT"] == "test"
     assert governance_gate["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
-        "EvoZeus Official Upgrade Profile / classify-and-verify"
+        "classify-and-verify"
     )
     assert governance_gate["env"]["EXPECTED_GITHUB_ACTIONS_APP_ID"] == "15368"
     assert governance_gate["run"].count(
@@ -3929,10 +3929,8 @@ def test_release_governance_job_proves_external_admin_controls_read_only() -> No
     )
     assert step["env"]["GH_TOKEN"] == "${{ secrets.EVOZEUS_GOVERNANCE_TOKEN }}"
     assert step["env"]["EXPECTED_GITHUB_ACTIONS_APP_ID"] == "15368"
-    assert step["env"]["REQUIRED_CI_CONTEXT"] == "CI / test"
-    assert step["env"]["REQUIRED_OFFICIAL_CONTEXT"] == (
-        "EvoZeus Official Upgrade Profile / classify-and-verify"
-    )
+    assert step["env"]["REQUIRED_CI_CONTEXT"] == "test"
+    assert step["env"]["REQUIRED_OFFICIAL_CONTEXT"] == "classify-and-verify"
     run = step["run"]
     for required in (
         'test -n "${GH_TOKEN}"',
@@ -3974,9 +3972,9 @@ def test_release_governance_job_proves_external_admin_controls_read_only() -> No
 
 def _valid_release_governance_responses() -> dict[str, object]:
     required_contexts = [
-        {"context": "CI / test", "integration_id": 15368},
+        {"context": "test", "integration_id": 15368},
         {
-            "context": "EvoZeus Official Upgrade Profile / classify-and-verify",
+            "context": "classify-and-verify",
             "integration_id": 15368,
         },
     ]
@@ -4018,16 +4016,13 @@ def _valid_release_governance_responses() -> dict[str, object]:
             "required_status_checks": {
                 "strict": True,
                 "contexts": [
-                    "CI / test",
-                    "EvoZeus Official Upgrade Profile / classify-and-verify",
+                    "test",
+                    "classify-and-verify",
                 ],
                 "checks": [
-                    {"context": "CI / test", "app_id": 15368},
+                    {"context": "test", "app_id": 15368},
                     {
-                        "context": (
-                            "EvoZeus Official Upgrade Profile / "
-                            "classify-and-verify"
-                        ),
+                        "context": "classify-and-verify",
                         "app_id": 15368,
                     }
                 ],
@@ -4096,10 +4091,8 @@ gh() {
         "GH_TOKEN": "admin-read-token",
         "EXPECTED_GITHUB_ACTIONS_APP_ID": "15368",
         "RELEASE_ENVIRONMENT": "release",
-        "REQUIRED_CI_CONTEXT": "CI / test",
-        "REQUIRED_OFFICIAL_CONTEXT": (
-            "EvoZeus Official Upgrade Profile / classify-and-verify"
-        ),
+        "REQUIRED_CI_CONTEXT": "test",
+        "REQUIRED_OFFICIAL_CONTEXT": "classify-and-verify",
         "RUNNER_TEMP": str(tmp_path),
         "RULESET_LIST": json.dumps(responses["ruleset_list"]),
         "BRANCH_RULESET": json.dumps(responses["branch_ruleset"]),
@@ -4163,14 +4156,14 @@ def test_release_governance_gate_rejects_external_control_downgrades(
         checks = responses["branch_ruleset"]["rules"][3]["parameters"][
             "required_status_checks"
         ]
-        checks[:] = [item for item in checks if item["context"] != "CI / test"]
+        checks[:] = [item for item in checks if item["context"] != "test"]
     elif downgrade == "missing_official_context":
         checks = responses["branch_protection"]["required_status_checks"]["checks"]
         checks[:] = [
             item
             for item in checks
             if item["context"]
-            != "EvoZeus Official Upgrade Profile / classify-and-verify"
+            != "classify-and-verify"
         ]
     elif downgrade == "missing_integration_id":
         del responses["branch_ruleset"]["rules"][3]["parameters"][
@@ -4430,7 +4423,7 @@ def test_release_publish_job_only_publishes_verified_exact_payload() -> None:
             "true # ruleset bypass actors were not rejected",
         ),
         (
-            "REQUIRED_CI_CONTEXT: CI / test",
+            "REQUIRED_CI_CONTEXT: test",
             "REQUIRED_CI_CONTEXT: unbound",
         ),
         (
