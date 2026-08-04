@@ -4268,8 +4268,9 @@ def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> N
     package_checkout = _checkout_steps(package)[0]
     for checkout in (test_checkout, package_checkout):
         assert checkout["with"]["ref"] == "${{ needs.verify.outputs.tag_commit }}"
-        assert checkout["with"]["fetch-depth"] == "1"
         assert checkout["with"]["persist-credentials"] == "false"
+    assert test_checkout["with"]["fetch-depth"] == "0"
+    assert package_checkout["with"]["fetch-depth"] == "1"
     test_commands = _job_commands(test_job)
     assert "python -m pip install --require-hashes -r requirements-commonmark.lock" in test_commands
     assert test_commands.index("--require-hashes -r requirements-commonmark.lock") < test_commands.index(

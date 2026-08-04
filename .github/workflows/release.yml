@@ -255,7 +255,10 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.tag_commit }}
           path: candidate
-          fetch-depth: 1
+          # Historical closure tests compare frozen artifacts with their exact
+          # construction revisions, so the candidate test checkout needs the
+          # same complete history as CI.
+          fetch-depth: 0
           persist-credentials: false
       - name: Assert exact test identity
         working-directory: candidate
