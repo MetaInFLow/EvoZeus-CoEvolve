@@ -4,6 +4,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+## [v0.15.0] - 2026-08-04
+
 ### Added
 
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.1.0` contract version and compact instruction-surface activation block.
