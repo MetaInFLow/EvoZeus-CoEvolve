@@ -1,0 +1,67 @@
+{
+  "schema_version": "evozeus.coevolve.legacy-prompt-adapter.v1",
+  "adapter_id": "legacy-v0.14-three-section-exact-transform",
+  "adapter_version": "v1.0.0",
+  "implementation": {
+    "path": "scripts/evozeus_harness_legacy_prompt_adapter.py",
+    "sha256": "46f3cee827c4f5bc613f16b61dd1b2017ef7e82728f25734b9835c57340521b5",
+    "entrypoint": "plan_supervised_legacy_prompt_transform"
+  },
+  "commonmark_parser": {
+    "distribution": "markdown-it-py",
+    "version": "4.0.0",
+    "lock_path": "requirements-commonmark.lock",
+    "lock_sha256": "41ab63af490a4b68f4e2af84545fb1863511cddcc75c557261ca8c8b2155b4a0"
+  },
+  "source_envelope": {
+    "path": "contracts/v1/migrations/history/legacy-wrapper/v0.14.0/envelope.json",
+    "sha256": "d9082554c2ccb0605c8cad5512c9c085e75384eb74df5e3d84f111eaf4d3d346"
+  },
+  "expected_headings": {
+    "status": "EvoZeus-CoEvolve 状态检查",
+    "evolution": "自进化方法",
+    "wrapper": "EvoZeus-CoEvolve"
+  },
+  "forbidden_legacy_headings": [
+    "EvoZeus-wrapper 状态检查",
+    "EvoZeus-wrapper",
+    "EvoZeus Wrapper",
+    "EvoZeus-CoEvolve 迁移记录"
+  ],
+  "templates": [
+    {
+      "kind": "status",
+      "path": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/status.md.tpl",
+      "sha256": "14d2a41dba0115a4e41464978568030ecf0c110ad7699efec93cb012d5c9958b",
+      "placeholders": ["CURRENT_VERSION", "REPO_NAME", "WRAPPER_VERSION"]
+    },
+    {
+      "kind": "evolution",
+      "path": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/evolution.md.tpl",
+      "sha256": "5b2094d173d7a4d0acf334c1f0fe52fa92f84408c0cc1e4f72f6c2c875981b04",
+      "placeholders": ["CURRENT_VERSION", "REPO_NAME", "VISIBILITY", "WRAPPER_VERSION"]
+    },
+    {
+      "kind": "wrapper",
+      "path": "contracts/v1/migrations/adapters/legacy-v0.14-three-section/wrapper.md.tpl",
+      "sha256": "4fce921ba7e5830039b6749ed36d7de437a0f6396a11d8966d242ea60770f84b",
+      "placeholders": ["REPO_NAME", "WRAPPER_VERSION"]
+    }
+  ],
+  "canonical_activation_block_lf": "<!-- evozeus-harness-entry:v1 -->\n**CRITICAL — 进入业务主链路前 MUST 使用 Read 工具读取并执行\n[.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md](.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md)。**\n<!-- /evozeus-harness-entry -->",
+  "canonical_activation_sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea",
+  "transform_contract": {
+    "discovery_authority": false,
+    "reviewed_source_envelope_required": true,
+    "legacy_owned_section_count": 3,
+    "legacy_template_match": "rendered-byte-exact",
+    "instruction_surface_preservation": "complement-bytes-exact",
+    "manifest_projection": "rendered-byte-exact",
+    "file_preconditions": "full-envelope-exact-or-explicit-preserve",
+    "newline_policy": "preserve-uniform-lf-or-crlf",
+    "write_authority": "none",
+    "execution_authority": "separate-supervised-approval",
+    "compare_and_swap": "full-file-preimage-required",
+    "proof_digest": "canonical-json-sha256"
+  }
+}

@@ -116,9 +116,15 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all \
   --latest-version vMAJOR.MINOR.PATCH \
   --dry-run \
   --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version vMAJOR.MINOR.PATCH \
+  --approve \
+  --approve-plan 'sha256:<exact-batch-plan-digest>' \
+  --json
 ```
 
-`upgrade-all` 的实际写入还需要 `--approve`，并逐个验证目标 Repo 的管理员权限、干净工作区和可回滚快照。
+先从 dry-run 读取本次 `batch_plan_sha256`，再把同一 exact digest 传给 `--approve-plan`。实际写入同时要求 `--approve`，并逐个验证目标 Repo 的管理员权限、干净工作区和可回滚快照；任一 replan digest 变化都会阻断后续写入并回滚已处理目标。
 
 ## Harness 产物
 
@@ -175,9 +181,12 @@ Skillware Release 与 Harness Version 是两条版本轴：
 ## 开发与验证
 
 ```bash
-python3 -m pytest -q
+python3 -m pip install --require-hashes -r requirements-commonmark.lock
+python3 scripts/evozeus_test.py -q
 python3 -m py_compile \
   scripts/evozeus_wrapper.py \
+  scripts/evozeus_source_guard.py \
+  scripts/evozeus_test.py \
   scripts/evozeus_wrapper_bootstrap.py \
   scripts/evozeus_wrapper_global_hook.py \
   scripts/evozeus_wrapper_lifecycle.py \

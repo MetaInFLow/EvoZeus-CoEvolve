@@ -12,8 +12,14 @@ def test_versioned_release_notes_live_under_docs_releases() -> None:
     assert list(NOTES.glob("v*.md"))
 
 
-def test_tag_workflow_resolves_the_canonical_release_notes_path() -> None:
+def test_release_workflow_reads_commit_bound_canonical_release_notes() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     assert re.search(r"RELEASE_NOTES_DIR:\s*docs/releases", workflow)
-    assert '--notes-file "${RELEASE_NOTES_DIR}/${GITHUB_REF_NAME}.md"' in workflow
-    assert 'test -s "${RELEASE_NOTES_DIR}/${GITHUB_REF_NAME}.md"' in workflow
+    assert 'NOTES_SOURCE="${RELEASE_NOTES_DIR}/${REQUESTED_TAG}.md"' in workflow
+    assert (
+        'git -C candidate show "${TAG_COMMIT}:${NOTES_SOURCE}" '
+        '> "${PAYLOAD_DIR}/${NOTES}"'
+    ) in workflow
+    assert 'test -s "${PAYLOAD_DIR}/${NOTES}"' in workflow
+    assert '--notes-file "${PAYLOAD_DIR}/${NOTES}"' in workflow
+    assert "GITHUB_REF_NAME" not in workflow

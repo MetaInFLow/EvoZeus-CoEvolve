@@ -37,13 +37,14 @@ python3 scripts/evozeus_wrapper.py skill transform --mode verify --target /absol
 - Do not change target Skill business rules.
 - Only the independent Git Repo root may receive `.evozeus-wrapper/`; child paths inherit it.
 - Require a matching GitHub origin and verified `ADMIN` permission before any Harness write.
-- Single Skill targets use root `SKILL.md`; `SKILL.md` must put `EvoZeus-CoEvolve 状态检查` immediately after frontmatter so version/source checks run before the main chain.
-- Runtime kit targets often use root `AGENTS.md`; `AGENTS.md` must put `EvoZeus-CoEvolve 状态检查` before the main runtime instructions.
+- Single Skill targets use root `SKILL.md`; runtime kits often use root `AGENTS.md`. Both use the same compact canonical Harness Skill activation block before their main flow.
 - Hook/plugin-controlled Skill bundles use the instruction surface selected by `skills/evolution-surface-diagnosis/SKILL.md`, for example `skills/<control-skill>/SKILL.md`.
 - Do not create a fake root `SKILL.md`.
-- Other instruction-surface changes are append-only: add the self-evolution method and `EvoZeus-CoEvolve` section if missing.
+- Write the complete shared contract once at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`; keep the instruction-surface activation block at eight lines or fewer.
+- Record the canonical path, independent Harness Skill version, and wrapper-managed identity in `.evozeus-wrapper/wrapper.json`.
+- Legacy headings, ownership strings, terminal signatures, frontmatter, and path patterns only create read-only migration candidates. Preserve every target byte and return `manual_migration_required`, `writes=false` until a versioned profile and exact preimage adapter authorize a write set.
 - Add `.evozeus-wrapper/docs/migrations/README.md` so future wrapper harness upgrades have a migration ledger.
-- Do not overwrite existing files without explicit user confirmation.
+- Preserve unknown existing files at managed destinations. User confirmation alone cannot supply ownership evidence; require an exact trusted preimage or manifest receipt before refresh.
 - Keep `.evozeus-wrapper/wrapper.json` as the only operational harness manifest.
 
 ## Stop Conditions

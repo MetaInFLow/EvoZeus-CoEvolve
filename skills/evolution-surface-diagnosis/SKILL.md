@@ -57,8 +57,9 @@ Do not scan every business Skill body when controller files already prove the co
    - If hooks/plugin manifests load a control Skill and that Skill governs session behavior, choose that `skills/<name>/SKILL.md`.
    - If multiple surfaces control different runtimes, choose the common upstream surface. If there is no common upstream surface, stop and ask the owner to choose the runtime boundary.
    - If no surface is proven, stop and ask the owner to identify the controlling instruction surface.
-4. Check whether the chosen surface already contains `EvoZeus-CoEvolve 状态检查`.
-5. State component impact: which missing concept should be added to the chosen surface.
+4. Check whether the chosen surface contains exactly one compact activation block linking to `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`.
+5. Check whether the manifest records the same canonical path, `harness_skill_version`, and wrapper-managed identity.
+6. State component impact: which canonical Harness Skill or entry contract gap needs repair.
 
 ## Evidence Rules
 
@@ -87,7 +88,8 @@ Use concise Chinese, with concrete file paths.
 - <candidate path>: <why it is not the controlling surface>
 
 缺失项更新：
-- <chosen path> EvoZeus-CoEvolve status check
+- <chosen path> canonical Harness Skill activation block
+- .evozeus-wrapper/skills/using-evozeus-harness/SKILL.md contract
 - <other relevant wrapper gaps>
 
 下一步命令：
