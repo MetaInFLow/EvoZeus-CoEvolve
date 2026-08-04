@@ -1,0 +1,363 @@
+{
+  "schema_version": "evozeus.coevolve.target-closure.v1",
+  "closure_id": "using-evozeus-harness",
+  "closure_version": "v1.1.0",
+  "source": {
+    "repository": "MetaInFLow/EvoZeus-CoEvolve",
+    "construction_revision": "7eff14b4b93b77a3c360254339f000a1ccbcd855",
+    "release_status": "release_required_for_apply",
+    "required_release": "v0.15.0"
+  },
+  "state": {
+    "layout": "consolidated-v2",
+    "target_wrapper_version": "v0.15.0",
+    "contract_bundle_version": "v1.2.0",
+    "harness_skill_version": "v1.1.0"
+  },
+  "files": [
+    {
+      "target_path": ".codex/hooks.json",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.codex/hooks.json",
+      "sha256": "21083027f8f5b3b14ac8d11fc048e646621927066ea879fc4a7d0e02edd2f4b8",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.codex/hooks.json",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/CHANGELOG.md",
+      "kind": "rendered_template",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/CHANGELOG.md",
+      "sha256": "451ea86ec530a6475e4c938c338979a8c9783d5974f765109e2131b733db003d",
+      "materialization": {
+        "policy": "render_at_fresh_attach",
+        "without_receipt": "preserve_byte_exact",
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
+      },
+      "source_path": "templates/target/CHANGELOG.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/WRAPPER.md",
+      "kind": "rendered_template",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/WRAPPER.md",
+      "sha256": "a6ebad01310e23e7d7be4e9a72a67530963863c9a0804bb72516530d3998ff44",
+      "materialization": {
+        "policy": "render_at_fresh_attach",
+        "without_receipt": "preserve_byte_exact",
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
+      },
+      "source_path": "templates/target/WRAPPER.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/contracts/v1/migrations/harness-migration-contract-v1.json",
+      "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "contracts/v1/migrations/harness-migration-contract-v1.json",
+      "source_binding": "required_release"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/_config.yml",
+      "kind": "rendered_template",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/_config.yml",
+      "sha256": "9e55dafe410278196555ea43b3718123f521151d6f2bab676a821a35ab4e191a",
+      "materialization": {
+        "policy": "render_at_fresh_attach",
+        "without_receipt": "preserve_byte_exact",
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
+      },
+      "source_path": "templates/target/docs/_config.yml",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/design-doc-template.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/design-doc-template.md",
+      "sha256": "368bf1bffb8c1a2e69f492f075ac472223ca4754acbee2faae855dc21db1972e",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/docs/design-doc-template.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/designs/README.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/designs/README.md",
+      "sha256": "30479b1e83eaf456ee2433a75d9bc1e9526263c54294a8580f9427407ad413c9",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/docs/designs/README.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/index.md",
+      "kind": "rendered_template",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/index.md",
+      "sha256": "38e483420af1aa8ed5f6cb2625edeab33474292849ff4e5bbe84410444668a58",
+      "materialization": {
+        "policy": "render_at_fresh_attach",
+        "without_receipt": "preserve_byte_exact",
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
+      },
+      "source_path": "templates/target/docs/index.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/migrations/README.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/wrapper-migrations/README.md",
+      "sha256": "0e66b384ce6870d61955fc9af7924d85b99e8840a1d205aa96d8d4c8469f1699",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/docs/wrapper-migrations/README.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/migrations/harness-skill-v1.0.0-to-v1.1.0.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/generated/harness-skill-v1.0.0-to-v1.1.0.md",
+      "sha256": "c609568fc97c601acb30362ef3566ae047740102223db4bbcc580709b44f81ee",
+      "materialization": {
+        "policy": "copy_exact",
+        "generated_release_artifact": true
+      },
+      "source_binding": "generated_release_artifact"
+    },
+    {
+      "target_path": ".evozeus-wrapper/docs/onboarding.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/docs/onboarding.md",
+      "sha256": "64797d20ca82b7236a3e584b53ba747a74d3d624a5a38fcb64bd9561fa423ec8",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/docs/onboarding.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/hooks/evozeus_wrapper_start_check.py",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+      "sha256": "dcda8952560feead27dfa52e536f5873d5aa5608590650fb5d314795dd708df5",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/policies/audit-rule.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.evozeus_evoinfra/audit-rule.md",
+      "sha256": "f59ce7c5adf5de039f1d1f12f696821c1cb9955f88fbbf3a51225f1afc30f539",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.evozeus_evoinfra/audit-rule.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/policies/feedback-policy.json",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.evozeus_evoinfra/feedback-policy.json",
+      "sha256": "d5d323077fa083ad9f6a492f87387dcd6425f196a1b7b50d7e0a0d4c010dfdec",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.evozeus_evoinfra/feedback-policy.json",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/policies/notice-policy.json",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.evozeus_evoinfra/notice-policy.json",
+      "sha256": "b03bf3a14cdb3ded3ad5d4b1ca8d0dc2e5f8e57858a6bb0ef52ec58352c56a73",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.evozeus_evoinfra/notice-policy.json",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/scripts/evozeus_notice.py",
+      "kind": "exact",
+      "mode": "100755",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/scripts/evozeus_notice.py",
+      "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+      "materialization": {
+        "policy": "copy_exact",
+        "mode_policy": "set_declared_executable"
+      },
+      "source_path": "scripts/evozeus_notice.py",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+      "kind": "exact",
+      "mode": "100755",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/scripts/evozeus_wrapper_preflight.py",
+      "sha256": "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "scripts/evozeus_wrapper_preflight.py",
+      "source_binding": "required_release"
+    },
+    {
+      "target_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+      "sha256": "efb312e4da644a896b7829f83aa622357ac9bc63b2040cce955a9dec96870882",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".evozeus-wrapper/wrapper.json",
+      "kind": "manifest_state",
+      "mode": "virtual",
+      "ownership": "wrapper_managed",
+      "materialization": {
+        "policy": "manifest_owned_state"
+      },
+      "owned_state": {
+        "wrapper_repo": "MetaInFLow/EvoZeus-CoEvolve",
+        "wrapper_version": "v0.15.0",
+        "layout_version": 2,
+        "target_wrapper_dir": ".evozeus-wrapper",
+        "target_infra_dir": ".evozeus-wrapper",
+        "harness_skill_path": ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md",
+        "harness_skill_version": "v1.1.0",
+        "harness_skill_managed": true,
+        "migration_contract": {
+          "migration_protocol_version": "v1.0.0",
+          "contract_id": "evozeus-harness-migration",
+          "contract_version": "v1.0.0",
+          "path": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+          "sha256": "sha256:db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570"
+        },
+        "managed_blocks": [
+          {
+            "block_id": "evozeus-harness-entry",
+            "path_selector": "manifest.instruction_surface",
+            "marker_version": "v1",
+            "begin_marker": "<!-- evozeus-harness-entry:v1 -->",
+            "end_marker": "<!-- /evozeus-harness-entry -->",
+            "sha256_lf": "078bb2020284fbd6f91c12e46a2c726e64a4f4bbdef0320f4e40adcef26d3cea"
+          }
+        ],
+        "managed_files_require": [
+          ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+          ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+          ".evozeus-wrapper/skills/using-evozeus-harness/SKILL.md"
+        ]
+      }
+    },
+    {
+      "target_path": ".github/ISSUE_TEMPLATE/config.yml",
+      "kind": "rendered_template",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.github/ISSUE_TEMPLATE/config.yml",
+      "sha256": "0c51a4f1b8a7a38a20c4c1a37cccb7335fa76936dcd3f815e5276d47078f6aeb",
+      "materialization": {
+        "policy": "render_at_fresh_attach",
+        "without_receipt": "preserve_byte_exact",
+        "migration_policy": "preserve_byte_exact_no_auto_upgrade"
+      },
+      "source_path": "templates/target/.github/ISSUE_TEMPLATE/config.yml",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "sha256": "28c3766659dd11256cb561b7b2892ae11620042699b1c1a244d1c7ddeca85d36",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".github/pull_request_template.md",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.github/pull_request_template.md",
+      "sha256": "74540cf6a2fc343efd632bfc4a6027831f317ca055900f2033bd5b7c954b693e",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.github/pull_request_template.md",
+      "source_binding": "construction_revision"
+    },
+    {
+      "target_path": ".github/workflows/evozeus-wrapper-preflight.yml",
+      "kind": "exact",
+      "mode": "100644",
+      "ownership": "wrapper_managed",
+      "artifact_path": "artifacts/templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+      "sha256": "454655de1cd97332e109d45a7ec0d03f4697ea51118536920fe5e0a9982e26bd",
+      "materialization": {
+        "policy": "copy_exact"
+      },
+      "source_path": "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
+      "source_binding": "construction_revision"
+    }
+  ],
+  "protected_business_surfaces": [
+    {
+      "selector": "manifest.instruction_surface",
+      "rule": "byte_exact"
+    }
+  ]
+}

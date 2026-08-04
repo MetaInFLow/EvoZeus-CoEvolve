@@ -10,13 +10,14 @@
       "target_writes": true,
       "availability": "compatibility-only",
       "source_root": "templates/target",
-      "source_tree_sha256": "sha256:8cad988e88bb0896a0aa1903e36e84b7197fbb81fe2364978ea29a8e7dc5b2f2",
+      "source_tree_sha256": "sha256:e4786f2a7e9673203b869e15d38c05b5a87d7a323ca591ab7db4ac67cb02c9ad",
       "files": [
         ".codex/hooks.json",
         ".codex/hooks/evozeus_wrapper_start_check.py",
         ".evozeus_evoinfra/audit-rule.md",
         ".evozeus_evoinfra/feedback-policy.json",
         ".evozeus_evoinfra/notice-policy.json",
+        ".evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md",
         ".github/ISSUE_TEMPLATE/config.yml",
         ".github/ISSUE_TEMPLATE/skill-feedback.yml",
         ".github/pull_request_template.md",
@@ -29,6 +30,27 @@
         "docs/index.md",
         "docs/onboarding.md",
         "docs/wrapper-migrations/README.md"
+      ],
+      "external_sources": [
+        {
+          "source": "scripts/evozeus_wrapper_preflight.py",
+          "target": ".evozeus-wrapper/scripts/evozeus_wrapper_preflight.py",
+          "sha256": "68b6a087d2d30038045c2f3565d1736ed2e057c8b5f8a6ca61010148987c0ae0",
+          "executable": true
+        },
+        {
+          "source": "scripts/evozeus_notice.py",
+          "target": ".evozeus-wrapper/scripts/evozeus_notice.py",
+          "sha256": "d81ccc1bef6d1d9afe840573b238dc3ccf1695462a44d55604a892b8b02993ae",
+          "executable": true
+        }
+      ],
+      "contract_files": [
+        {
+          "source": "migrations/harness-migration-contract-v1.json",
+          "target": ".evozeus-wrapper/contracts/harness-migration-contract-v1.json",
+          "sha256": "db4378edd962031bf348e75a08d930ee547cf6f5f968ceb26d52f278b51d0570"
+        }
       ]
     }
   }
