@@ -3824,6 +3824,23 @@ def _assert_release_security_invariants(workflow: dict[str, object]) -> None:
     assert _checkout_steps(package)[0]["with"]["ref"] == (
         "${{ needs.verify.outputs.tag_commit }}"
     )
+    python_setup_steps = [
+        step
+        for step in test_job["steps"]
+        if step.get("uses", "").startswith("actions/setup-python@")
+    ]
+    assert len(python_setup_steps) == 1
+    python_setup = python_setup_steps[0]
+    assert python_setup["uses"] == (
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    )
+    assert python_setup["with"] == {"python-version": "3.12"}
+    test_run_index = next(
+        index
+        for index, step in enumerate(test_job["steps"])
+        if step.get("name") == "Run candidate repository tests without release credentials"
+    )
+    assert test_job["steps"].index(python_setup) < test_run_index
     assert set(publish["needs"]) == {"governance", "verify", "test", "package"}
     assert "needs.governance.outputs.approved == 'true'" in publish["if"]
 
@@ -4225,10 +4242,11 @@ def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> N
 
     assert set(action_uses) == {
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
     }
-    assert len(action_uses) == 6
+    assert len(action_uses) == 7
     assert all(
         re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", action) is not None
         for action in action_uses
@@ -4271,6 +4289,15 @@ def test_release_trusted_verifier_and_candidate_tests_are_runner_isolated() -> N
         assert checkout["with"]["persist-credentials"] == "false"
     assert test_checkout["with"]["fetch-depth"] == "0"
     assert package_checkout["with"]["fetch-depth"] == "1"
+    python_setup = next(
+        step
+        for step in test_job["steps"]
+        if step.get("uses", "").startswith("actions/setup-python@")
+    )
+    assert python_setup["uses"] == (
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    )
+    assert python_setup["with"] == {"python-version": "3.12"}
     test_commands = _job_commands(test_job)
     assert "python -m pip install --require-hashes -r requirements-commonmark.lock" in test_commands
     assert test_commands.index("--require-hashes -r requirements-commonmark.lock") < test_commands.index(
@@ -4411,6 +4438,11 @@ def test_release_publish_job_only_publishes_verified_exact_payload() -> None:
             "ref: ${{ needs.verify.outputs.tag_commit }}",
             "ref: refs/tags/${{ inputs.tag }}",
         ),
+        (
+            "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "actions/setup-python@v5",
+        ),
+        ('python-version: "3.12"', 'python-version: "3.13"'),
         (
             "needs: [governance, verify, test, package]",
             "needs: [verify, test, package]",
