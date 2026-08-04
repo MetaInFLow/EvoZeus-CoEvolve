@@ -4,6 +4,8 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+## [v0.15.0] - 2026-08-04
+
 ### Added
 
 - Added the canonical target-local Harness Skill at `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`, with an independent `v1.1.0` contract version and compact instruction-surface activation block.
@@ -12,7 +14,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 - Added the reviewed `legacy-v0.14-three-section-to-canonical-v1.1` supervised Skill migration profile. It binds the frozen source envelope, CommonMark parser and adapter proof, exact operation approval, secure batch apply, full postconditions, and verified rollback.
 - Added distinct release-lineage and applied-migration-lineage records. The reviewed v0.14 bridge writes its own profile-bound arrival receipt while fresh attach and canonical automatic upgrades retain only the shared v1.1 release lineage.
 - Added user-level `UserPromptSubmit` registration for the Core-owned Lesson runtime; CoEvolve owns only registration, trust, refresh, uninstall, target-pointer lifecycle, and dependency checks.
-- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound v1.1.0 contract file that remains compatible with the Core v1 bundle loader.
+- Declared the unreleased EvoZeus Core PR #50 runtime API and exact source revision in a hash-bound external dependency contract within the v1.2.0 contract bundle; the dependency remains compatible with the Core v1 bundle loader.
 
 ### Changed
 
