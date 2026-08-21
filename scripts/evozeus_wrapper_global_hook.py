@@ -33,10 +33,29 @@ LEGACY_TARGET_MANIFESTS = (
 )
 WRAPPER_UPGRADE_SOURCE_FILES = (
     Path("scripts/evozeus_wrapper_preflight.py"),
+    Path("scripts/evozeus_notice.py"),
+    Path("scripts/evozeus_branch_consumer.py"),
     Path("templates/global/evozeus_wrapper_dispatcher.py"),
+    Path("templates/target/.codex/hooks.json"),
     Path("templates/target/.codex/hooks/evozeus_wrapper_start_check.py"),
+    Path("templates/target/.github/ISSUE_TEMPLATE/config.yml"),
+    Path("templates/target/.github/ISSUE_TEMPLATE/skill-feedback.yml"),
+    Path("templates/target/.github/pull_request_template.md"),
     Path("templates/target/.github/workflows/evozeus-wrapper-preflight.yml"),
+    Path("templates/target/.evozeus_evoinfra/audit-rule.md"),
+    Path("templates/target/.evozeus_evoinfra/feedback-policy.json"),
+    Path("templates/target/.evozeus_evoinfra/notice-policy.json"),
+    Path("templates/target/.evozeus_evoinfra/skills/using-evozeus-harness/SKILL.md"),
+    Path("templates/target/WRAPPER.md"),
+    Path("templates/target/contracts/v1/contributor-branch-contract.json"),
+    Path("templates/target/contracts/v1/contributor-branch-provenance.json"),
+    Path("templates/target/docs/_config.yml"),
+    Path("templates/target/docs/design-doc-template.md"),
+    Path("templates/target/docs/designs/README.md"),
+    Path("templates/target/docs/index.md"),
     Path("templates/target/docs/onboarding.md"),
+    Path("templates/target/docs/wrapper-migrations/README.md"),
+    Path("templates/target/scripts/evozeus-branch-preflight.mjs"),
 )
 
 
@@ -686,6 +705,7 @@ def plan_upgrade_all(
     latest_version: str,
     *,
     latest_resolver=None,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     home = home.expanduser().resolve()
     wrapper_root = wrapper_root.expanduser().resolve()
@@ -781,24 +801,25 @@ def plan_upgrade_all(
             latest_version,
             require_clean_git=True,
         )
+        target_errors: list[str] = []
+        if migration.get("conflicts"):
+            target_errors.extend(migration["conflicts"])
+        elif not migration.get("can_apply"):
+            target_errors.append("migration plan is not applicable")
+        target_errors.extend(_target_write_errors(target["target"], migration))
         public_target = {
             **target,
             "target": str(target["target"]),
             "manifest_path": str(target["manifest_path"]),
             "migration": migration,
+            "errors": target_errors,
         }
         target_plans.append(public_target)
-        if migration.get("conflicts"):
-            errors.extend(f"{target['repo']}: {item}" for item in migration["conflicts"])
-        elif not migration.get("can_apply"):
-            errors.append(f"{target['repo']}: migration plan is not applicable")
-        errors.extend(
-            f"{target['repo']}: {item}"
-            for item in _target_write_errors(target["target"], migration)
-        )
+        errors.extend(f"{target['repo']}: {item}" for item in target_errors)
+    has_publishable_target = any(not item["errors"] for item in target_plans)
     return {
         "stage": "harness_upgrade_all",
-        "status": "blocked" if errors else "planned",
+        "status": "blocked" if errors and (not allow_partial or not has_publishable_target) else "planned",
         "writes": False,
         "errors": errors,
         "latest_version": latest_version,

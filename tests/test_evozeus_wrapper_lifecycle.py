@@ -23,6 +23,10 @@ from scripts.evozeus_wrapper_lifecycle import (
     HARNESS_ENTRY_BEGIN,
     LEGACY_TARGET_WRAPPER_MANIFEST,
     TARGET_CHANGELOG,
+    TARGET_BRANCH_CONSUMER_SCRIPT,
+    TARGET_BRANCH_CONTRACT,
+    TARGET_BRANCH_PLANNER,
+    TARGET_BRANCH_PROVENANCE,
     TARGET_FEEDBACK_POLICY,
     TARGET_HARNESS_SKILL,
     TARGET_MIGRATIONS_README,
@@ -50,6 +54,7 @@ from scripts.evozeus_wrapper_lifecycle import (
     plan_reinstall,
     plan_transform_action,
     repo_from_remote,
+    require_contributor_gate_protection,
     require_repo_admin,
     resolve_harness_target,
     runtime_pointer_scope,
@@ -64,6 +69,7 @@ from scripts.evozeus_wrapper_global_hook import (
     CORE_USER_PROMPT_RUNTIME_API,
     GLOBAL_DISPATCHER,
     GLOBAL_DISPATCHER_COMMAND,
+    WRAPPER_UPGRADE_SOURCE_FILES,
     GLOBAL_HOOK_STATE,
     apply_global_hook_install,
     apply_global_hook_uninstall,
@@ -325,6 +331,66 @@ class LifecycleBasicsTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "ADMIN permission"):
                 require_repo_admin(root, "MetaInFLow/example", runner=runner)
+
+    def test_attach_requires_exact_default_branch_contributor_gate_check(self):
+        commands = []
+
+        def protected_runner(args, cwd=None):
+            commands.append(args)
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {
+                        "strict": True,
+                        "contexts": ["build"],
+                        "checks": [{"context": "EvoZeus Contributor Gate", "app_id": 15368}],
+                    }
+                ),
+                "stderr": "",
+            }
+
+        evidence = require_contributor_gate_protection(
+            "MetaInFLow/example",
+            "release/current",
+            runner=protected_runner,
+        )
+
+        self.assertTrue(evidence["verified"])
+        self.assertFalse(evidence["writes"])
+        self.assertEqual(evidence["context"], "EvoZeus Contributor Gate")
+        self.assertEqual(evidence["app_id"], 15368)
+        self.assertIn("branches/release%2Fcurrent/protection/required_status_checks", commands[0][2])
+
+        def missing_runner(args, cwd=None):
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({"strict": True, "contexts": ["build"], "checks": []}),
+                "stderr": "",
+            }
+
+        with self.assertRaisesRegex(ValueError, "does not require"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=missing_runner)
+
+        def unbound_runner(args, cwd=None):
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({
+                    "contexts": ["EvoZeus Contributor Gate"],
+                    "checks": [
+                        {"context": "EvoZeus Contributor Gate", "app_id": 99999},
+                    ],
+                }),
+                "stderr": "",
+            }
+
+        with self.assertRaisesRegex(ValueError, "GitHub Actions app_id=15368"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=unbound_runner)
+
+        def unavailable_runner(args, cwd=None):
+            return {"returncode": 1, "stdout": "", "stderr": "not protected"}
+
+        with self.assertRaisesRegex(ValueError, "cannot verify"):
+            require_contributor_gate_protection("MetaInFLow/example", "main", runner=unavailable_runner)
 
     def test_replace_markdown_section_preserves_target_h1_and_suffix_bytes(self):
         frontmatter = (
@@ -604,6 +670,27 @@ class LifecycleBasicsTest(unittest.TestCase):
         self.assertIn("needs: validation", workflow)
         self.assertIn("vars.EVOZEUS_PAGES_ENABLED == 'true'", workflow)
         self.assertIn('\".evozeus-wrapper/**\"', workflow)
+        self.assertIn("actions/setup-node@v4", workflow)
+        self.assertIn("evozeus_branch_consumer.py verify-snapshot --json", workflow)
+        self.assertIn("--pr-body /tmp/skill-evolution-pr.md", workflow)
+        self.assertIn("pull_request_target:", workflow)
+        self.assertIn("Checkout trusted base validator", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
+        self.assertIn("Checkout candidate as untrusted data", workflow)
+        self.assertIn("repository: ${{ github.repository }}", workflow)
+        self.assertIn("ref: refs/pull/${{ github.event.pull_request.number }}/head", workflow)
+        self.assertNotIn("repository: ${{ github.event.pull_request.head.repo.full_name }}", workflow)
+        self.assertIn(
+            "python3 trusted-base/.evozeus-wrapper/scripts/evozeus_wrapper_preflight.py pr",
+            workflow,
+        )
+        self.assertIn("--target candidate", workflow)
+        self.assertNotIn("python3 candidate/.evozeus-wrapper/scripts/", workflow)
+        self.assertIn("pull-requests: read", workflow)
+        self.assertIn("types: [opened, edited, deleted, transferred, closed, reopened, labeled, unlabeled]", workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertIn("issue-pr-revalidate", workflow)
+        self.assertIn("if: always()", workflow)
 
     def test_copy_templates_consolidates_wrapper_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1192,6 +1279,63 @@ class LifecycleBasicsTest(unittest.TestCase):
                 (target / ".github/workflows/evozeus-wrapper-preflight.yml").read_text(encoding="utf-8"),
             )
             self.assertFalse(wrapper_manifest_status(target)["migration_required"])
+
+    def test_migrate_target_layout_preserves_custom_pull_request_template_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            template = target / ".github/pull_request_template.md"
+            custom = (
+                "# Team Pull Request\r\n\r\n"
+                "Keep this target-owned checklist byte-for-byte.\r\n\r\n"
+                "## What Changed\r\n\r\n"
+                "- Explain customer impact.\r\n"
+            )
+            with template.open("w", encoding="utf-8", newline="") as stream:
+                stream.write(custom)
+
+            plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+
+            self.assertEqual(plan["conflicts"], [])
+            self.assertEqual(plan["pull_request_template_update"]["mode"], "inject_managed_block")
+            self.assertTrue(plan["pull_request_template_update"]["target_owned_bytes_preserved"])
+
+            report = migrate_target_layout(target, latest_version="v0.14.0")
+            with template.open("r", encoding="utf-8", newline="") as stream:
+                updated = stream.read()
+
+            self.assertTrue(
+                updated.startswith(
+                    "# Team Pull Request\r\n\r\n"
+                    "Keep this target-owned checklist byte-for-byte.\r\n\r\n"
+                )
+            )
+            self.assertTrue(updated.endswith("## What Changed\r\n\r\n- Explain customer impact.\r\n"))
+            self.assertEqual(updated.count("<!-- evozeus-contributor-branch-plan:v1 -->"), 1)
+            self.assertEqual(updated.count("<!-- /evozeus-contributor-branch-plan -->"), 1)
+            self.assertIn(
+                "inject_managed_block .github/pull_request_template.md",
+                report["actions"],
+            )
+
+    def test_migrate_target_layout_blocks_ambiguous_custom_branch_plan_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "skill"
+            target.mkdir()
+            create_complete_legacy_target(target)
+            template = target / ".github/pull_request_template.md"
+            custom = "# Team PR\n\n## Contributor Branch Plan\n\n- Team-owned field: keep\n"
+            template.write_text(custom, encoding="utf-8")
+
+            plan = plan_target_layout_migration(target, latest_version="v0.14.0")
+
+            self.assertFalse(plan["can_apply"])
+            self.assertTrue(any("unowned Contributor Branch Plan" in item for item in plan["conflicts"]))
+            with self.assertRaisesRegex(ValueError, "cannot migrate wrapper layout"):
+                migrate_target_layout(target, latest_version="v0.14.0")
+            self.assertEqual(template.read_text(encoding="utf-8"), custom)
+            self.assertTrue((target / LEGACY_TARGET_WRAPPER_MANIFEST).is_file())
 
     def test_migration_changed_files_include_removed_duplicate_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2147,7 +2291,15 @@ class WrapperManifestTest(unittest.TestCase):
             self.assertEqual(loaded["canonical_repo"], "MetaInFLow/resume-screening")
             self.assertEqual(
                 loaded["managed_files"],
-                ["WRAPPER.md", "scripts/evozeus_wrapper_preflight.py", TARGET_HARNESS_SKILL],
+                [
+                    "WRAPPER.md",
+                    "scripts/evozeus_wrapper_preflight.py",
+                    TARGET_HARNESS_SKILL,
+                    TARGET_BRANCH_CONSUMER_SCRIPT,
+                    TARGET_BRANCH_CONTRACT,
+                    TARGET_BRANCH_PROVENANCE,
+                    TARGET_BRANCH_PLANNER,
+                ],
             )
             self.assertEqual(loaded["install_links"], ["/Users/anthonyf/.codex/skills/resume-screening"])
             self.assertEqual(loaded["integration"]["mode"], "prompt_runtime_check")
@@ -3145,13 +3297,7 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             f"# Changelog\n\n## [{version}] - 2026-07-20\n",
             encoding="utf-8",
         )
-        for relative in (
-            "scripts/evozeus_wrapper_preflight.py",
-            "templates/global/evozeus_wrapper_dispatcher.py",
-            "templates/target/.codex/hooks/evozeus_wrapper_start_check.py",
-            "templates/target/.github/workflows/evozeus-wrapper-preflight.yml",
-            "templates/target/docs/onboarding.md",
-        ):
+        for relative in WRAPPER_UPGRADE_SOURCE_FILES:
             source = Path(relative)
             destination = wrapper_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -3241,6 +3387,53 @@ class UpgradeAllHarnessTest(unittest.TestCase):
             self.assertFalse(report["writes"])
             self.assertIn("original clean", (clean / "SKILL.md").read_text(encoding="utf-8"))
             self.assertIn("original dirty", (dirty / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_upgrade_all_publish_plan_can_isolate_target_preflight_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            wrapper_root = self.create_wrapper_source(root)
+            clean = self.create_upgrade_target(
+                home,
+                "clean-publish",
+                initialize_git=True,
+            )
+            blocked = self.create_upgrade_target(
+                home,
+                "blocked-publish",
+                initialize_git=True,
+            )
+
+            def fake_plan(target, latest_version, **kwargs):
+                conflicts = ["synthetic target conflict"] if target == blocked else []
+                return {
+                    "target": str(target),
+                    "migration_required": True,
+                    "can_apply": not conflicts,
+                    "conflicts": conflicts,
+                    "instruction_surface": "SKILL.md",
+                    "migration_record": ".evozeus-wrapper/docs/migrations/refresh.md",
+                    "moves": [],
+                    "managed_file_refreshes": [],
+                }
+
+            with patch(
+                "scripts.evozeus_wrapper_lifecycle.plan_target_layout_migration",
+                side_effect=fake_plan,
+            ):
+                report = plan_upgrade_all(
+                    home,
+                    wrapper_root,
+                    "v0.10.0",
+                    latest_resolver=self.latest_v010,
+                    allow_partial=True,
+                )
+
+            self.assertEqual(report["status"], "planned")
+            targets = {item["repo"]: item for item in report["targets"]}
+            self.assertEqual(targets["MetaInFLow/clean-publish"]["errors"], [])
+            self.assertTrue(targets["MetaInFLow/blocked-publish"]["errors"])
+            self.assertIn("original clean-publish", (clean / "SKILL.md").read_text())
 
     def test_upgrade_all_blocks_write_when_target_admin_cannot_be_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3621,6 +3814,67 @@ class UpgradeAllHarnessTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["status"], "up_to_date")
+
+    def test_upgrade_all_publish_cli_is_available_and_safe_for_empty_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "harness",
+                    "upgrade-all",
+                    "--latest-version",
+                    "v0.14.0",
+                    "--wrapper-root",
+                    str(Path.cwd()),
+                    "--publish",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "EVOZEUS_WRAPPER_LATEST_VERSION": "v0.14.0",
+                },
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["stage"], "harness_upgrade_all_publish")
+            self.assertEqual(payload["status"], "up_to_date")
+            self.assertFalse(payload["writes"])
+
+    def test_upgrade_all_dry_run_and_publish_are_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/evozeus_wrapper.py",
+                    "harness",
+                    "upgrade-all",
+                    "--latest-version",
+                    "v0.14.0",
+                    "--dry-run",
+                    "--publish",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                env={**os.environ, "HOME": str(home)},
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--dry-run", result.stderr)
+            self.assertIn("--publish", result.stderr)
+            self.assertFalse((home / ".evozeus").exists())
 
     def test_upgrade_all_cli_serializes_populated_registry(self):
         with tempfile.TemporaryDirectory() as tmp:

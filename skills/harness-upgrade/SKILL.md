@@ -15,6 +15,7 @@ python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/pat
 python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
+python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --publish --json
 ```
 
 ## Rules
@@ -36,10 +37,18 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - Add the onboarding guide and default onboarding contract during legacy layout migration; do not leave migrated manifests structurally incomplete.
 - During legacy migration, remove only sections with proven wrapper heading, ownership signature, and terminal signature; preserve all target-owned business bytes. Stop appending migration notes to the instruction surface.
 - Refresh the canonical Harness Skill, compact activation block, and manifest integration; require structure post-validation before reporting success.
+- Refresh the contributor branch consumer, pinned Core contract/planner snapshots, provenance, manifest `contributor_branch` paths, and Issue-to-PR instructions as one managed set.
+- Run target `evozeus_branch_consumer.py verify-snapshot --json` during structure validation; digest, provenance, symlink, or compatibility failure blocks the upgrade.
 - Keep workflow validation active independently of optional Pages deployment; Pages requires `EVOZEUS_PAGES_ENABLED=true`.
 - Old `.evozeus_evoinfra/` and `.evozeus/wrapper.json` paths are migration inputs, not runtime fallbacks.
 - Major wrapper upgrades require explicit user confirmation.
 - `upgrade-all` must prevalidate every registered target before the first write and restore every target snapshot if any apply step fails.
+- Keep local all-or-nothing migration under `--approve`. Use `--publish` for the GitHub administrator flow: verify live `viewerPermission=ADMIN`, verify canonical `origin`, create an isolated worktree from the remote default branch, push a dedicated Harness branch, and create or reuse one Pull Request per repo.
+- Treat `--dry-run`, `--approve`, and `--publish` as mutually exclusive modes. A dry-run invocation must stop before every worktree, branch, push, PR, and ledger write.
+- Reuse the deterministic upgrade branch by resetting its local ref to the fetched default branch and updating its remote ref only with an exact force-with-lease expectation after confirming no open PR exists.
+- Never accept a local role flag as administrator proof. Treat `ADMIN` as the only publishable GitHub permission; skip `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`, missing, and failed permission checks.
+- Never publish a UAT Harness to target default branches. The requested/source Harness version must equal the authoritative GitHub Release before publication planning can proceed.
+- Record approved publication runs under `~/.evozeus/skills/runs/` and append privacy-safe result events to `~/.evozeus/skills/events.jsonl`.
 - Resolve authority before deciding targets are current. The requested latest version must match the dispatcher cache, environment override, or GitHub latest release. Every target must have a verifiable clean Git worktree, writable write-set files and parents, and no symlink in any write path.
 - Snapshot every file the migration may rewrite, move, refresh, or delete. Legacy wrapper path references in target-owned files are part of this explicit write set even though business semantics remain unchanged.
 - Apply the same repository-boundary rule to direct `migrate-layout`: reject absolute paths, `..` traversal, symlinked write paths, and manifest-selected instruction surfaces outside the target.
@@ -47,6 +56,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - The global dispatcher is a native `SessionStart` aggregate gate, not a native per-Skill invocation hook.
 - The same Core-owned user-level command may also be registered for `UserPromptSubmit`. CoEvolve owns registration lifecycle; Core owns active-channel transport to the fixed Session Signal method. The watcher stays advisory/fail-open and must not be described as exact Skill invocation enforcement.
 - A SessionStart-only legacy global installation is `upgrade_required`; refresh it through `hook global install --approve`, then review the changed Hook definition with Codex `/hooks`.
+- Existing branch ledgers remain local runtime state and never enter the upgrade write set; upgraded plans still collect live GitHub evidence.
 
 ## Stop Conditions
 

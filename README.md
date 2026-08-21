@@ -65,6 +65,8 @@ Evolution Harness 的治理单位是独立 Git Repo：Issue、PR、Owner、UAT�
 
 EvoZeus 负责选择入口和解释结果；CoEvolve 负责 Repo 级治理与执行合同。任何外部写入都要经过明确授权。
 
+从 Feedback Issue 进入实现时，CoEvolve 会在首个业务文件写入前展示 Contributor Branch Plan，并要求独立 branch/worktree。权限由 EvoZeus Core 的实时 GitHub 证据解析；证据缺失时收敛到 local patch。canonical checkout 保持 clean，多位参与者各自拥有可恢复的私有 ledger 上下文。
+
 ## 维护者快速开始
 
 ### 1. 诊断目标 Repo
@@ -116,9 +118,14 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all \
   --latest-version vMAJOR.MINOR.PATCH \
   --dry-run \
   --json
+
+python3 scripts/evozeus_wrapper.py harness upgrade-all \
+  --latest-version vMAJOR.MINOR.PATCH \
+  --publish \
+  --json
 ```
 
-`upgrade-all` 的实际写入还需要 `--approve`，并逐个验证目标 Repo 的管理员权限、干净工作区和可回滚快照。
+`--dry-run`、`--approve`、`--publish` 是互斥模式。`--approve` 用于本地全量升级；`--publish` 是管理员发布流程，会逐个验证目标 Repo 的 `ADMIN` 权限、可信 origin、干净工作区和可回滚快照，再从远端默认分支建立隔离 worktree 与升级 PR。UAT Harness source 只有成为权威 GitHub Release 后才能发布。
 
 ## Harness 产物
 
@@ -131,6 +138,7 @@ target-repo/
 │   ├── CHANGELOG.md
 │   ├── policies/
 │   ├── hooks/
+│   ├── contracts/v1/       # pinned EvoZeus Core contributor branch contract
 │   ├── scripts/
 │   └── docs/
 ├── .github/

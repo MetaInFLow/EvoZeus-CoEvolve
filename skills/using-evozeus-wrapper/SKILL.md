@@ -227,6 +227,8 @@ If the result has `should_capture=true`, finish the original business correction
 
 Treat the full audit object as machine-only. Never expose its JSON, signal id, capture state, route, severity, evidence boundary, or Issue draft in normal Chat.
 
+After that separate implementation authorization, run `loop issue-to-pr` with the target Repo, Issue, expected actor/permission, purpose, and an absolute isolated worktree. Show the complete Core-derived branch plan, including live Issue evidence, before any target-file write. The Issue must remain OPEN, resolve as an Issue in the same Repo, and retain its Skill Feedback classification. Empty blockers do not expand authorization: save the private ledger only with `--approve-save-plan`, create/resume branch/worktree after explicit approval, and revalidate the same repo/base commit/branch/actor/permission before commit, push, and PR. A stale but identity-matching ledger needs explicit `--reconfirm-owner`; persisting its refreshed evidence still needs `--approve-save-plan`.
+
 ### 8. Harness Upgrade
 
 Use `skills/harness-upgrade/SKILL.md`.

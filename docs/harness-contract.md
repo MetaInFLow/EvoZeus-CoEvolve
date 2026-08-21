@@ -31,6 +31,8 @@ environment diagnosis
 | Before | 本地 Skill 文件夹，至少包含 `SKILL.md` |
 | After | canonical GitHub repo、repo dashboard、可选 GitHub Pages、`.evozeus-wrapper/` canonical harness、Issue template、PR template、host hook entrypoint、runtime symlink |
 
+接入前置条件：目标默认分支必须把 exact `EvoZeus Contributor Gate` 配置为 protected required status check，并绑定 GitHub Actions `app_id=15368`。Bootstrap 已具备 ADMIN 证据，但只做 GitHub API 验证；缺失、名称/来源不精确或 protection 证据不可用时，在任何 Harness 模板写入前 fail closed。预先存在的 consumer、contract、planner、preflight、workflow 或 hook gate bytes 必须与当前可信 source 一致；未知 bytes 只允许通过显式 approved repair 处理。
+
 ## Runtime Integration Contract
 
 Wrapper 不能把所有启动检查都叫作 hook。`.evozeus-wrapper/wrapper.json` 必须记录当前事实级别：
@@ -136,6 +138,8 @@ wrapper-managed Skill 的源头发现顺序固定，不允许跳过：
 3. PR：引用 design doc，更新 `SKILL.md` 和 `.evozeus-wrapper/CHANGELOG.md`。
 4. Release：tag 与 `.evozeus-wrapper/CHANGELOG.md` 对齐，release description 非空。
 
+Issue 已创建且实现授权成立后，任何目标业务文件写入前必须先通过 Contributor Branch Gate。EvoZeus Core v1 contract/planner 是规则事实源；CoEvolve 注入离线摘要快照、consumer、私有 ledger 与公开 PR metadata surface。计划先展示 Repo、base ref/commit、live Issue evidence、target branch、verified actor、resolved permission/evidence、isolated worktree、next action 与 blockers。Issue 必须在同 Repo live 验证为 OPEN、非 Pull Request，并具有 Skill Feedback 分类。blockers 清空且 branch/worktree 获得单独授权后才能执行首次写入。
+
 ## Preflight Contract
 
 `.evozeus-wrapper/scripts/evozeus_wrapper_preflight.py` 至少支持五类检查：
@@ -145,6 +149,7 @@ wrapper-managed Skill 的源头发现顺序固定，不允许跳过：
 - `issue`：Issue 内容是否满足反馈模板字段。
 - `pr`：PR 是否有 design doc，且 changelog 有记录。
 - `release`：release tag 是否在 changelog 中，release notes 是否非空。
+- `evozeus_branch_consumer.py verify-snapshot/plan`：校验受管 Core snapshot，并生成零写入 branch plan；`--reconfirm-owner` 只刷新身份完全匹配的 stale ownership evidence，`--approve-save-plan` 才允许写入 owner-only ledger。
 
 ## Lifecycle CLI Contract
 
@@ -161,14 +166,14 @@ python3 scripts/evozeus_wrapper.py hook global install --approve --json
 python3 scripts/evozeus_wrapper.py hook global status --json
 python3 scripts/evozeus_wrapper.py loop lesson --dry-run --json
 python3 scripts/evozeus_wrapper.py loop audit --target /absolute/path/to/skill --user-input "<input>" --json
-python3 scripts/evozeus_wrapper.py loop issue-to-pr --dry-run --json
+python3 scripts/evozeus_wrapper.py loop issue-to-pr --target /absolute/path/to/skill --issue OWNER/REPO#NUMBER --actor LOGIN --type bug --component skill --summary fix-feedback-flow --permission direct --worktree /absolute/isolated/worktree --json
 python3 scripts/evozeus_wrapper.py harness upgrade-check --target /absolute/path/to/skill --json
 python3 scripts/evozeus_wrapper.py harness migrate-layout --target /absolute/path/to/skill --latest-version v0.14.0 --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --dry-run --json
 python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 --approve --json
 ```
 
-`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
+`loop audit` 默认不写 GitHub；它输出 `should_capture`、短 signal id、结构化 Lesson `user_notice`、`route`、`severity` 和脱敏 Issue body。默认下一步是完成业务纠正、展示 Lesson，并等待用户确认是否记录，不返回可直接执行的 Issue 命令。提交 Issue 与启动修复是两次独立授权；Issue 授权不扩张为分支、design doc 或 PR 授权。`loop issue-to-pr` 默认只读，权限参数只表达预期，Core 每次根据 live GitHub evidence 解析 direct/fork/local；缺少或不完整的权限证据进入 local，Issue 证据缺失或无效会阻断计划。stale ledger 仅在完整身份匹配时接受公开入口的 `--reconfirm-owner`，保存 refreshed plan 仍需 `--approve-save-plan`。Harness upgrade 只对已知完整受管基线执行整文件刷新；自定义 PR template 保留 marker 外字节并确定性注入或刷新 Contributor Branch Plan block，marker/同名 section 无法安全归属时在写入前阻断。`publish reinstall` 先完整预校验；真实目录只有在 `--approve-archive` 下才会归档并替换。写入、发布、创建 Issue、创建 PR、启用 Pages 都必须在诊断报告之后进入用户确认。
 
 ## Harness Version Contract
 
@@ -176,7 +181,7 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 
 - Skill release 描述目标 Skill 行为版本。
 - Wrapper harness version 描述 EvoZeus-CoEvolve 注入的模板、脚本和治理逻辑版本。
-- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities`、`onboarding`、`instruction_surface`、`harness_skill_path`、`harness_skill_version` 和 `harness_skill_managed=true`。
+- `.evozeus-wrapper/wrapper.json` 必须记录 `layout_version=2`、`wrapper_repo`、`wrapper_version`、`canonical_repo`、`managed_files`、`install_links`、`integration.mode`、`integration.capabilities`、`onboarding`、`contributor_branch`、`instruction_surface`、`harness_skill_path`、`harness_skill_version` 和 `harness_skill_managed=true`。
 - `onboarding` 必须覆盖 canonical symlink 安装、目标 Skill 调用、目标所有的初始化，以及子 Skill 继承 Repo 根 Harness后的独立运行验证。
 - `dashboard.deployment_mode=opt_in_github_pages`；workflow validation 不依赖 Pages，部署由 `EVOZEUS_PAGES_ENABLED=true` 显式开启。
 - 最新 wrapper 版本默认取 GitHub latest release；来源不可用时必须返回 `latest_unknown` 和查询证据，不能回退为当前版本。
@@ -187,11 +192,15 @@ python3 scripts/evozeus_wrapper.py harness upgrade-all --latest-version v0.14.0 
 - wrapper upgrade 必须生成迁移方案，列出每个 source/destination、冲突、保留的宿主接点、验证命令和回滚方案；有冲突时不得写入。
 - layout migration 必须预校验并安全合并 `.codex/hooks.json`，刷新 canonical Harness Skill、compact entry 和 manifest integration，并通过 post-migration structure validation 后才返回成功。
 - `upgrade-all` 的显式 latest version 必须与 dispatcher cache、环境 override 或 GitHub latest release 一致；该校验必须发生在“已是最新”判断前。每个 target 必须是可验证的 clean Git worktree，write set 及其父目录可写，且任何写路径不得经过 symlink。
-- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，独立契约版本为 `v1.0.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- canonical Harness Skill 固定为 `.evozeus-wrapper/skills/using-evozeus-harness/SKILL.md`，当前独立契约版本为 `v1.1.0`。其 frontmatter name、版本、普通调用只读边界、Feedback Issue、Issue-to-PR、Harness 维护、UAT、Release 与 rollback 路由必须通过 structure 校验。
+- 业务 PR 使用 `pull_request_target`，执行 exact base SHA 中的 validator/consumer；candidate head SHA 只作为数据。可信 validator 以 event/API 重算 actor、head Repo 对应权限路径、base、Issue 与 resume key。
+- Feedback Issue 后续 edited/deleted/transferred/closed/reopened/labeled/unlabeled 时，默认分支 trusted job 通过 Actions API 重跑精确关联开放 PR 的最新 `pull_request_target` run，使原 required check 重新读取 live Issue evidence。
+- 官方 Harness upgrade 使用互斥 profile，并消费 [PR #31 admin publisher](https://github.com/MetaInFLow/EvoZeus-CoEvolve/pull/31) 的 `evozeus/harness-vX-to-vY` 输出：canonical direct branch、live `ADMIN`、已发布非 prerelease CoEvolve Release 的全部 managed source 核对、canonical manifest、受限 diff 与 activation marker 外业务字节保持。`.codex/hooks.json` 只更新 wrapper entry并保持 target-owned hooks。该 profile 不消费 Contributor Plan 元数据。
 - 目标 instruction surface 在业务主链路前必须出现且只出现一次 compact activation block；该块不超过 8 行，Markdown label 与 relative link 都必须等于 manifest 的 canonical path。
 - `structure` 严格要求新契约；`doctor` 对完整 legacy manifest 给出 `migrate-layout` 提醒，对路径越界、symlink、文件缺失、frontmatter 损坏、版本不兼容或 entry/manifest 不一致直接失败。
 - 存量迁移只删除同时具备 wrapper heading、所有权签名和已知 terminal signature 的历史状态段、自进化段、wrapper 段与 instruction-surface refresh note。缺少终止签名时预检失败并进入 approved repair；目标业务文字和 LF/CRLF 字节保持原样，迁移记录进入 `.evozeus-wrapper/docs/migrations/`。
 - 目标 Harness 必须安装并校验 Notice policy 与 CLI；canonical Harness Skill 统一声明 Lesson 捕获和 EvoZeus 生命周期 Tag 的展示规则。
+- 目标 Harness 必须安装并校验 contributor branch consumer、Core contract/planner snapshot 与 provenance；manifest/ledger 不得提供权限结论，Core live evidence 保持唯一权限来源。
 - `.evozeus-wrapper/docs/migrations/` 是 wrapper harness 迁移账本；`.evozeus-wrapper/CHANGELOG.md` 仍主要记录目标 Skill 行为 release。
 - `global_prompt_lesson_watcher` 由 CoEvolve 负责 `UserPromptSubmit` 注册、刷新、卸载与 trust lifecycle。EvoZeus Core 独占 registered-target inventory 消费、活动产品渠道组件发现、attachment/checksum 与 fail-open subprocess transport；Session Signal 独占候选判断、目标选择和 model-only guidance。`contracts/v1/manifest.json` 以 `availability: unreleased` 固定 Core runtime PR、精确 revision、API、dispatcher 路径与 owner。
 

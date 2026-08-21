@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 
 try:
+    from .evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from .evozeus_branch_consumer import verify_managed_snapshot
     from .evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
@@ -17,13 +19,14 @@ try:
         TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
-        build_status_section,
+        build_status_section as _build_status_section,
         build_wrapper_manifest,
         canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         load_wrapper_manifest,
         migrate_instruction_surface_to_harness_entry,
+        require_contributor_gate_protection,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -31,6 +34,8 @@ try:
         wrapper_manifest_status,
     )
 except ImportError:
+    from evozeus_branch_consumer import ConsumerError as BranchConsumerError
+    from evozeus_branch_consumer import verify_managed_snapshot
     from evozeus_wrapper_lifecycle import (
         HARNESS_SKILL_VERSION,
         LEGACY_TARGET_WRAPPER_MANIFEST,
@@ -38,13 +43,14 @@ except ImportError:
         TARGET_HARNESS_SKILL,
         WRAPPER_MANAGED_FILES,
         build_onboarding_contract,
-        build_status_section,
+        build_status_section as _build_status_section,
         build_wrapper_manifest,
         canonical_harness_skill_text_valid,
         independent_repo_root,
         latest_changelog_tag,
         load_wrapper_manifest,
         migrate_instruction_surface_to_harness_entry,
+        require_contributor_gate_protection,
         require_repo_admin,
         validate_instruction_surface_for_harness_entry,
         version_key,
@@ -53,10 +59,14 @@ except ImportError:
     )
 
 
+build_status_section = _build_status_section
+
+
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_TEMPLATE_DIR = ROOT / "templates" / "target"
 PREFLIGHT_SCRIPT = ROOT / "scripts" / "evozeus_wrapper_preflight.py"
 NOTICE_SCRIPT = ROOT / "scripts" / "evozeus_notice.py"
+BRANCH_CONSUMER_SCRIPT = ROOT / "scripts" / "evozeus_branch_consumer.py"
 EVOLUTION_SECTION_HEADING = "## 自进化方法"
 WRAPPER_SECTION_HEADING = "## EvoZeus-CoEvolve"
 LOCAL_PROJECTS_DIR = Path.home() / ".evozeus" / ".projects"
@@ -71,6 +81,20 @@ TARGET_DESIGNS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/designs"
 TARGET_MIGRATIONS_DIR = f"{TARGET_EVOINFRA_DIR}/docs/migrations"
 TARGET_PREFLIGHT_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_wrapper_preflight.py"
 TARGET_NOTICE_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_notice.py"
+TARGET_BRANCH_CONSUMER_SCRIPT = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus_branch_consumer.py"
+TARGET_BRANCH_CONTRACT = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-contract.json"
+TARGET_BRANCH_PROVENANCE = f"{TARGET_EVOINFRA_DIR}/contracts/v1/contributor-branch-provenance.json"
+TARGET_BRANCH_PLANNER = f"{TARGET_EVOINFRA_DIR}/scripts/evozeus-branch-preflight.mjs"
+EXACT_SNAPSHOT_TEMPLATE_PATHS = {
+    Path("contracts/v1/contributor-branch-contract.json"),
+    Path("contracts/v1/contributor-branch-provenance.json"),
+    Path("scripts/evozeus-branch-preflight.mjs"),
+}
+BYTE_EXACT_GATE_TEMPLATE_PATHS = {
+    *EXACT_SNAPSHOT_TEMPLATE_PATHS,
+    Path(".codex/hooks/evozeus_wrapper_start_check.py"),
+    Path(".github/workflows/evozeus-wrapper-preflight.yml"),
+}
 
 
 def fail(message: str) -> None:
@@ -174,6 +198,18 @@ def target_template_path(rel: Path) -> Path:
     return Path(TARGET_EVOINFRA_DIR) / rel
 
 
+def checked_target_write_path(target: Path, relative_path: Path) -> Path:
+    target = target.expanduser().resolve()
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        fail(f"wrapper target path escapes the repository: {relative_path}")
+    destination = target / relative_path
+    cursor = destination
+    while cursor != target:
+        if cursor.is_symlink():
+            fail(f"wrapper target path cannot contain symlinks: {cursor.relative_to(target)}")
+        cursor = cursor.parent
+    return destination
+
 def validate_template_destination(target: Path, destination: Path) -> None:
     """Reject template writes that would traverse a symlink inside the target Repo."""
     try:
@@ -229,6 +265,16 @@ def validate_existing_manifest_for_attach(
         "harness_skill_path": TARGET_HARNESS_SKILL,
         "harness_skill_version": HARNESS_SKILL_VERSION,
         "harness_skill_managed": True,
+        "contributor_branch": {
+            "profile": "coevolve_target_skillware_consumer",
+            "consumer_path": TARGET_BRANCH_CONSUMER_SCRIPT,
+            "contract_path": TARGET_BRANCH_CONTRACT,
+            "provenance_path": TARGET_BRANCH_PROVENANCE,
+            "planner_path": TARGET_BRANCH_PLANNER,
+            "permission_authority": "core_planner_live_github_evidence",
+            "runtime_network_fetch": False,
+            "ledger_root": "~/.evozeus/coevolve/branch-plans/OWNER/REPO",
+        },
     }
     mismatches = [
         field
@@ -236,7 +282,17 @@ def validate_existing_manifest_for_attach(
         if not isinstance(manifest, dict) or manifest.get(field) != value
     ]
     managed_files = manifest.get("managed_files") if isinstance(manifest, dict) else None
-    if not isinstance(managed_files, list) or TARGET_HARNESS_SKILL not in managed_files:
+    required_managed_files = (
+        TARGET_HARNESS_SKILL,
+        TARGET_BRANCH_CONSUMER_SCRIPT,
+        TARGET_BRANCH_CONTRACT,
+        TARGET_BRANCH_PROVENANCE,
+        TARGET_BRANCH_PLANNER,
+    )
+    if (
+        not isinstance(managed_files, list)
+        or any(path not in managed_files for path in required_managed_files)
+    ):
         mismatches.append("managed_files")
     if mismatches:
         raise ValueError(
@@ -259,12 +315,31 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
     ]
     script_dst = target / TARGET_PREFLIGHT_SCRIPT
     notice_dst = target / TARGET_NOTICE_SCRIPT
+    consumer_dst = target / TARGET_BRANCH_CONSUMER_SCRIPT
     for destination in [
         *(destination for _, destination in template_destinations),
         script_dst,
         notice_dst,
+        consumer_dst,
     ]:
         validate_template_destination(target, destination)
+
+    if not force:
+        byte_exact_gate_files = [
+            *(
+                (src, destination)
+                for src, destination in template_destinations
+                if src.relative_to(TARGET_TEMPLATE_DIR) in BYTE_EXACT_GATE_TEMPLATE_PATHS
+            ),
+            (PREFLIGHT_SCRIPT, script_dst),
+            (BRANCH_CONSUMER_SCRIPT, consumer_dst),
+        ]
+        for source, destination in byte_exact_gate_files:
+            if destination.exists() and destination.read_bytes() != source.read_bytes():
+                raise ValueError(
+                    "existing managed gate component has unknown bytes; "
+                    f"preserve it and use an approved repair with --force: {destination}"
+                )
 
     existing_harness = target / TARGET_HARNESS_SKILL
     if existing_harness.exists() or existing_harness.is_symlink():
@@ -289,7 +364,16 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
 
     actions: list[str] = []
     for src, destination in template_destinations:
-        actions.append(copy_template_file(src, destination, replacements, force))
+        rel = src.relative_to(TARGET_TEMPLATE_DIR)
+        if rel in EXACT_SNAPSHOT_TEMPLATE_PATHS:
+            if destination.exists() and not force:
+                actions.append(f"skip existing {destination}")
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, destination)
+                actions.append(f"write {destination}")
+        else:
+            actions.append(copy_template_file(src, destination, replacements, force))
 
     if script_dst.exists() and not force:
         actions.append(f"skip existing {script_dst}")
@@ -305,6 +389,13 @@ def copy_templates(target: Path, replacements: dict[str, str], force: bool) -> l
         shutil.copy2(NOTICE_SCRIPT, notice_dst)
         notice_dst.chmod(0o755)
         actions.append(f"write {notice_dst}")
+    if consumer_dst.exists() and not force:
+        actions.append(f"skip existing {consumer_dst}")
+    else:
+        consumer_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(BRANCH_CONSUMER_SCRIPT, consumer_dst)
+        consumer_dst.chmod(0o755)
+        actions.append(f"write {consumer_dst}")
     return actions
 
 
@@ -484,9 +575,19 @@ def main() -> int:
         fail(f"preflight script missing: {PREFLIGHT_SCRIPT}")
     if not NOTICE_SCRIPT.exists():
         fail(f"notice script missing: {NOTICE_SCRIPT}")
+    if not BRANCH_CONSUMER_SCRIPT.exists():
+        fail(f"contributor branch consumer missing: {BRANCH_CONSUMER_SCRIPT}")
+    try:
+        verify_managed_snapshot(TARGET_TEMPLATE_DIR)
+    except BranchConsumerError as exc:
+        fail(f"contributor branch snapshot is invalid: {exc}")
     require_github_cli()
     try:
         authority = require_repo_admin(target, args.repo)
+        protection = require_contributor_gate_protection(
+            authority["repository"],
+            authority.get("default_branch"),
+        )
     except ValueError as exc:
         fail(str(exc))
 
@@ -523,6 +624,10 @@ def main() -> int:
     actions = [
         f"verified independent Git repository root: {target}",
         f"verified GitHub ADMIN authority: {authority['repository']}",
+        (
+            "verified protected required check "
+            f"{protection['context']} on {protection['branch']}"
+        ),
     ]
     try:
         actions.extend(copy_templates(target, replacements, args.force))

@@ -22,6 +22,7 @@ The wrapper exists to add:
 - changelog and release governance
 - preflight checks
 - target-local configurable EvoZeus Notice policy and read-only renderer
+- mandatory Issue-to-PR contributor branch planning with live permission evidence and isolated worktrees
 - wrapper harness migration records
 
 It must not rewrite target business rules or absorb the evolution runtime, scanner, or prompt management platform.
@@ -50,3 +51,4 @@ Use these Skills in order:
 - If an existing repo has no GitHub release and no `.evozeus-wrapper/CHANGELOG.md` version entry, ask the owner to choose the current Skill / kit version.
 - If no controlling instruction surface can be proven, run evolution surface diagnosis and ask the owner when needed.
 - Keep wrapper-owned additions append-only and do not rewrite target business logic.
+- After separate fix authorization, pass the Contributor Branch Gate before the first target-file write; keep the canonical checkout clean and bind later commit/push/PR actions to the resumed plan.
