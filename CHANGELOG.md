@@ -4,8 +4,6 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
-## [v0.15.1] - 2026-11-15
-
 ### Added
 
 - Added `--repair-projects [--apply]` to the global dispatcher: it finds moved Skill registrations by wrapper manifest or git `origin`, previews by default, relinks only when exactly one location matches, and otherwise lists choices or a removal command. `EVOZEUS_REPAIR_SEARCH_ROOTS` overrides the search roots.
@@ -17,7 +15,7 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ### Unchanged
 
-- Target-repo Harness version (`CURRENT_WRAPPER_VERSION`) stays `v0.15.0`; no target migration is needed.
+- Harness version stays `v0.15.0` (CHANGELOG release heading and `CURRENT_WRAPPER_VERSION`); no target migration is needed. Shipped to UAT by commit.
 
 ## [v0.15.0] - 2026-08-04
 
