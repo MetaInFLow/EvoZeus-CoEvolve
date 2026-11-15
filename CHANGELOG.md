@@ -4,6 +4,21 @@ All notable changes to EvoZeus-CoEvolve are recorded here.
 
 ## [Unreleased]
 
+## [v0.15.1] - 2026-11-15
+
+### Added
+
+- Added `--repair-projects [--apply]` to the global dispatcher: it finds moved Skill registrations by wrapper manifest or git `origin`, previews by default, relinks only when exactly one location matches, and otherwise lists choices or a removal command. `EVOZEUS_REPAIR_SEARCH_ROOTS` overrides the search roots.
+
+### Changed
+
+- SessionStart no longer stops the whole session when a local Skill registration under `~/.evozeus/.projects` is broken or inconsistent. The affected Skills are skipped, the user sees one plain-language line with the repair command, and the agent is told not to maintain, upgrade or publish the affected Skills until repaired.
+- SessionStart stays silent when everything is healthy, when the latest release is unknown, and when harnesses are only outdated; the outdated advisory goes to the agent only and is mentioned to the user only when they ask to maintain that Skill.
+
+### Unchanged
+
+- Target-repo Harness version (`CURRENT_WRAPPER_VERSION`) stays `v0.15.0`; no target migration is needed.
+
 ## [v0.15.0] - 2026-08-04
 
 ### Added

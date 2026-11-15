@@ -3532,7 +3532,7 @@ class GlobalDispatcherTest(unittest.TestCase):
         pointer.symlink_to(target)
         return target
 
-    def test_dispatcher_warns_and_allows_with_aggregate_count_when_targets_are_stale(self):
+    def test_dispatcher_stays_quiet_and_advises_agent_when_targets_are_stale(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             self.create_wrapped_target(home, "private-skill-a", "v0.9.1")
@@ -3548,13 +3548,14 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
             serialized = json.dumps(payload, ensure_ascii=False)
 
+            context = payload["hookSpecificOutput"]["additionalContext"]
+
             self.assertTrue(payload["continue"])
-            self.assertIn("2 个 EvoZeus harness 落后", payload["systemMessage"])
-            self.assertIn("正常业务继续", payload["systemMessage"])
-            self.assertIn("用户明确请求", payload["systemMessage"])
-            self.assertIn("创建分支或 worktree", payload["systemMessage"])
-            self.assertIn("若本任务选中了落后 Skill", payload["systemMessage"])
-            self.assertIn("当前 Harness 版本", payload["systemMessage"])
+            self.assertNotIn("systemMessage", payload)
+            self.assertIn("outdated_harness_count=2", context)
+            self.assertIn("不影响使用", context)
+            self.assertIn("用户明确要求维护或升级", context)
+            self.assertIn("创建分支或 worktree", context)
             self.assertIn(
                 "next_action=continue_business_without_harness_writes",
                 payload["hookSpecificOutput"]["additionalContext"],
@@ -3570,7 +3571,7 @@ class GlobalDispatcherTest(unittest.TestCase):
             self.assertNotIn("private-skill", serialized)
             self.assertNotIn(str(home), serialized)
 
-    def test_dispatcher_allows_when_all_targets_are_current(self):
+    def test_dispatcher_allows_silently_when_all_targets_are_current(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             self.create_wrapped_target(home, "current-skill", "v0.10.0")
@@ -3585,7 +3586,8 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
 
             self.assertTrue(payload["continue"])
-            self.assertIn("current", payload["systemMessage"])
+            self.assertNotIn("systemMessage", payload)
+            self.assertIn("next_action=none", payload["hookSpecificOutput"]["additionalContext"])
 
     def test_dispatcher_uses_cached_latest_when_remote_lookup_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3607,7 +3609,7 @@ class GlobalDispatcherTest(unittest.TestCase):
             self.assertEqual(resolution["version"], "v0.10.0")
             self.assertEqual(resolution["source"], "stale_cache")
 
-    def test_dispatcher_warns_and_allows_when_latest_is_unknown_without_cache(self):
+    def test_dispatcher_allows_silently_when_latest_is_unknown_without_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             self.create_wrapped_target(home, "offline-skill", "v0.9.1")
@@ -3622,9 +3624,13 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
 
             self.assertTrue(payload["continue"])
-            self.assertIn("unavailable", payload["systemMessage"])
+            self.assertNotIn("systemMessage", payload)
+            self.assertIn(
+                "retry_evozeus_latest_release_lookup",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
 
-    def test_dispatcher_blocks_deterministic_manifest_mismatch_without_private_details(self):
+    def test_dispatcher_continues_on_manifest_mismatch_without_private_details(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             target = self.create_wrapped_target(home, "mismatch-skill", "v0.10.0")
@@ -3643,11 +3649,18 @@ class GlobalDispatcherTest(unittest.TestCase):
             )
             serialized = json.dumps(payload, ensure_ascii=False)
 
-            self.assertFalse(payload["continue"])
-            self.assertIn("本地 harness 注册异常", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertNotIn("stopReason", payload)
+            self.assertIn("1 个已登记的 Skill 找不到了", payload["systemMessage"])
+            self.assertIn("不影响现在的工作", payload["systemMessage"])
+            self.assertIn("--repair-projects", payload["systemMessage"])
+            self.assertIn(
+                "evozeus_global_gate=degraded",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
             self.assertNotIn("mismatch-skill", serialized)
 
-    def test_dispatcher_rejects_non_symlink_project_pointer(self):
+    def test_dispatcher_skips_non_symlink_project_pointer_without_blocking(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             pointer = home / ".evozeus/.projects/MetaInFLow/not-a-pointer"
@@ -3666,12 +3679,116 @@ class GlobalDispatcherTest(unittest.TestCase):
             payload = self.module.evaluate_session_start(
                 home=home,
                 latest_resolver=lambda: self.fail(
-                    "invalid local registration must block before remote lookup"
+                    "invalid local registration must be reported before remote lookup"
                 ),
             )
 
-            self.assertFalse(payload["continue"])
-            self.assertIn("本地 harness 注册异常", payload["stopReason"])
+            self.assertTrue(payload["continue"])
+            self.assertIn("已先跳过", payload["systemMessage"])
+
+    def test_dispatcher_does_not_block_sessions_when_a_registration_is_broken(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            self.create_wrapped_target(home, "healthy-skill", "v0.10.0")
+            for name in ("moved-a", "moved-b"):
+                pointer = home / ".evozeus/.projects/MetaInFLow" / name
+                pointer.symlink_to(Path(tmp) / "old-location" / name)
+
+            payload = self.module.evaluate_session_start(
+                home=home,
+                latest_resolver=lambda: {"version": "v0.10.0", "source": "test", "error": None},
+            )
+            serialized = json.dumps(payload, ensure_ascii=False)
+
+            self.assertTrue(payload["continue"])
+            self.assertIn("2 个已登记的 Skill 找不到了", payload["systemMessage"])
+            self.assertIn(
+                "skipped_registrations=2",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
+            self.assertNotIn("harness", payload["systemMessage"])
+            self.assertNotIn("moved-a", serialized)
+            self.assertNotIn(str(home), serialized)
+
+    def run_repair(self, home: Path, search_root: Path, *extra: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with patch.dict(os.environ, {self.module.REPAIR_SEARCH_ENV: str(search_root)}):
+            code = self.module.repair_projects(home, apply="--apply" in extra, out=output)
+        return code, output.getvalue()
+
+    def make_relocated_repo(self, root: Path, name: str, repo: str) -> Path:
+        moved = root / "new-home" / name
+        manifest = moved / ".evozeus-wrapper" / "wrapper.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps({"canonical_repo": repo, "wrapper_version": "v0.10.0"}),
+            encoding="utf-8",
+        )
+        return moved
+
+    def test_repair_previews_then_relinks_a_moved_registration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            pointer = home / ".evozeus/.projects/MetaInFLow/moved-skill"
+            pointer.parent.mkdir(parents=True)
+            pointer.symlink_to(root / "old-location" / "moved-skill")
+            moved = self.make_relocated_repo(root, "moved-skill", "MetaInFLow/moved-skill")
+
+            code, text = self.run_repair(home, root / "new-home")
+            self.assertEqual(code, 1)
+            self.assertIn("找到新位置", text)
+            self.assertFalse(pointer.exists(), "preview must not write")
+
+            code, text = self.run_repair(home, root / "new-home", "--apply")
+            self.assertEqual(code, 0)
+            self.assertIn("已改指到", text)
+            self.assertEqual(pointer.resolve(), moved.resolve())
+
+            payload = self.module.evaluate_session_start(
+                home=home,
+                latest_resolver=lambda: {"version": "v0.10.0", "source": "test", "error": None},
+            )
+            self.assertNotIn("systemMessage", payload)
+
+    def test_repair_matches_git_origin_and_refuses_to_guess_between_clones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            pointer = home / ".evozeus/.projects/MetaInFLow/cloned-skill"
+            pointer.parent.mkdir(parents=True)
+            pointer.symlink_to(root / "old-location" / "cloned-skill")
+            for clone in ("clone-a", "clone-b"):
+                git_dir = root / "new-home" / clone / ".git"
+                git_dir.mkdir(parents=True)
+                (git_dir / "config").write_text(
+                    '[remote "origin"]\n\turl = git@github.com:MetaInFLow/cloned-skill.git\n',
+                    encoding="utf-8",
+                )
+
+            code, text = self.run_repair(home, root / "new-home", "--apply")
+
+            self.assertEqual(code, 1)
+            self.assertIn("找到多个可能的位置", text)
+            self.assertIn("clone-a", text)
+            self.assertIn("clone-b", text)
+            self.assertFalse(pointer.exists(), "ambiguous matches must not be relinked")
+
+    def test_repair_reports_registrations_it_cannot_find(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            pointer = home / ".evozeus/.projects/MetaInFLow/gone-skill"
+            pointer.parent.mkdir(parents=True)
+            pointer.symlink_to(root / "old-location" / "gone-skill")
+            (root / "new-home").mkdir()
+
+            code, text = self.run_repair(home, root / "new-home", "--apply")
+
+            self.assertEqual(code, 1)
+            self.assertIn("没找到", text)
+            self.assertIn("rm ", text)
+            self.assertTrue(pointer.is_symlink(), "unresolved registrations stay in place")
 
     def test_installed_dispatcher_runs_from_consumer_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3709,8 +3826,11 @@ class GlobalDispatcherTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(payload["continue"])
-            self.assertIn("1 个 EvoZeus harness 落后", payload["systemMessage"])
-            self.assertIn("正常业务继续", payload["systemMessage"])
+            self.assertNotIn("systemMessage", payload)
+            self.assertIn(
+                "outdated_harness_count=1",
+                payload["hookSpecificOutput"]["additionalContext"],
+            )
 
     def test_project_and_global_hooks_share_one_remote_lookup(self):
         project_template = Path(
